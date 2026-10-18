@@ -2,6 +2,9 @@
 #include "ps2_host_backend.h"
 #include <cstdio>
 #include <cstring>
+#if defined(PS2X_DK)
+#include <switch.h>
+#endif
 
 #ifdef _WIN32
 bool ps2PadWindowsRumble(uint8_t large, bool small); // ps2_pad_rumble_win.cpp
@@ -41,6 +44,57 @@ bool PSPadBackend::readState(int /*port*/, int /*slot*/, uint8_t *data, size_t s
     data[2] = 0xFF;
     data[3] = 0xFF;
     data[4] = data[5] = data[6] = data[7] = kPadStickCenter;
+#if defined(PS2X_DK)
+    // GOW-Port: deko3d build: no raylib window, so no SDL input; the Switch pad through libnx HID. Buttons by position
+    // as before (B = Cross, A = Circle, Y = Square, X = Triangle, + = Start, - = Select, ZL/ZR = L2/R2).
+    {
+        static PadState pad;
+        static bool configured = false;
+        if (!configured)
+        {
+            padConfigureInput(1, HidNpadStyleSet_NpadStandard);
+            padInitializeDefault(&pad);
+            configured = true;
+        }
+        padUpdate(&pad);
+        const uint64_t held = padGetButtons(&pad);
+        uint16_t buttons = 0xFFFFu;
+        const auto map = [&](uint64_t switchButton, uint16_t ps2Bit)
+        {
+            if (held & switchButton)
+                buttons &= static_cast<uint16_t>(~ps2Bit);
+        };
+        map(HidNpadButton_Up, PAD_UP);
+        map(HidNpadButton_Down, PAD_DOWN);
+        map(HidNpadButton_Left, PAD_LEFT);
+        map(HidNpadButton_Right, PAD_RIGHT);
+        map(HidNpadButton_B, PAD_CROSS);
+        map(HidNpadButton_A, PAD_CIRCLE);
+        map(HidNpadButton_Y, PAD_SQUARE);
+        map(HidNpadButton_X, PAD_TRIANGLE);
+        map(HidNpadButton_L, PAD_L1);
+        map(HidNpadButton_R, PAD_R1);
+        map(HidNpadButton_ZL, PAD_L2);
+        map(HidNpadButton_ZR, PAD_R2);
+        map(HidNpadButton_Plus, PAD_START);
+        map(HidNpadButton_Minus, PAD_SELECT);
+        map(HidNpadButton_StickL, PAD_L3);
+        map(HidNpadButton_StickR, PAD_R3);
+        const auto axis = [](int32_t v, bool invert) -> uint8_t
+        {
+            const int value = 128 + (invert ? -v : v) * 127 / 32767;
+            return static_cast<uint8_t>(value < 0 ? 0 : value > 255 ? 255 : value);
+        };
+        const HidAnalogStickState left = padGetStickPos(&pad, 0), right = padGetStickPos(&pad, 1);
+        data[6] = axis(left.x, false);
+        data[7] = axis(left.y, true); // HID y points up, the PS2's down
+        data[4] = axis(right.x, false);
+        data[5] = axis(right.y, true);
+        data[2] = static_cast<uint8_t>(buttons & 0xFF);
+        data[3] = static_cast<uint8_t>(buttons >> 8);
+        return true;
+    }
+#endif
 
     uint16_t btns = 0xFFFFu;
     // GOW-Port: GLFW can list racing gear (handbrake, pedals) as gamepads before the real pad. The pad whose

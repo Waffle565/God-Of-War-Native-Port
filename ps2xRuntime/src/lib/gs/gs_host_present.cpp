@@ -393,6 +393,21 @@ GSHostPresentation::View GSHostPresentation::prepare(GS &gs, uint64_t vsyncTick)
 GSHostPresentation::View GSHostPresentation::renderFrame(GS &gs, uint64_t vsyncTick, const std::function<void()> &overlay)
 {
     View selected;
+#if defined(PS2X_DK)
+    // GOW-Port: deko3d (gs_dk.cpp): the GS thread draws the frame onto the swapchain and presents it; there is no host
+    // window (no raylib context). This thread only hands each new vsync's Present to the GS thread and sleeps, giving
+    // the core to the guest threads.
+    (void)overlay;
+    if (!hasLatched || vsyncTick != lastTick)
+    {
+        gs.latchHostPresentationFrame();
+        lastTick = vsyncTick;
+        hasLatched = true;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    selected.presented = false;
+    return selected;
+#endif
 #if defined(__SWITCH__)
     // GOW-Port: with shared textures nothing here waits for the GS thread, and Horizon does not time-slice threads of
     // one priority: the GL backend shares core 0 with this thread, and while this thread drew and swapped at 60 Hz

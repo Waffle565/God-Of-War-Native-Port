@@ -50,6 +50,9 @@ std::atomic<uint64_t> g_gowAudioFramesProduced{0};
 #if defined(PLATFORM_SWITCH)
 #include <SDL.h>
 #endif
+#if defined(PS2X_DK)
+#include <switch.h> // appletMainLoop: no raylib window to ask whether to close
+#endif
 #if !defined(PLATFORM_VITA)
 #if !defined(PLATFORM_SWITCH)
 bool ps2AudioOpenNamedDevice(void (*fill)(void *, unsigned int), unsigned int sampleRate); // ps2_audio_device.cpp
@@ -898,7 +901,13 @@ bool PS2Runtime::initialize(const char *title)
         // every host frame. GSHostPresentation::renderFrame paces the window at 60 Hz with a sleep after the lock is
         // released instead (raylib's WaitTime has no sleep call on Horizon: its frame limiter would spin, and Horizon
         // does not time-slice threads of one priority).
+#if defined(PS2X_DK)
+        // GOW-Port: deko3d renderer (gs_dk.cpp): the GS thread owns the screen (its swapchain on the default window),
+        // so raylib opens no window; the pad is read through libnx HID (ps2_pad.cpp).
+        (void)title;
+#else
         InitWindow(1280, 720, title);
+#endif
 #else
         SetConfigFlags(FLAG_WINDOW_RESIZABLE);
         // GOW-Port: window size. GOW_WINDOW=<w>x<h>; default 1920x1080. The image is always fitted at 16:9
@@ -925,7 +934,11 @@ bool PS2Runtime::initialize(const char *title)
             }
         }
 #endif
+#if defined(PS2X_DK)
+        m_hostWindowOwned = true;
+#else
         m_hostWindowOwned = IsWindowReady();
+#endif
         if (!m_hostWindowOwned)
         {
             std::cerr << "Failed to create the runtime host window" << std::endl;
@@ -2784,7 +2797,11 @@ void PS2Runtime::run()
         if (presented && ps2_perf::countFrames()) ps2_perf::hostFrames.fetch_add(1, std::memory_order_relaxed);
         ps2_perf::report();
 
+#if defined(PS2X_DK)
+        if (!appletMainLoop())
+#else
         if (WindowShouldClose())
+#endif
         {
             RUNTIME_LOG("[run] window close requested, breaking out of loop");
             requestStop();
