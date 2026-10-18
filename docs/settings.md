@@ -81,6 +81,28 @@ Text format (FLP_HUD in R_PERM.WAD, FLP_Shell in R_SHELL.WAD; `python -I tools/g
   is streamed). The intro movie narration stays English (above).
 - `tools/savetest.py --elf <disc>/SCUS_973.99` runs on another disc folder (used for test discs).
 
+## In-game settings panel
+
+F1, the pad's guide button or Select+Start open a settings panel over the running game (ext
+`ps2xRuntime/src/lib/settings_menu.cpp`, drawn by the runner with raylib after the game picture). While it is open
+the game reads a released pad (`ps2_pad.cpp`), and after it closes the pad stays released until the closing key is let
+go, so Esc/Enter (also the game's circle and Start) do not reach the game.
+
+| Row | Effect |
+|---|---|
+| Resolution | 16:9 sizes up to the monitor, the monitor's own and the current one; applied at once (in fullscreen the monitor mode follows) |
+| Fullscreen | on/off at once (same as F11) |
+| Text, Voices | the languages of the folder's overlays; take effect after "Restart" |
+| Restart to apply languages | only when a language changed: the runner exits with code 3 and the launcher starts it again with the new settings (unsaved progress is lost) |
+| Resume, Quit game | close the panel; quit the game |
+
+Every change is written to `settings.ini` at once. The launcher tells the runner where through the environment:
+`GOW_SETTINGS` (the ini), `GOW_TEXT`/`GOW_VOICE` (this run's languages), `GOW_LANGUAGES` (codes with overlays, comma
+separated). Without `GOW_SETTINGS` (play.cmd, test runs) the panel works but saves nothing. Keys are read as press
+edges of the held state once per host frame: raylib's `IsKeyPressed` missed short presses there.
+Tested 2026-10-18 (dist folder, muted): panel opens, Text English -> Français + Restart starts the game again with
+`Text=fr`, Esc closes without reaching the game's menu.
+
 ## Switch
 The overlay is in ps2xIOP, shared by both builds. The Switch build needs: the ext change merged into its branch, the
 `lang/` folder in the RomFS next to the disc files (port/switch/nsp, make_romfs_links.sh), and

@@ -13,6 +13,7 @@ intro movie stay English. The game has no subtitles for spoken lines.
 
 In game
 -------
+F1             settings (resolution, fullscreen, languages); on a pad: Select+Start
 F11            switch between window and fullscreen
 Alt+F4         quit (save first: the game saves at its save points)
 

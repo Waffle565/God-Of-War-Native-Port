@@ -9,6 +9,8 @@
 // the port's save wording, and with the European disc French, German, Italian and Spanish text and voices.
 // It sets what play.cmd sets (release settings, no diagnostics) plus the video settings and runs the game with bin\ as
 // working directory. "God of War.exe --play" skips the window and starts with the saved settings.
+// In game, F1 or Select+Start opens the runner's settings panel (settings_menu.cpp): it writes the same settings.ini
+// and exits with code 3 to have the game started again with new languages; the launcher then re-reads the settings.
 #include <windows.h>
 
 #include <algorithm>
@@ -247,6 +249,12 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int)
         return 0;
     saveSettings(g_settings);
 
+    // the codes the in-game panel offers: the folder's overlays (lang_pack.py), English always
+    std::wstring languages = L"en";
+    for (int i = 1; i < kLanguages; ++i)
+        if (exists(g_root + L"\\data\\" + overlayOf(i, i)))
+            languages += std::wstring(L",") + kLanguageCodes[i];
+
     // saves: one file in saves\, copied to .bak before every start so a broken save never costs the previous one
     const std::wstring saves = g_root + L"\\saves";
     CreateDirectoryW(saves.c_str(), nullptr);
@@ -259,26 +267,37 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int)
     if (GetEnvironmentVariableW(L"GOW_AUDIO", nullptr, 0) == 0) // test runs mute with GOW_AUDIO=0
         SetEnvironmentVariableW(L"GOW_AUDIO_DEVICE", L"default");
     SetEnvironmentVariableW(L"GOW_MC0", save.c_str());
-    SetEnvironmentVariableW(L"GOW_WINDOW",
-                            (std::to_wstring(g_settings.width) + L"x" + std::to_wstring(g_settings.height)).c_str());
-    SetEnvironmentVariableW(L"GOW_FULLSCREEN", g_settings.fullscreen ? L"1" : L"0");
-    const std::wstring overlay = overlayOf(g_settings.text, g_settings.voice);
-    if (exists(g_root + L"\\data\\" + overlay))
-        SetEnvironmentVariableW(L"PS2X_DISC_OVERLAY", overlay.c_str()); // relative to data\ (the disc root)
+    SetEnvironmentVariableW(L"GOW_SETTINGS", iniPath().c_str());
+    SetEnvironmentVariableW(L"GOW_LANGUAGES", languages.c_str());
 
-    std::wstring command = L"\"" + runner + L"\" \"" + elf + L"\"";
-    STARTUPINFOW startup{};
-    startup.cb = sizeof(startup);
-    PROCESS_INFORMATION process{};
-    if (!CreateProcessW(runner.c_str(), command.data(), nullptr, nullptr, FALSE, 0, nullptr, bin.c_str(), &startup, &process))
-    {
-        MessageBoxW(nullptr, L"Could not start bin\\GodOfWar.exe.", L"God of War", MB_ICONERROR);
-        return 1;
-    }
-    WaitForSingleObject(process.hProcess, INFINITE);
+    constexpr DWORD kRestartExitCode = 3; // settings_menu.h: the in-game panel's "Restart"
     DWORD code = 0;
-    GetExitCodeProcess(process.hProcess, &code);
-    CloseHandle(process.hThread);
-    CloseHandle(process.hProcess);
+    do
+    {
+        g_settings = loadSettings(); // the in-game panel may have changed it
+        SetEnvironmentVariableW(L"GOW_TEXT", kLanguageCodes[g_settings.text]);
+        SetEnvironmentVariableW(L"GOW_VOICE", kLanguageCodes[g_settings.voice]);
+        SetEnvironmentVariableW(L"GOW_WINDOW",
+                                (std::to_wstring(g_settings.width) + L"x" + std::to_wstring(g_settings.height)).c_str());
+        SetEnvironmentVariableW(L"GOW_FULLSCREEN", g_settings.fullscreen ? L"1" : L"0");
+        const std::wstring overlay = overlayOf(g_settings.text, g_settings.voice);
+        // relative to data\ (the disc root)
+        SetEnvironmentVariableW(L"PS2X_DISC_OVERLAY", exists(g_root + L"\\data\\" + overlay) ? overlay.c_str() : nullptr);
+
+        std::wstring command = L"\"" + runner + L"\" \"" + elf + L"\"";
+        STARTUPINFOW startup{};
+        startup.cb = sizeof(startup);
+        PROCESS_INFORMATION process{};
+        if (!CreateProcessW(runner.c_str(), command.data(), nullptr, nullptr, FALSE, 0, nullptr, bin.c_str(), &startup,
+                            &process))
+        {
+            MessageBoxW(nullptr, L"Could not start bin\\GodOfWar.exe.", L"God of War", MB_ICONERROR);
+            return 1;
+        }
+        WaitForSingleObject(process.hProcess, INFINITE);
+        GetExitCodeProcess(process.hProcess, &code);
+        CloseHandle(process.hThread);
+        CloseHandle(process.hProcess);
+    } while (code == kRestartExitCode);
     return static_cast<int>(code);
 }
