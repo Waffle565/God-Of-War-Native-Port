@@ -1,5 +1,5 @@
 """Print the R5900 disassembly of a recompiled function (from the comments in the recompiler output).
-usage: dis.py ADDR [DIR]   (ADDR = any address inside the function, hex; DIR = output folder, default port/output-usa,
+usage: eedis.py ADDR [DIR]   (ADDR = any address inside the function, hex; DIR = output folder, default port/output-usa,
 the USA build the runner runs; port/output is the European build, other addresses)"""
 import os, re, sys
 a = int(sys.argv[1], 16)

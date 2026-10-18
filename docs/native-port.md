@@ -126,7 +126,7 @@ Measured on agent/residual (main + disc files + native clock + native DMA reques
 
 Earlier state (2026-10-11, `GOW_IO_HIST=150`, boot + Olympus) and what was converted since. What the game's own code
 read or wrote as hardware registers (the generated code also marks every constant-address access with `// MMIO:`;
-`tools/dis.py ADDR` disassembles the USA build):
+`tools/eedis.py ADDR` disassembles the USA build):
 - GS privileged registers: none since agent/gsregs (step 5 above). Before: CSR read+write per FINISH interrupt
   (handler 0x182DD8, ~2 per frame) plus one write at install (0x182E88), and SMODE2/PMODE/DISPFB1/DISPLAY1/
   DISPFB2/DISPLAY2/BGCOLOR stored once per frame by 0x183360.

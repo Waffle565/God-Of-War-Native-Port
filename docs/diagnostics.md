@@ -70,7 +70,7 @@ Always-on logs we added: `[SIF module] load-failed/load-unhandled` (RPC.cpp), `f
 - IOP printf now formats arguments (before: raw "%d"). Old logs (before 2026-10-09) show raw formats.
 
 ## Methods that worked
-- **Find a hang**: heartbeat live pc → `tools/dis.py` → identify loop → find who sets the awaited flag
+- **Find a hang**: heartbeat live pc → `tools/eedis.py` → identify loop → find who sets the awaited flag
   (`grep -l -- '-0xNNNN(' port/output/*.cpp` on the gp/lui-relative offset).
 - **Backtrace**: peek the stack (`PS2X_HEARTBEAT_PEEK=1FFFD00:300`), keep words in .text whose word−8 is a `jal`
   (return addresses).

@@ -36,6 +36,7 @@ import struct
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # tools/ (python -I leaves it out)
+import gow_movie  # noqa: E402
 import gow_wording  # noqa: E402
 
 SECTOR = 2048
@@ -126,6 +127,10 @@ def read_meta(disc):
     return [struct.unpack_from('<I', raw, i)[0] for i in range(0, len(raw), 4 + SECTOR)]
 
 
+class NoRoom(Exception):
+    """place(): no room for this file"""
+
+
 def place(files, meta, disc_end, entries, replaced, freed, sizes):
     """Disc places for the replacement files of one overlay: {usa name: (part, offset in sectors)}.
     The game addresses a PAK with 32-bit byte offsets, so a file must lie within 4 GiB of its PAK's start, and both
@@ -177,11 +182,28 @@ def place(files, meta, disc_end, entries, replaced, freed, sizes):
         need = sectors_of(sizes[name])
         extent = min((e for e in merged if fits(e, name, need)), key=lambda e: e[2], default=None)  # best fit
         if extent is None:
-            raise SystemExit(f'no room for {name} ({need} sectors)')
+            raise NoRoom(name)
         places[name] = (extent[0], extent[1])
         extent[1] += need
         extent[2] -= need
     return places
+
+
+def dub_movies(code, usa, entries, usa_names, eu, eu_entries, eu_names, store, alias):
+    """The intro SEMO01 narrated in a European language (tools/gow_movie.py): its USA widescreen movie with the
+    language's track and closing clip; the .PSS reads it too. Returns the bytes stored.
+    The European bonus movies per language (BONUS01/19/20/24 B-E) are not used: they keep the English speech (only
+    their pictures differ, by subtitles) and run at the PAL 25 pictures per second, which the USA player does not
+    finish (measured 2026-10-19)."""
+    total = 0
+    clips = [f'SEMO01{x}.PSS' for x in 'ABCDE']
+    if 'SEMO01.PSW' in usa_names and all(c in eu_names for c in ['SEMO01.PSS'] + clips):
+        movie = gow_movie.dub_intro(read_file(usa, entries, 'SEMO01.PSW'), read_file(eu, eu_entries, 'SEMO01.PSS'),
+                                    [read_file(eu, eu_entries, c) for c in clips], VOICE_NUMBER[code])
+        store('SEMO01.PSW', movie)
+        alias['SEMO01.PSS'] = 'SEMO01.PSW'
+        total += len(movie)
+    return total
 
 
 def main(usa, eu=None, jpn=None):
@@ -240,6 +262,10 @@ def main(usa, eu=None, jpn=None):
                 body = read_file(eu, eu_entries, dub)
             store(f'voice_{code}', name, body, f'voice_{code}/{name}')
             total += len(body)
+        if code in VOICE_NUMBER:
+            total += dub_movies(code, usa, entries, usa_names, eu, eu_entries, eu_names,
+                                lambda name, body: store(f'voice_{code}', name, body, f'voice_{code}/{name}'),
+                                aliases.setdefault(f'voice_{code}', {}))
         print(f'voice {code}: {len(stored[f"voice_{code}"])} files, {total >> 20} MB')
 
     for text in langs:
@@ -250,8 +276,20 @@ def main(usa, eu=None, jpn=None):
             if voice != 'en':
                 members.update(stored[f'voice_{voice}'])
                 alias = {n: t for n, t in aliases.get(f'voice_{voice}', {}).items() if t in members}
-            places = place(files, meta, sectors, entries, set(members), set(members) | set(alias),
-                           {n: size for n, (_, size) in members.items()})
+            while True:
+                try:
+                    places = place(files, meta, sectors, entries, set(members), set(members) | set(alias),
+                                   {n: size for n, (_, size) in members.items()})
+                    break
+                except NoRoom as e:
+                    # a movie that does not fit stays English (its English file keeps its place); placing again
+                    # without it, as its space was counted free
+                    name = e.args[0]
+                    if not name.endswith(('.PSS', '.PSW')):
+                        raise SystemExit(f'{text}_{voice}: no room for {name}')
+                    print(f'{text}_{voice}: no room for {name}, it stays English')
+                    del members[name]
+                    alias = {n: t for n, t in alias.items() if t != name}
             patched = bytearray(raw)
             lines = []
             end = sectors

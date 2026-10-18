@@ -6,10 +6,12 @@ Start "God of War.exe". The first window sets the resolution, fullscreen and the
 
 Languages
 ---------
-Text and voices can be English, French, German, Italian or Spanish (from the European
-release of the game, when it was available while this folder was made; otherwise English
-only). Text covers the in-game texts (hints, items, books, treasures); menus and the
-intro movie stay English. The game has no subtitles for spoken lines.
+Text and voices can be English, French, German, Italian or Spanish, and the voices also
+Japanese (from the European and Japanese releases of the game, when they were available
+while this folder was made; otherwise English only). Voices include the intro narration.
+Text covers the in-game texts (hints, items, books, treasures); the menus stay English.
+The game has no subtitles for spoken lines. Change languages in the launcher or in game
+(F1), which restarts the game.
 
 In game
 -------

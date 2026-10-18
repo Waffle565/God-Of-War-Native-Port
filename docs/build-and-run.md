@@ -88,7 +88,7 @@ player gets, laid out like a shipped PC game:
 |---|---|
 | iso_extract.py | List/extract ISO (both layers); `--layout` writes .disc_layout/.disc_meta |
 | find_functions.py | Build function map CSV (see elf-and-recompilation.md) |
-| dis.py ADDR | Print R5900 disassembly of the generated function containing ADDR (from port/output comments) |
+| eedis.py ADDR | Print R5900 disassembly of the generated function containing ADDR (from port/output comments) |
 | irxdis.py IRX [--find STR] [--at HEX N] | Disassemble an IRX (R3000, base 0) / find string references |
 | peek.py LOG | Decode heartbeat peek lines into hex + ASCII |
 | run.sh / shot.ps1 | Run + screenshot |
@@ -100,7 +100,7 @@ player gets, laid out like a shipped PC game:
 | sync_runner.sh | Sync generated code + overrides into the runner |
 | switch/ | Switch smoke-link helpers (see switch.md) |
 
-Note: `dis.py` reads comments in port/output; a few delay-slot lines are missing there. For exact bytes use capstone
+Note: `eedis.py` reads comments in port/output; a few delay-slot lines are missing there. For exact bytes use capstone
 on the ELF (file offset = vaddr − 0xFF000). Capstone mis-decodes R5900 128-bit ops (lq/sq/MMI).
 - Pitfall (2026-10-09): editing C++ through a Python heredoc in the Bash tool turned "\n" inside C string
   literals into real newlines (C2001). Use the Edit tool for lines containing escapes.

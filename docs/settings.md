@@ -23,9 +23,12 @@ the two boxes are greyed out and English is used.
     (102 VAG and 7 VPK names; the other 176 VAG are effects/grunts and stay English). SMPD_IOP's file-type table
     (VAG VPK WAD M2V PSS M2W PSW PAK TOC TXT VA1 VP1 ... VA4 VP4) picks them. Languages identified by speech
     recognition (faster-whisper, P00MI01 narration): **VA1 French, VA2 German, VA3 Italian, VA4 Spanish**.
-  - movie narration: the intro (SEMO01) and four bonus movies have per-language audio-only streams (`SEMO01A-E.PSS`,
-    `BONUS01B-E`, `BONUS19B-E`, `BONUS20A-E`, `BONUS24B-E`, 5-6 MB each) that the European executable plays next to
-    the picture. The USA executable cannot, so those movies stay English.
+  - intro narration: the European intro movie `SEMO01.PSS` (4:3, PS2 ADPCM audio) has five audio tracks, one per
+    language (payload header `ff a1 00 <track>`: 0 en, 1 fr, 2 de, 3 it, 4 es; packets in any order), 36.2 s each;
+    its last sentence ("But it had not always been this way...") is a separate PCM clip per language
+    (`SEMO01A-E.PSS`, A = en, at 36.28 s of the USA audio). The European bonus movies with letters
+    (`BONUS01/19/20/24 B-E`) keep the English speech (subtitled pictures) and run at PAL 25 pictures/s, which the USA
+    player does not finish: not used.
 - **Subtitles**: no disc has subtitles for spoken lines or movies. The message table holds only text the game always
   shows (hints, NPC lines like id 410 "I know who you are Spartan!"), so there is no subtitle option to offer;
   a real one would need new transcriptions, timing and a text renderer.
@@ -62,8 +65,10 @@ files it no longer uses, the `.PSS` of aliased movies) and the unused room, best
 Measured with movies (tools/movies.py SEMO01): a movie moved inside its own PAK plays; moved past the end of the
 original disc it does not. So streamed files (PSS PSW VAG VPK) keep their PAK and stay inside the disc; text WADs may
 go anywhere below the limit. Measured 2026-10-19: intro movie SEMO01 plays with en_en, fr_es and en_ja (Japanese
-narration confirmed by speech recognition); en_ja crashed once in 5 runs at the movie start (JALR to 0 at
-0x161c68, not reproduced since).
+narration confirmed by speech recognition). A movie read from a freshly written overlay file often crashed the game at
+the movie start (JALR to 0 at 0x161c68, a virtual call in the main loop): the file's first open was slow (likely the
+antivirus scan of a new file) and fell in the movie start. disc_source.cpp now opens every overlay file when it
+loads the overlay, at boot; with fresh files 6 of 6 movie runs played since.
 
 The runtime part is generic (ps2xIOP `disc_source.cpp`, extracted discs only): `PS2X_DISC_OVERLAY=<layout>` (absolute
 or relative to the disc folder) is read after `.disc_layout`; its `file` lines replace the entry at the same LSN when
@@ -74,10 +79,17 @@ sector shares its LSN). The first read of each overlay
 file is logged (`[disc] overlay read: ...`). The game itself is unchanged: smpd reads the TOC and the files by sector
 as before.
 
+Intro narration (`tools/gow_movie.py`, used by lang_pack.py for fr de it es): the USA widescreen intro
+`SEMO01.PSW` keeps its picture, packets, sizes and timestamps; only its PCM samples change, to the European
+language's track (ADPCM decoded) from the start plus its clip where the English clip lies in the USA audio
+(cross-correlation). Its `.PSS` reads the same file. Checked 2026-10-19 with tools/movies.py + speech recognition:
+it_it Italian, de_de German, fr_fr French narration, pictures and sound ok.
+
 Not localized: the menus and the in-game message screens (save, death, pause, upgrade texts) keep the USA art and
 English text: their text lives in the Flash chunks with the USA font (below), and the European versions of those
 chunks expect the European executable (swapping whole European WADs leaves the title menu empty after Start). The
-intro movie narration also stays English (above).
+European menu font numbers A-Z/a-z like the USA one and adds accented glyphs above; translating the menus needs
+those glyphs in the USA chunk and longer text records, i.e. rewriting the chunk's structure.
 
 ## Save wording
 The port saves to a file (`saves\GodOfWar.sav`), so the PS2 texts about a "MEMORY CARD (8MB)(for PlayStation 2)",
@@ -105,7 +117,7 @@ Text format (FLP_HUD in R_PERM.WAD, FLP_Shell in R_SHELL.WAD; `python -I tools/g
   60 fps; the log shows `fr_fr.toc`, `text_fr.bin` and `shell.bin` read from the overlay.
 - Not seen in a run yet: a dubbed line playing (none of the test walks reaches one; the dubbed files are the same
   VAG format and go through the same TOC mechanism as the text, and `voice_<code>.bin` shows up in the log when one
-  is streamed). The intro movie narration stays English (above).
+  is streamed).
 - `tools/savetest.py --elf <disc>/SCUS_973.99` runs on another disc folder (used for test discs).
 
 ## In-game settings panel
