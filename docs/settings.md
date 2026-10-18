@@ -30,20 +30,47 @@ the two boxes are greyed out and English is used.
   shows (hints, NPC lines like id 410 "I know who you are Spartan!"), so there is no subtitle option to offer;
   a real one would need new transcriptions, timing and a text renderer.
 
+## Other regional discs (measured 2026-10-19)
+- **Asia** (SCUS-97399 too): byte for byte the USA disc, nothing to take.
+- **Japan** (SLPM-67010, `disc-jpn/`): a full **Japanese dub** (speech recognition: narrator P00MI01 and NPC lines
+  Japanese, p 0.96-0.99) under the USA file names: 93 voice VAGs, the movies (PSS/PSW, Japanese audio + burned-in
+  subtitles; same MPEG layout and 640x480 video as the USA ones, longer pictures). Text in `R_PERMJ`/`R_SHELLJ`.
+- **Korea** (SCKA-30002, `disc-kor/`): Korean text (`msgsK.txt`, UTF-8), English voices (9 VAGs differ), subtitled
+  movies.
+- Japanese and Korean **text** are not offered: those discs replace the font and HUD art (`GOWJ_*`/`HUDJ*`,
+  `GOWK_*`/`HUDK*` instead of `GodOfWar_0`/`HUD*`) and draw multi-byte text with code the USA executable lacks.
+  The Japanese dub is offered as Voices "Japanese" (lang_pack.py `--ja`).
+
 ## How a language reaches the USA game: disc overlays
-`tools/lang_pack.py <usa disc> [<eu disc>]` writes `<usa disc>/lang/` (make_pc_folder.ps1 runs it on `data\`):
+`tools/lang_pack.py <usa disc> [<eu disc>] [--ja <jpn disc>]` writes `<usa disc>/lang/` (make_pc_folder.ps1 runs it
+on `data\`, with `disc\` and `disc-jpn\` when extracted):
 - `text_<code>.bin`: the USA `R_PERM.WAD` with its message table replaced. Both discs use the same message ids (USA has
   396, the European tables 393: ids 1, 8, 9 are USA-only and stay English), so each USA message takes the European
   translation of the same id. The WAD is a list of records `{u32 tag, u32 size, char name[24], data padded to 16}`
   (tag 24 = a value record without data); only the `msgs_en.txt` record changes size.
-- `voice_<code>.bin`: the dubbed files, each under the USA name it replaces.
+- `voice_<code>/<NAME>`: the dubbed files, each under the USA name it replaces. For `ja` a movie's `.PSS` also
+  reads its Japanese widescreen `.PSW` (the port is always 16:9, so only the `.PSW` is played).
 - `shell.bin`: the USA `R_SHELL.WAD` with the save wording (below).
-- `<text>_<voice>.toc` + `.layout`: GODOFWAR.TOC with the replaced names pointing at those files, placed after the
-  last disc sector (TOC entries: part 1 = PART2.PAK, sector offset relative to its LSN).
+- `<text>_<voice>.toc` + `.layout`: GODOFWAR.TOC with the replaced names at their new places (TOC entries: part
+  0/1 = PART1/PART2.PAK, sector offset relative to its LSN) and one `file` line per replacement.
+
+Where the replacements go (`place()`): the game addresses a PAK with **32-bit byte offsets**, so a file must start
+within 4 GiB of its PAK, and both PAKs nearly fill that (PART2 ends 16k sectors below the limit). Until 2026-10-19
+the overlays appended the files after the last disc sector, which left the Spanish voices (and any larger pack)
+unreachable. Now each combination puts its replacements into the space of the English files they replace (plus
+files it no longer uses, the `.PSS` of aliased movies) and the unused room, best fit, adjacent slots merged.
+Measured with movies (tools/movies.py SEMO01): a movie moved inside its own PAK plays; moved past the end of the
+original disc it does not. So streamed files (PSS PSW VAG VPK) keep their PAK and stay inside the disc; text WADs may
+go anywhere below the limit. Measured 2026-10-19: intro movie SEMO01 plays with en_en, fr_es and en_ja (Japanese
+narration confirmed by speech recognition); en_ja crashed once in 5 runs at the movie start (JALR to 0 at
+0x161c68, not reproduced since).
 
 The runtime part is generic (ps2xIOP `disc_source.cpp`, extracted discs only): `PS2X_DISC_OVERLAY=<layout>` (absolute
-or relative to the disc folder) is read after `.disc_layout`; its `file` lines replace the entry at the same LSN or
-add one, `sectors` sets the disc size, paths are relative to the overlay's folder. The first read of each overlay
+or relative to the disc folder) is read after `.disc_layout`; its `file` lines replace the entry at the same LSN when
+they cover it (the TOC) or are added, `sectors` sets the disc size, paths are relative to the overlay's folder. An
+overlay file may lie inside a disc file (a PAK): the lookup takes the innermost file holding the sector, entries at
+the same LSN keep their order (stable sort), and open files are cached by path (an overlay file at a PAK's first
+sector shares its LSN). The first read of each overlay
 file is logged (`[disc] overlay read: ...`). The game itself is unchanged: smpd reads the TOC and the files by sector
 as before.
 
@@ -71,7 +98,7 @@ Text format (FLP_HUD in R_PERM.WAD, FLP_Shell in R_SHELL.WAD; `python -I tools/g
 - the chunk is a serialized structure with pointers, so nothing moves: a new line has at most the old glyph count,
   the rest are zero-width spaces, and x is recomputed to keep it centered.
 
-## Tests (2026-10-18, ext agent/lang Release, muted)
+## Tests (2026-10-18, ext agent/lang Release, muted; overlay placement 2026-10-19 above)
 - `PS2X_DISC_OVERLAY=lang/en_en.layout`: savetest saves (129 pages) with the new overwrite/saving/complete screens
   (port/lang/st_en); load screen "Select a saved game / Save game slot 1"; zones 1 and 3 ok at 56-60 fps.
 - `fr_fr`: savetest saves; load screen shows the level name from the French table ("L'OLYMPE"); zones 2 and 4 ok at
@@ -97,7 +124,7 @@ go, so Esc/Enter (also the game's circle and Start) do not reach the game.
 | Resume, Quit game | close the panel; quit the game |
 
 Every change is written to `settings.ini` at once. The launcher tells the runner where through the environment:
-`GOW_SETTINGS` (the ini), `GOW_TEXT`/`GOW_VOICE` (this run's languages), `GOW_LANGUAGES` (codes with overlays, comma
+`GOW_SETTINGS` (the ini), `GOW_TEXT`/`GOW_VOICE` (this run's languages), `GOW_TEXTS`/`GOW_VOICES` (codes with overlays, comma
 separated). Without `GOW_SETTINGS` (play.cmd, test runs) the panel works but saves nothing. Keys are read as press
 edges of the held state once per host frame: raylib's `IsKeyPressed` missed short presses there.
 Tested 2026-10-18 (dist folder, muted): panel opens, Text English -> Français + Restart starts the game again with
