@@ -194,6 +194,17 @@ namespace ps2x::iop
                 // fileAt finds it first
                 std::stable_sort(m_files.begin(), m_files.end(), [](const Entry &a, const Entry &b)
                                  { return a.lsn < b.lsn; });
+                // Open every overlay file now, at boot, reading its first bytes: the first open of a freshly written
+                // file can take long (antivirus scan), and when that happened at a movie's first read the game
+                // crashed in its movie start (JALR to 0 at 0x161c68, 2026-10-19, docs/settings.md).
+                for (const Entry &entry : m_files)
+                    if (entry.overlay)
+                    {
+                        std::array<char, kSector> first{};
+                        std::ifstream &stream = handle(entry);
+                        stream.read(first.data(), static_cast<std::streamsize>(first.size()));
+                        stream.clear();
+                    }
 
                 std::ifstream meta(root / ".disc_meta", std::ios::binary);
                 std::array<uint8_t, 4u + kSector> record{};
