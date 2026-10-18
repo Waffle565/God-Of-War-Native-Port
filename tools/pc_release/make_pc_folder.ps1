@@ -60,14 +60,16 @@ Get-ChildItem -Recurse -File -Force $disc | Where-Object {
     else { Copy-Item -LiteralPath $_.FullName $target }
 }
 
-# languages: French, German, Italian and Spanish text and voices from the European disc (docs/settings.md); without
-# it the launcher offers English only
+# languages: French, German, Italian and Spanish text and voices from the European disc, the Japanese dub from the
+# Japanese one (docs/settings.md); without them the launcher offers English only
 $eu = Join-Path $root 'disc'
-if (Test-Path "$eu\SCES_531.33") {
-    python -I (Join-Path $root 'tools\lang_pack.py') "$Dest\data" $eu
+$jpn = Join-Path $root 'disc-jpn'
+$langArgs = @()
+if (Test-Path "$eu\SCES_531.33") { $langArgs += $eu } else { Write-Host "no European disc in ${eu}: English text" }
+if (Test-Path "$jpn\SLPM_670.10") { $langArgs += @('--ja', $jpn) } else { Write-Host "no Japanese disc in ${jpn}: no Japanese voices" }
+if ($langArgs.Count -gt 0) {
+    python -I (Join-Path $root 'tools\lang_pack.py') "$Dest\data" @langArgs
     if ($LASTEXITCODE -ne 0) { throw 'lang_pack.py failed' }
-} else {
-    Write-Host "no European disc in ${eu}: English only"
 }
 
 # saves: the player's file is never replaced; a new folder starts from the repo's card (formatted, with the saves)

@@ -14,12 +14,21 @@ USA disc stays untouched.
 Output in <usa disc>/lang/:
   text_<code>.bin       R_PERM.WAD: wording + message table in <code>
   shell.bin             R_SHELL.WAD: wording
-  voice_<code>.bin      the dubbed voice files of <code>, one after the other (not for en)
-  <text>_<voice>.toc    GODOFWAR.TOC with those files pointing at the .bin data
-  <text>_<voice>.layout the overlay: the patched TOC + the .bin files, placed past the end of the disc
+  voice_<code>/<NAME>   the dubbed files of <code> under the USA names (not for en)
+  <text>_<voice>.toc    GODOFWAR.TOC with those files at their new places
+  <text>_<voice>.layout the overlay: the patched TOC + each replacement file at its disc place. The game addresses
+                        PART1/PART2.PAK with 32-bit byte offsets, so a file must start within 4 GiB of its PAK: the
+                        replacements take the space of the English files they replace (both PAKs are nearly full;
+                        ps2xIOP disc_source.cpp lets an overlay file lie inside a PAK).
+- Japanese voices (with the Japanese disc, SLPM-67010): a full Japanese dub (identified by speech recognition) under
+  the USA file names, so every VAG/VPK/PSS/PSW whose content differs from the USA disc is the Japanese one (voices,
+  the movies with their Japanese audio and subtitles; a movie's .PSS reads its widescreen .PSW, see main()).
+  Japanese and Korean text are not offered: those
+  discs draw them with their own fonts (GOWJ_*/GOWK_*, HUDJ*/HUDK*) and text code the USA executable does not have.
 The USA executable keeps its file names (R_PERM.WAD, X.VAG); only the data behind them changes.
 
-usage: python -I tools/lang_pack.py <usa disc folder> [<eu disc folder>]   (folders from tools/iso_extract.py --layout)
+usage: python -I tools/lang_pack.py <usa disc folder> [<eu disc folder>] [--ja <japanese disc folder>]
+       (folders from tools/iso_extract.py --layout)
 """
 import os
 import re
@@ -32,6 +41,8 @@ import gow_wording  # noqa: E402
 SECTOR = 2048
 TEXT_LETTER = {'fr': 'F', 'de': 'G', 'it': 'I', 'es': 'S'}
 VOICE_NUMBER = {'fr': 1, 'de': 2, 'it': 3, 'es': 4}
+# file kinds that carry speech on the Japanese disc (voices, cutscene audio streams, movies)
+JAPANESE_DUB = ('.VAG', '.VPK', '.PSS', '.PSW')
 
 
 def read_layout(disc):
@@ -100,68 +111,175 @@ def localized_perm(usa_perm, eu_perm):
     return bytes(out)
 
 
-def main(usa, eu=None):
+# files the game streams while playing (movies, voices): they must keep their PAK and stay inside the disc (place())
+STREAMED = ('.PSS', '.PSW', '.VAG', '.VPK')
+PAK_LIMIT = (1 << 32) // SECTOR  # the game addresses a PAK with 32-bit byte offsets: sectors reachable from its start
+
+
+def sectors_of(size):
+    return (size + SECTOR - 1) // SECTOR
+
+
+def read_meta(disc):
+    """the metadata sectors of tools/iso_extract.py --layout (.disc_meta: u32 lsn + 2048 bytes each)"""
+    raw = open(os.path.join(disc, '.disc_meta'), 'rb').read()
+    return [struct.unpack_from('<I', raw, i)[0] for i in range(0, len(raw), 4 + SECTOR)]
+
+
+def place(files, meta, disc_end, entries, replaced, freed, sizes):
+    """Disc places for the replacement files of one overlay: {usa name: (part, offset in sectors)}.
+    The game addresses a PAK with 32-bit byte offsets, so a file must lie within 4 GiB of its PAK's start, and both
+    PAKs nearly fill that. Measured 2026-10-19 (tools/movies.py, SEMO01): a movie plays when moved inside its own PAK,
+    not when moved to the other PAK or past the end of the original disc; text WADs work from past the disc end in the
+    other PAK (French text, 2026-10-18). So streamed files (STREAMED) stay in the PAK of the English file and inside
+    the disc, the others may go anywhere below the limit. Replacements take the space of the English files they
+    replace (freed: those plus files the overlay no longer uses) and the unused room; adjacent freed files merge into
+    one extent. Largest first, best fit."""
+    starts = [files['PART1.PAK'][0], files['PART2.PAK'][0]]
+    used_end = [sectors_of(files['PART1.PAK'][1]), sectors_of(files['PART2.PAK'][1])]
+    for _, name, part, size, offset in entries:
+        used_end[part] = max(used_end[part], offset + sectors_of(size))
+    # the room after a PAK's last file up to the limit, around what else is on the disc there: the other files
+    # (PART1 is followed by PART2) and the metadata sectors (.disc_meta, e.g. the descriptors at the end of the disc)
+    occupied = sorted([(lsn, lsn + sectors_of(size)) for lsn, size in files.values()] + [(lsn, lsn + 1) for lsn in meta]
+                      + [(disc_end, disc_end)])  # splits the room at the disc end
+    extents = []  # (part, offset, sectors)
+    for part in (0, 1):
+        start, limit = starts[part] + used_end[part], starts[part] + PAK_LIMIT
+        for begin, end in occupied + [(limit, limit)]:
+            if end <= start:
+                continue
+            if min(begin, limit) > start:
+                extents.append((part, start - starts[part], min(begin, limit) - start))
+            start = max(start, end)
+            if start >= limit:
+                break
+    for _, name, part, size, offset in entries:
+        if name in freed:
+            extents.append((part, offset, sectors_of(size)))
+    extents.sort()
+    merged = []
+    for part, offset, length in extents:
+        if merged and merged[-1][0] == part and merged[-1][1] + merged[-1][2] == offset:
+            merged[-1][2] += length
+        else:
+            merged.append([part, offset, length])
+    part_of = {name: part for _, name, part, _, _ in entries}
+
+    def fits(extent, name, need):
+        if extent[2] < need:
+            return False
+        return not name.endswith(STREAMED) or (extent[0] == part_of[name] and
+                                               starts[extent[0]] + extent[1] + need <= disc_end)
+
+    places = {}
+    for name in sorted(replaced, key=lambda n: -sizes[n]):
+        need = sectors_of(sizes[name])
+        extent = min((e for e in merged if fits(e, name, need)), key=lambda e: e[2], default=None)  # best fit
+        if extent is None:
+            raise SystemExit(f'no room for {name} ({need} sectors)')
+        places[name] = (extent[0], extent[1])
+        extent[1] += need
+        extent[2] -= need
+    return places
+
+
+def main(usa, eu=None, jpn=None):
     files, sectors = read_layout(usa)
-    part2 = files['PART2.PAK'][0]
+    meta = read_meta(usa)
+    starts = [files['PART1.PAK'][0], files['PART2.PAK'][0]]
     toc_lsn, _ = files['GODOFWAR.TOC']
     raw, entries = read_toc(usa)
-    langs = ['en'] + (list(TEXT_LETTER) if eu else [])
+    langs = ['en'] + (list(TEXT_LETTER) if eu else [])  # text languages
+    voices = langs + (['ja'] if jpn else [])
     out = os.path.join(usa, 'lang')
     os.makedirs(out, exist_ok=True)
 
-    # blobs past the end of the disc: name -> (lsn, data, {usa file name: (offset in blob, size)})
-    blobs, next_lsn = {}, sectors
+    # every replacement file once on disk, relative to lang/: {key: {usa name: (path, size)}}
+    stored = {}
+    # names that read another replacement: {key: {usa name: usa name it reads}}
+    aliases = {}
 
-    def add(name, data, members):
-        nonlocal next_lsn
-        blobs[name] = (next_lsn, data, members)
-        next_lsn += (len(data) + SECTOR - 1) // SECTOR
+    def store(key, name, data, path):
+        os.makedirs(os.path.dirname(os.path.join(out, path)) or out, exist_ok=True)
+        with open(os.path.join(out, path), 'wb') as f:
+            f.write(data)
+        stored.setdefault(key, {})[name] = (path, len(data))
 
     usa_perm = read_file(usa, entries, 'R_PERM.WAD')
-    shell = gow_wording.apply(read_file(usa, entries, 'R_SHELL.WAD'))
-    add('shell', shell, {'R_SHELL.WAD': (0, len(shell))})
+    store('shell', 'R_SHELL.WAD', gow_wording.apply(read_file(usa, entries, 'R_SHELL.WAD')), 'shell.bin')
     if eu:
         _, eu_entries = read_toc(eu)
         eu_names = {e[1] for e in eu_entries}
+    if jpn:
+        _, jpn_entries = read_toc(jpn)
+        jpn_names = {e[1] for e in jpn_entries}
     for code in langs:
         perm = usa_perm if code == 'en' else localized_perm(usa_perm, read_file(eu, eu_entries, f'R_PERM{TEXT_LETTER[code]}.WAD'))
-        perm = gow_wording.apply(perm)
-        add(f'text_{code}', perm, {'R_PERM.WAD': (0, len(perm))})
-    for code in langs[1:]:
-        data, members = bytearray(), {}
+        store(f'text_{code}', 'R_PERM.WAD', gow_wording.apply(perm), f'text_{code}.bin')
+    usa_names = {e[1] for e in entries}
+    for code in voices[1:]:
+        total = 0
         for name in sorted({e[1] for e in entries}):
             base, ext = os.path.splitext(name)
-            dub = base + {'.VAG': f'.VA{VOICE_NUMBER[code]}', '.VPK': f'.VP{VOICE_NUMBER[code]}'}.get(ext, '?')
-            if dub in eu_names:
+            if code == 'ja':
+                if ext not in JAPANESE_DUB or name not in jpn_names:
+                    continue
+                # a movie with a widescreen version (.PSW) is only played as that one (the port is always 16:9), so
+                # its .PSS reads the Japanese widescreen movie too and its English .PSS space is free for others
+                if ext == '.PSS' and base + '.PSW' in usa_names:
+                    aliases.setdefault(f'voice_{code}', {})[name] = base + '.PSW'
+                    continue
+                body = read_file(jpn, jpn_entries, name)
+                if body == read_file(usa, entries, name):
+                    continue
+            else:
+                dub = base + {'.VAG': f'.VA{VOICE_NUMBER[code]}', '.VPK': f'.VP{VOICE_NUMBER[code]}'}.get(ext, '?')
+                if dub not in eu_names:
+                    continue
                 body = read_file(eu, eu_entries, dub)
-                members[name] = (len(data), len(body))
-                data += body + b'\0' * (-len(body) % SECTOR)
-        add(f'voice_{code}', bytes(data), members)
-        print(f'voice {code}: {len(members)} files, {len(data) >> 20} MB')
-    for name, (_, data, _) in blobs.items():
-        with open(os.path.join(out, name + '.bin'), 'wb') as f:
-            f.write(data)
+            store(f'voice_{code}', name, body, f'voice_{code}/{name}')
+            total += len(body)
+        print(f'voice {code}: {len(stored[f"voice_{code}"])} files, {total >> 20} MB')
 
     for text in langs:
-        for voice in langs:
-            used = ['shell', f'text_{text}'] + ([f'voice_{voice}'] if voice != 'en' else [])
+        for voice in voices:
+            members = dict(stored['shell'])
+            members.update(stored[f'text_{text}'])
+            alias = {}
+            if voice != 'en':
+                members.update(stored[f'voice_{voice}'])
+                alias = {n: t for n, t in aliases.get(f'voice_{voice}', {}).items() if t in members}
+            places = place(files, meta, sectors, entries, set(members), set(members) | set(alias),
+                           {n: size for n, (_, size) in members.items()})
             patched = bytearray(raw)
-            for blob in used:
-                lsn, _, members = blobs[blob]
-                for i, name, part, size, offset in entries:
+            lines = []
+            end = sectors
+            for i, name, part, size, offset in entries:
+                if name in members or name in alias:
+                    target = alias.get(name, name)
+                    path, length = members[target]
+                    new_part, new_offset = places[target]
+                    struct.pack_into('<III', patched, i + 12, new_part, length, new_offset)
                     if name in members:
-                        start, length = members[name]
-                        struct.pack_into('<III', patched, i + 12, 1, length, lsn + start // SECTOR - part2)
+                        lsn = starts[new_part] + new_offset
+                        lines.append(f'file {lsn} {length} {path}')
+                        end = max(end, lsn + sectors_of(length))
             combo = f'{text}_{voice}'
             open(os.path.join(out, combo + '.toc'), 'wb').write(patched)
-            lines = [f'# {combo}: text {text}, voices {voice} (tools/lang_pack.py)', f'sectors {next_lsn}',
-                     f'file {toc_lsn} {len(patched)} {combo}.toc']
-            lines += [f'file {blobs[b][0]} {len(blobs[b][1])} {b}.bin' for b in used]
-            open(os.path.join(out, combo + '.layout'), 'w', newline='\n').write('\n'.join(lines) + '\n')
-    print(f'{out}: {len(langs) ** 2} overlays ({", ".join(langs)}), disc end {sectors} -> {next_lsn} sectors')
+            head = [f'# {combo}: text {text}, voices {voice} (tools/lang_pack.py)', f'sectors {end}',
+                    f'file {toc_lsn} {len(patched)} {combo}.toc']
+            open(os.path.join(out, combo + '.layout'), 'w', newline='\n').write('\n'.join(head + sorted(lines)) + '\n')
+    print(f'{out}: {len(langs) * len(voices)} overlays (text {", ".join(langs)}; voices {", ".join(voices)})')
 
 
 if __name__ == '__main__':
-    if len(sys.argv) not in (2, 3):
+    args = sys.argv[1:]
+    japanese = None
+    if '--ja' in args:
+        i = args.index('--ja')
+        japanese = args[i + 1]
+        del args[i:i + 2]
+    if len(args) not in (1, 2):
         sys.exit(__doc__)
-    main(*sys.argv[1:])
+    main(*args, jpn=japanese)

@@ -25,10 +25,11 @@ namespace
 {
 constexpr int kIdResolution = 101, kIdFullscreen = 102, kIdText = 103, kIdVoice = 104, kIdPlay = IDOK, kIdQuit = IDCANCEL;
 
-// the languages of the European disc, in the order of its menus
-constexpr const wchar_t *kLanguageCodes[] = {L"en", L"fr", L"de", L"it", L"es"};
-constexpr const wchar_t *kLanguageNames[] = {L"English", L"Fran\u00e7ais", L"Deutsch", L"Italiano", L"Espa\u00f1ol"};
-constexpr int kLanguages = 5;
+// the languages of the European disc, in the order of its menus, then the Japanese dub (voices only)
+constexpr const wchar_t *kLanguageCodes[] = {L"en", L"fr", L"de", L"it", L"es", L"ja"};
+constexpr const wchar_t *kLanguageNames[] = {L"English",  L"Fran\u00e7ais", L"Deutsch",
+                                             L"Italiano", L"Espa\u00f1ol",  L"\u65e5\u672c\u8a9e (Japanese)"};
+constexpr int kLanguages = 6;
 
 struct Settings
 {
@@ -72,10 +73,26 @@ std::wstring overlayOf(int text, int voice)
     return std::wstring(L"lang\\") + kLanguageCodes[text] + L"_" + kLanguageCodes[voice] + L".layout";
 }
 
-// languages are offered only when tools/lang_pack.py made the overlays (it needs the European disc)
-bool languagesAvailable()
+// the languages offered (indices into kLanguageCodes): English, plus those tools/lang_pack.py made overlays for (text
+// needs the European disc, voices the European and/or Japanese one)
+std::vector<int> availableLanguages(bool voices)
 {
-    return exists(g_root + L"\\data\\" + overlayOf(1, 1));
+    std::vector<int> list{0};
+    for (int i = 1; i < kLanguages; ++i)
+        if (exists(g_root + L"\\data\\" + (voices ? overlayOf(0, i) : overlayOf(i, 0))))
+            list.push_back(i);
+    return list;
+}
+
+std::vector<int> g_texts, g_voices;
+
+// "en,fr,..." for the in-game panel (settings_menu.cpp)
+std::wstring codesOf(const std::vector<int> &list)
+{
+    std::wstring codes;
+    for (int i : list)
+        codes += (codes.empty() ? L"" : L",") + std::wstring(kLanguageCodes[i]);
+    return codes;
 }
 
 Settings loadSettings()
@@ -92,6 +109,11 @@ Settings loadSettings()
     s.text = languageIndex(code);
     GetPrivateProfileStringW(L"Game", L"Voice", L"en", code, 8, ini.c_str());
     s.voice = languageIndex(code);
+    // a language whose overlay this folder lacks falls back to English
+    if (std::find(g_texts.begin(), g_texts.end(), s.text) == g_texts.end())
+        s.text = 0;
+    if (std::find(g_voices.begin(), g_voices.end(), s.voice) == g_voices.end())
+        s.voice = 0;
     return s;
 }
 
@@ -105,17 +127,28 @@ void saveSettings(const Settings &s)
     WritePrivateProfileStringW(L"Game", L"Voice", kLanguageCodes[s.voice], ini.c_str());
 }
 
-HWND languageBox(HWND parent, int y, int id, int selected)
+HWND languageBox(HWND parent, int y, int id, const std::vector<int> &choices, int selected)
 {
     HWND box = CreateWindowExW(0, L"COMBOBOX", L"", WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP, 120,
                                y, 200, 200, parent, reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)),
                                GetModuleHandleW(nullptr), nullptr);
     SendMessageW(box, WM_SETFONT, reinterpret_cast<WPARAM>(GetStockObject(DEFAULT_GUI_FONT)), TRUE);
-    for (int i = 0; i < kLanguages; ++i)
-        SendMessageW(box, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(kLanguageNames[i]));
-    SendMessageW(box, CB_SETCURSEL, selected, 0);
-    EnableWindow(box, languagesAvailable());
+    int position = 0;
+    for (size_t i = 0; i < choices.size(); ++i)
+    {
+        SendMessageW(box, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(kLanguageNames[choices[i]]));
+        if (choices[i] == selected)
+            position = static_cast<int>(i);
+    }
+    SendMessageW(box, CB_SETCURSEL, position, 0);
+    EnableWindow(box, choices.size() > 1);
     return box;
+}
+
+int chosen(HWND box, const std::vector<int> &choices)
+{
+    const LRESULT index = SendMessageW(box, CB_GETCURSEL, 0, 0);
+    return index >= 0 && static_cast<size_t>(index) < choices.size() ? choices[static_cast<size_t>(index)] : 0;
 }
 
 // the primary monitor's modes (largest first), at least 1024x576, plus the saved one
@@ -163,10 +196,10 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                                56, 220, 20, kIdFullscreen);
         SendMessageW(g_fullscreen, BM_SETCHECK, g_settings.fullscreen ? BST_CHECKED : BST_UNCHECKED, 0);
         control(hwnd, L"STATIC", L"Text", 0, 20, 96, 90, 20, 0);
-        g_text = languageBox(hwnd, 92, kIdText, g_settings.text);
+        g_text = languageBox(hwnd, 92, kIdText, g_texts, g_settings.text);
         control(hwnd, L"STATIC", L"Voices", 0, 20, 132, 90, 20, 0);
-        g_voice = languageBox(hwnd, 128, kIdVoice, g_settings.voice);
-        if (!languagesAvailable())
+        g_voice = languageBox(hwnd, 128, kIdVoice, g_voices, g_settings.voice);
+        if (g_texts.size() == 1 && g_voices.size() == 1)
             control(hwnd, L"STATIC", L"Other languages need the European disc (README.txt).", 0, 20, 160, 330, 20, 0);
         control(hwnd, L"BUTTON", L"Play", BS_DEFPUSHBUTTON | WS_TABSTOP, 120, 190, 95, 30, kIdPlay);
         control(hwnd, L"BUTTON", L"Quit", WS_TABSTOP, 225, 190, 95, 30, kIdQuit);
@@ -179,8 +212,8 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
             if (index >= 0 && static_cast<size_t>(index) < g_modes.size())
                 std::tie(g_settings.width, g_settings.height) = g_modes[static_cast<size_t>(index)];
             g_settings.fullscreen = SendMessageW(g_fullscreen, BM_GETCHECK, 0, 0) == BST_CHECKED;
-            g_settings.text = std::clamp(static_cast<int>(SendMessageW(g_text, CB_GETCURSEL, 0, 0)), 0, kLanguages - 1);
-            g_settings.voice = std::clamp(static_cast<int>(SendMessageW(g_voice, CB_GETCURSEL, 0, 0)), 0, kLanguages - 1);
+            g_settings.text = chosen(g_text, g_texts);
+            g_settings.voice = chosen(g_voice, g_voices);
             g_play = true;
             DestroyWindow(hwnd);
         }
@@ -243,17 +276,13 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int)
         return 1;
     }
 
+    g_texts = availableLanguages(false);
+    g_voices = availableLanguages(true);
     g_settings = loadSettings();
     const bool direct = commandLine != nullptr && std::wcsstr(commandLine, L"--play") != nullptr;
     if (!direct && !askSettings(instance))
         return 0;
     saveSettings(g_settings);
-
-    // the codes the in-game panel offers: the folder's overlays (lang_pack.py), English always
-    std::wstring languages = L"en";
-    for (int i = 1; i < kLanguages; ++i)
-        if (exists(g_root + L"\\data\\" + overlayOf(i, i)))
-            languages += std::wstring(L",") + kLanguageCodes[i];
 
     // saves: one file in saves\, copied to .bak before every start so a broken save never costs the previous one
     const std::wstring saves = g_root + L"\\saves";
@@ -268,7 +297,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int)
         SetEnvironmentVariableW(L"GOW_AUDIO_DEVICE", L"default");
     SetEnvironmentVariableW(L"GOW_MC0", save.c_str());
     SetEnvironmentVariableW(L"GOW_SETTINGS", iniPath().c_str());
-    SetEnvironmentVariableW(L"GOW_LANGUAGES", languages.c_str());
+    SetEnvironmentVariableW(L"GOW_TEXTS", codesOf(g_texts).c_str());
+    SetEnvironmentVariableW(L"GOW_VOICES", codesOf(g_voices).c_str());
 
     constexpr DWORD kRestartExitCode = 3; // settings_menu.h: the in-game panel's "Restart"
     DWORD code = 0;
