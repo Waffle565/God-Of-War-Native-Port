@@ -190,8 +190,10 @@ namespace ps2x::iop
                         std::fprintf(stderr, "[disc] overlay %s not found; plain disc\n",
                                      reinterpret_cast<const char *>(file.u8string().c_str()));
                 }
-                std::sort(m_files.begin(), m_files.end(), [](const Entry &a, const Entry &b)
-                          { return a.lsn < b.lsn; });
+                // stable: at equal LSNs the overlay file (added later) sorts after the disc file it lies in, so
+                // fileAt finds it first
+                std::stable_sort(m_files.begin(), m_files.end(), [](const Entry &a, const Entry &b)
+                                 { return a.lsn < b.lsn; });
 
                 std::ifstream meta(root / ".disc_meta", std::ios::binary);
                 std::array<uint8_t, 4u + kSector> record{};
@@ -307,8 +309,11 @@ namespace ps2x::iop
                             entry.path.assign(absolute.begin(), absolute.end());
                             entry.overlay = true;
                         }
+                        // an overlay file replaces a disc file at the same LSN only when it covers it (the patched
+                        // GODOFWAR.TOC); a smaller one at a PAK's first sector (R_PERM.WAD at PART1's start) lies
+                        // inside the PAK and keeps it (fileAt)
                         auto same = std::find_if(m_files.begin(), m_files.end(), [&](const Entry &e)
-                                                 { return e.lsn == entry.lsn; });
+                                                 { return e.lsn == entry.lsn && entry.size >= e.size; });
                         if (same != m_files.end())
                             *same = std::move(entry);
                         else
@@ -320,20 +325,30 @@ namespace ps2x::iop
 
             const Entry *fileAt(uint32_t sector) const
             {
+                // GOW-Port: overlay files may lie inside a disc file (PART*.PAK, tools/lang_pack.py puts replacements
+                // in the space of the files they replace: the game addresses a PAK with 32-bit byte offsets, so
+                // nothing past 4 GiB from a PAK's start is reachable). The nearest entry starting at or before the
+                // sector is then such an inner file; when the sector is past its end, the enclosing file further
+                // back holds it.
                 auto it = std::upper_bound(m_files.begin(), m_files.end(), sector, [](uint32_t value, const Entry &entry)
                                            { return value < entry.lsn; });
-                if (it == m_files.begin())
-                    return nullptr;
-                --it;
-                const uint32_t sectors = (it->size + kSector - 1u) / kSector;
-                return sector < it->lsn + sectors ? &*it : nullptr;
+                while (it != m_files.begin())
+                {
+                    --it;
+                    const uint32_t sectors = (it->size + kSector - 1u) / kSector;
+                    if (sector < it->lsn + sectors)
+                        return &*it;
+                    if (!it->overlay)
+                        return nullptr; // disc files do not nest: an earlier one ends before this one starts
+                }
+                return nullptr;
             }
 
             std::ifstream &handle(const Entry &entry)
             {
-                auto it = m_handles.find(entry.lsn);
+                auto it = m_handles.find(entry.path);
                 if (it == m_handles.end())
-                    it = m_handles.emplace(entry.lsn, std::ifstream(m_root / std::filesystem::u8path(entry.path), std::ios::binary)).first;
+                    it = m_handles.emplace(entry.path, std::ifstream(m_root / std::filesystem::u8path(entry.path), std::ios::binary)).first;
                 return it->second;
             }
 
@@ -343,7 +358,7 @@ namespace ps2x::iop
             uint32_t m_layer1Start = 0u;
             std::vector<Entry> m_files;
             std::unordered_map<uint32_t, std::array<uint8_t, kSector>> m_meta;
-            std::map<uint32_t, std::ifstream> m_handles;
+            std::map<std::string, std::ifstream> m_handles; // by path: an overlay file can share its LSN with the PAK it lies in
         };
     }
 

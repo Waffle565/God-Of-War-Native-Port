@@ -6,8 +6,8 @@
 // apply through "Restart": the runner exits with kRestartExitCode and the launcher starts it again.
 // The launcher passes the state through the environment:
 //   GOW_SETTINGS   settings.ini to write ([Video] Width/Height/Fullscreen, [Game] Text/Voice); unset: nothing is saved
-//   GOW_TEXT, GOW_VOICE   the languages of this run (en fr de it es ...)
-//   GOW_LANGUAGES  the language codes the folder has overlays for, comma separated; unset: English only
+//   GOW_TEXT, GOW_VOICE   the languages of this run (en fr de it es ja)
+//   GOW_TEXTS, GOW_VOICES the text / voice codes the folder has overlays for, comma separated; unset: English only
 namespace settings_menu
 {
 constexpr int kRestartExitCode = 3;

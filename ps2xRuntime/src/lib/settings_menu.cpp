@@ -22,7 +22,7 @@ struct Language
     const char *code;
     const char *name;
 };
-// every language a pack can carry; GOW_LANGUAGES says which ones this folder has
+// every language a pack can carry; GOW_TEXTS and GOW_VOICES say which ones this folder has
 constexpr Language kLanguages[] = {{"en", "English"}, {"fr", "Fran\xC3\xA7" "ais"}, {"de", "Deutsch"}, {"it", "Italiano"},
                                    {"es", "Espa\xC3\xB1ol"}, {"ja", "Japanese"}, {"ko", "Korean"}, {"zh", "Chinese"}};
 
@@ -48,20 +48,36 @@ struct State
 {
     bool ready = false;
     std::vector<std::pair<int, int>> modes;
-    std::vector<int> languages; // indices into kLanguages offered in this folder
+    std::vector<int> texts, voices; // indices into kLanguages offered in this folder
     int mode = 0;
-    int text = 0, voice = 0;       // indices into languages: chosen
-    int runText = 0, runVoice = 0; // indices into languages: what this run uses
+    int text = 0, voice = 0;       // indices into texts / voices: chosen
+    int runText = 0, runVoice = 0; // indices into texts / voices: what this run uses
     int row = 0;
     std::string ini;
 } g;
 
-int languageIndex(const char *code)
+int languageIndex(const std::vector<int> &list, const char *code)
 {
-    for (size_t i = 0; i < g.languages.size(); ++i)
-        if (code && std::strcmp(kLanguages[g.languages[i]].code, code) == 0)
+    for (size_t i = 0; i < list.size(); ++i)
+        if (code && std::strcmp(kLanguages[list[i]].code, code) == 0)
             return static_cast<int>(i);
     return 0;
+}
+
+// "en,fr,..." from the environment: English first, then the known codes listed
+std::vector<int> languageList(const char *variable)
+{
+    std::vector<int> list{0};
+    if (const char *codes = std::getenv(variable))
+    {
+        std::stringstream stream(codes);
+        std::string code;
+        while (std::getline(stream, code, ','))
+            for (int i = 1; i < static_cast<int>(sizeof(kLanguages) / sizeof(kLanguages[0])); ++i)
+                if (code == kLanguages[i].code && std::find(list.begin(), list.end(), i) == list.end())
+                    list.push_back(i);
+    }
+    return list;
 }
 
 void setup()
@@ -69,18 +85,10 @@ void setup()
     g.ready = true;
     if (const char *ini = std::getenv("GOW_SETTINGS"))
         g.ini = ini;
-    g.languages.push_back(0);
-    if (const char *list = std::getenv("GOW_LANGUAGES"))
-    {
-        std::stringstream codes(list);
-        std::string code;
-        while (std::getline(codes, code, ','))
-            for (int i = 1; i < static_cast<int>(sizeof(kLanguages) / sizeof(kLanguages[0])); ++i)
-                if (code == kLanguages[i].code && std::find(g.languages.begin(), g.languages.end(), i) == g.languages.end())
-                    g.languages.push_back(i);
-    }
-    g.text = g.runText = languageIndex(std::getenv("GOW_TEXT"));
-    g.voice = g.runVoice = languageIndex(std::getenv("GOW_VOICE"));
+    g.texts = languageList("GOW_TEXTS");
+    g.voices = languageList("GOW_VOICES");
+    g.text = g.runText = languageIndex(g.texts, std::getenv("GOW_TEXT"));
+    g.voice = g.runVoice = languageIndex(g.voices, std::getenv("GOW_VOICE"));
 
     // 16:9 sizes up to the monitor, plus the monitor's own and the current window's
     const int monitor = GetCurrentMonitor();
@@ -211,8 +219,10 @@ bool toggleRequested()
 
 bool rowEnabled(int row)
 {
-    if (row == kText || row == kVoice)
-        return g.languages.size() > 1;
+    if (row == kText)
+        return g.texts.size() > 1;
+    if (row == kVoice)
+        return g.voices.size() > 1;
     if (row == kRestart)
         return g.text != g.runText || g.voice != g.runVoice;
     return true;
@@ -227,9 +237,9 @@ std::string rowValue(int row)
     case kFullscreen:
         return IsWindowFullscreen() ? "On" : "Off";
     case kText:
-        return kLanguages[g.languages[g.text]].name;
+        return kLanguages[g.texts[g.text]].name;
     case kVoice:
-        return kLanguages[g.languages[g.voice]].name;
+        return kLanguages[g.voices[g.voice]].name;
     default:
         return {};
     }
@@ -245,7 +255,7 @@ const char *rowLabel(int row)
 // Left/Right on a row
 void change(int row, int step)
 {
-    const int languages = static_cast<int>(g.languages.size());
+    const int texts = static_cast<int>(g.texts.size()), voices = static_cast<int>(g.voices.size());
     switch (row)
     {
     case kResolution:
@@ -257,12 +267,12 @@ void change(int row, int step)
         writeIni("Video", "Fullscreen", IsWindowFullscreen() ? "1" : "0");
         break;
     case kText:
-        g.text = (g.text + step + languages) % languages;
-        writeIni("Game", "Text", kLanguages[g.languages[g.text]].code);
+        g.text = (g.text + step + texts) % texts;
+        writeIni("Game", "Text", kLanguages[g.texts[g.text]].code);
         break;
     case kVoice:
-        g.voice = (g.voice + step + languages) % languages;
-        writeIni("Game", "Voice", kLanguages[g.languages[g.voice]].code);
+        g.voice = (g.voice + step + voices) % voices;
+        writeIni("Game", "Voice", kLanguages[g.voices[g.voice]].code);
         break;
     default:
         break;
@@ -371,7 +381,8 @@ void draw()
             DrawText(shown.c_str(), x + panelWidth - font - MeasureText(shown.c_str(), font), rowY, font, color);
         }
     }
-    const char *hint = g.languages.size() <= 1 ? "Other languages need the European disc (see README.txt)"
+    const char *hint = g.texts.size() <= 1 && g.voices.size() <= 1
+                           ? "Other languages need the European or Japanese disc (see README.txt)"
                        : rowEnabled(kRestart) ? "Languages change after a restart; unsaved progress is lost"
                        : g.ini.empty()        ? "Changes are not saved (no settings.ini)"
                                               : "Up/Down choose, Left/Right change, Esc closes";
