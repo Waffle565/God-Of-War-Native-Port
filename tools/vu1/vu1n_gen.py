@@ -1,12 +1,15 @@
 """Native VU1 block generator.
 
-usage: python -I tools/vu1/vu1n_gen.py <out dir> <micro-memory dir or .bin files...> [--heads heads.txt] [--parts N]
+usage: python -I tools/vu1/vu1n_gen.py <out dir> <micro-memory dir or .bin files...> [--heads heads.txt] [--parts N] [--locals]
 
 Reads the captured 16 KB VU1 micro-memories (GOW_VU1_CAPTURA), splits them into basic blocks (same rule as
 VU1Interpreter's nativeExtent in ps2_vu1_native.inl) and writes straight-line C++ for each distinct (pc, words) block:
 immediate semantics, no cycle model, MAC flags only where they can be observed. Output: vu1n_part<k>.cpp. The exact engine
 (ps2_vu1_core.cpp) remains the fallback for every block that is not here and the oracle for GOW_VU1N_VERIFY.
 heads.txt (optional): extra entry pcs (hex, one per line), e.g. misses logged by GOW_VU1N_DIAG.
+--locals: each block keeps the VU registers it uses in C++ locals (loaded at entry, stored back at every exit) and a block
+that branches back to its own start repeats inside its function (VU1NativeAccess::chainTo); needs a runtime with chainTo
+(ext branch agent/sw-vu1 and later). Without it the blocks read and write the VU1State directly (same output as before).
 """
 import os
 import struct
@@ -15,6 +18,12 @@ import sys
 BRANCH_OPS = {0x20, 0x21, 0x24, 0x25, 0x28, 0x29, 0x2C, 0x2D, 0x2E, 0x2F}
 REV4 = [0, 8, 4, 12, 2, 10, 6, 14, 1, 9, 5, 13, 3, 11, 7, 15]
 CODE_SIZE = 16384
+LOCALS = False   # --locals: register file in C++ locals (Regs) and self-loops; else the VU1State form (older runtimes)
+# self-loops (needs LOCALS): a block that branches back to its own start repeats inside its function, the registers
+# staying in locals (VU1NativeAccess::chainTo between iterations). Measured and dropped: going on to other successors too,
+# from one function per group of blocks (GCC spilled the vector registers across the large functions) or by tail calls
+# (chainTo costs about what runNative's dispatch does): no gain on the A57 (docs/switch.md).
+LOOPS = True
 
 
 def fnv_block(pc, words):
@@ -77,6 +86,151 @@ def heads_of(code, extra_heads):
         if (u >> 28) & 1 or (u >> 27) & 1:
             heads.add((pc + 8) & 0x3FFF)
     return heads
+
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# register file of a block: C++ locals (loaded at block entry, stored back at every exit) or the VU1State in memory.
+# The blocks are straight-line, so a local per register is exact; the compiler then keeps the values in NEON / SSE
+# registers instead of a store and a reload per instruction (the data-memory stores through n.data may alias the state,
+# so it could not do that with s.vf). Blocks that call out to the exact engine (callUpper / callLower) keep the memory form.
+
+class Regs:
+    def __init__(self, local):
+        self.local = local
+        self.need = []        # read before written: loaded at block entry (in first-use order)
+        self.defined = []     # every register the block touches
+        self.dirty = []       # written so far (stored back at an exit)
+
+    def _use(self, key):
+        if key not in self.defined:
+            self.defined.append(key)
+            self.need.append(key)
+
+    def _def(self, key):
+        if key not in self.defined:
+            self.defined.append(key)
+        if key not in self.dirty:
+            self.dirty.append(key)
+
+    def f(self, r):
+        """raw value of VF r"""
+        if not self.local:
+            return f"vu1n::ld(s, {r})"
+        self._use(('f', r))
+        return f"F{r}"
+
+    def fn(self, r, clean=frozenset()):
+        """operand view (Inf/NaN -> +-FLT_MAX) of VF r; vf0 and clean registers are their own view"""
+        if r == 0 or r in clean:
+            return self.f(r)
+        if not self.local:
+            return f"vu1n::ldn(s, {r})"
+        return f"vu1n::nrm({self.f(r)})"
+
+    def setf(self, r, m, expr):
+        if not self.local:
+            return f"vu1n::stf<{m}>(s.vf[{r}], {expr});"
+        if m == 0:
+            return ""
+        if m == 15:
+            self._def(('f', r))
+            return f"F{r} = {expr};"
+        old = self.f(r)
+        self._def(('f', r))
+        return f"{old} = _mm_blend_ps({old}, {expr}, {m});"
+
+    def vi(self, r):
+        if not self.local:
+            return f"s.vi[{r}]"
+        self._use(('i', r))
+        return f"I{r}"
+
+    def setvi(self, r, expr):
+        if not self.local:
+            return f"s.vi[{r}] = {expr};"
+        self._def(('i', r))
+        return f"I{r} = {expr};"
+
+    def acc(self):
+        if not self.local:
+            return "vu1n::ldAcc(s)"
+        self._use(('acc',))
+        return "ACC"
+
+    def setacc(self, m, expr):
+        if not self.local:
+            return f"vu1n::stf<{m}>(s.acc, {expr});"
+        if m == 15:
+            self._def(('acc',))
+            return f"ACC = {expr};"
+        old = self.acc()
+        self._def(('acc',))
+        return f"ACC = _mm_blend_ps(ACC, {expr}, {m});"
+
+    def q(self):
+        if not self.local:
+            return "s.q"
+        self._use(('q',))
+        return "QR"
+
+    def setq(self, expr):
+        if not self.local:
+            return f"s.q = {expr};"
+        self._def(('q',))
+        return f"QR = {expr};"
+
+    def ireg(self):
+        if not self.local:
+            return "s.i"
+        self._use(('I',))
+        return "IR"
+
+    def setireg(self, expr):
+        if not self.local:
+            return f"s.i = {expr};"
+        self._def(('I',))
+        return f"IR = {expr};"
+
+    @staticmethod
+    def _name(key):
+        return {'f': f"F{key[-1]}", 'i': f"I{key[-1]}", 'acc': "ACC", 'q': "QR", 'I': "IR"}[key[0]]
+
+    def decls(self):
+        out = []
+        for key in self.defined:
+            name = self._name(key)
+            load = key in self.need
+            if key[0] == 'f':
+                out.append(f"__m128 {name}" + (f" = vu1n::ld(s, {key[1]});" if load else ";"))
+            elif key[0] == 'i':
+                out.append(f"int32_t {name}" + (f" = s.vi[{key[1]}];" if load else " = 0;"))
+            elif key[0] == 'acc':
+                out.append("__m128 ACC" + (" = vu1n::ldAcc(s);" if load else ";"))
+            elif key[0] == 'q':
+                out.append("float QR" + (" = s.q;" if load else " = 0.0f;"))
+            else:
+                out.append("float IR" + (" = s.i;" if load else " = 0.0f;"))
+        return out
+
+    def writeback(self):
+        out = []
+        for key in self.dirty:
+            name = self._name(key)
+            if key[0] == 'f':
+                out.append(f"_mm_storeu_ps(s.vf[{key[1]}], {name});")
+            elif key[0] == 'i':
+                out.append(f"s.vi[{key[1]}] = {name};")
+            elif key[0] == 'acc':
+                out.append("_mm_storeu_ps(s.acc, ACC);")
+            elif key[0] == 'q':
+                out.append("s.q = QR;")
+            else:
+                out.append("s.i = IR;")
+        return out
+
+
+RG = Regs(False)
 
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -159,29 +313,44 @@ def emit_upper(u, pc, idx, mac_var, clip_var, prev_clip, clean=frozenset()):
     if kind == 'nop':
         return L
     if kind == 'clip':
-        return [f"const uint32_t {clip_var} = vu1n::clipVal(s, {fs}, {ft}, {prev_clip});"]
+        if not RG.local:
+            return [f"const uint32_t {clip_var} = vu1n::clipVal(s, {fs}, {ft}, {prev_clip});"]
+        return [f"const uint32_t {clip_var} = vu1n::clipValv({RG.fn(fs)}, {RG.fn(ft)}, {prev_clip});"]
     if dest == 0:
         return L
     if kind == 'itof':
-        return [f"vu1n::itof<{src}, {m}>(s, {fs}, {ft});"] if ft else L
+        if not ft:
+            return L
+        if not RG.local:
+            return [f"vu1n::itof<{src}, {m}>(s, {fs}, {ft});"]
+        return [RG.setf(ft, m, f"vu1n::itofv<{src}>({RG.f(fs)})")]
     if kind == 'ftoi':
-        return [f"vu1n::ftoi<{src}, {m}>(s, {fs}, {ft});"] if ft else L
+        if not ft:
+            return L
+        if not RG.local:
+            return [f"vu1n::ftoi<{src}, {m}>(s, {fs}, {ft});"]
+        return [RG.setf(ft, m, f"vu1n::ftoiv<{src}>({RG.fn(fs)})")]
     if kind == 'abs':
-        return [f"vu1n::absOp<{m}>(s, {fs}, {ft});"] if ft else L
+        if not ft:
+            return L
+        if not RG.local:
+            return [f"vu1n::absOp<{m}>(s, {fs}, {ft});"]
+        return [RG.setf(ft, m, f"vu1n::absv({RG.fn(fs)})")]
     if kind in ('opmsub', 'opmula', 'other'):
+        assert not RG.local
         return [f"VU1NativeAccess::callUpper(n, {pc}u, 0x{u:08x}u);"]
     def opnd(r):
-        return f"vu1n::ld(s, {r})" if r == 0 or r in clean else f"vu1n::ldn(s, {r})"
+        return RG.fn(r, clean)
     a = opnd(fs)
     if src == 'bc':
         b = f"vu1n::bc<{bc}>({opnd(ft)})"
     elif src == 'q':
-        b = "_mm_set1_ps(s.q)"
+        b = f"_mm_set1_ps({RG.q()})"
     elif src == 'i':
-        b = "_mm_set1_ps(s.i)"
+        b = f"_mm_set1_ps({RG.ireg()})"
     else:
         b = opnd(ft)
-    acc = "vu1n::ldAcc(s)"
+    acc = RG.acc() if kind in ('madd', 'msub') else None
     if kind == 'add':
         r = f"_mm_add_ps({a}, {b})"
     elif kind == 'sub':
@@ -196,15 +365,16 @@ def emit_upper(u, pc, idx, mac_var, clip_var, prev_clip, clean=frozenset()):
         r = f"_mm_max_ps({a}, {b})"
     else:
         r = f"_mm_min_ps({a}, {b})"
-    target = "s.acc" if toacc else f"s.vf[{fd}]"
     out = [f"__m128 r{idx} = {r};"]
     if kind in ('add', 'sub', 'mul', 'madd', 'msub') and mac_var:
         out.append(f"const uint32_t {mac_var} = vu1n::macVal<{m}>(r{idx});")
         out.append(f"const __m128 q{idx} = r{idx};  // unclamped: flags computed later if it outlives the block")
     if kind not in ('max', 'min', 'mini'):
         out.append(f"r{idx} = vu1n::clampv(r{idx});")
-    if toacc or fd:
-        out.append(f"vu1n::stf<{m}>({target}, r{idx});")
+    if toacc:
+        out.append(RG.setacc(m, f"r{idx}"))
+    elif fd:
+        out.append(RG.setf(fd, m, f"r{idx}"))
     return out
 
 
@@ -325,22 +495,27 @@ def emit_lower(l, pc, upper, bkp, mac_expr, clip_expr, clip_var):
     if l == 0 or l == 0x8000033C:
         return []
     L = []
+    V, VN, SETF, VI = RG.f, RG.fn, RG.setf, RG.vi
     def vi_set(reg, expr):
-        return [f"s.vi[{reg}] = {expr};"] if reg else []
+        return [RG.setvi(reg, expr)] if reg else []
+    def sq(addr, reg):
+        if not RG.local:
+            return f"vu1n::stq<{m}>(n, {addr}, vu1n::ld(s, {reg}));"
+        return f"vu1n::stq<{m}>(n, {addr}, {V(reg)});"
     if op == 0x00:
         if ft:
-            L.append(f"{{ uint32_t a = vu1n::qaddr(n, s.vi[{fs}] + {imm11}); vu1n::stf<{m}>(s.vf[{ft}], vu1n::ldq(n, a)); }}")
+            L.append(f"{{ uint32_t a = vu1n::qaddr(n, {VI(fs)} + {imm11}); {SETF(ft, m, 'vu1n::ldq(n, a)')} }}")
         return L
     if op == 0x01:
-        return [f"{{ uint32_t a = vu1n::qaddr(n, s.vi[{ft}] + {imm11}); vu1n::stq<{m}>(n, a, vu1n::ld(s, {fs})); }}"]
+        return [f"{{ uint32_t a = vu1n::qaddr(n, {VI(ft)} + {imm11}); {sq('a', fs)} }}"]
     if op == 0x04:
-        return vi_set(ft, f"vu1n::ldWord(n, vu1n::qaddr(n, s.vi[{fs}] + {imm11}), {dest_comp(dest)})")
+        return vi_set(ft, f"vu1n::ldWord(n, vu1n::qaddr(n, {VI(fs)} + {imm11}), {dest_comp(dest)})")
     if op == 0x05:
-        return [f"vu1n::stWords(n, vu1n::qaddr(n, s.vi[{fs}] + {imm11}), s.vi[{ft}], {dest});"]
+        return [f"vu1n::stWords(n, vu1n::qaddr(n, {VI(fs)} + {imm11}), {VI(ft)}, {dest});"]
     if op == 0x08:
-        return vi_set(ft, f"vu1n::sx16(s.vi[{fs}] + {f['imm15']})")
+        return vi_set(ft, f"vu1n::sx16({VI(fs)} + {f['imm15']})")
     if op == 0x09:
-        return vi_set(ft, f"vu1n::sx16(s.vi[{fs}] - {f['imm15']})")
+        return vi_set(ft, f"vu1n::sx16({VI(fs)} - {f['imm15']})")
     if op == 0x10:
         return vi_set(1, f"(({clip_expr} & 0xFFFFFFu) == 0x{f['imm24']:x}u) ? 1 : 0")
     if op == 0x11:
@@ -350,87 +525,97 @@ def emit_lower(l, pc, upper, bkp, mac_expr, clip_expr, clip_var):
     if op == 0x13:
         return vi_set(1, f"(({clip_expr} | 0x{f['imm24']:x}u) == 0xFFFFFFu) ? 1 : 0")
     if op == 0x18:
-        return vi_set(ft, f"(({mac_expr} & 0xFFFFu) == (uint32_t)(uint16_t)s.vi[{fs}]) ? 1 : 0")
+        return vi_set(ft, f"(({mac_expr} & 0xFFFFu) == (uint32_t)(uint16_t){VI(fs)}) ? 1 : 0")
     if op == 0x1A:
-        return vi_set(ft, f"(int32_t)({mac_expr} & (uint32_t)(uint16_t)s.vi[{fs}])")
+        return vi_set(ft, f"(int32_t)({mac_expr} & (uint32_t)(uint16_t){VI(fs)})")
     if op == 0x1B:
-        return vi_set(ft, f"(int32_t)({mac_expr} | (uint32_t)(uint16_t)s.vi[{fs}])")
+        return vi_set(ft, f"(int32_t)({mac_expr} | (uint32_t)(uint16_t){VI(fs)})")
     if op == 0x1C:
         return vi_set(ft, f"(int32_t)({clip_expr} & 0x0FFFu)")
     if op == 0x40:
         fn = l & 0x3F
         if fn == 0x30:
-            return vi_set(vid, f"vu1n::sx16(s.vi[{fs}] + s.vi[{ft}])")
+            return vi_set(vid, f"vu1n::sx16({VI(fs)} + {VI(ft)})")
         if fn == 0x31:
-            return vi_set(vid, f"vu1n::sx16(s.vi[{fs}] - s.vi[{ft}])")
+            return vi_set(vid, f"vu1n::sx16({VI(fs)} - {VI(ft)})")
         if fn == 0x32:
-            return vi_set(ft, f"vu1n::sx16(s.vi[{fs}] + {sx((l >> 6) & 0x1F, 5)})")
+            return vi_set(ft, f"vu1n::sx16({VI(fs)} + {sx((l >> 6) & 0x1F, 5)})")
         if fn == 0x34:
-            return vi_set(vid, f"s.vi[{fs}] & s.vi[{ft}]")
+            return vi_set(vid, f"{VI(fs)} & {VI(ft)}")
         if fn == 0x35:
-            return vi_set(vid, f"s.vi[{fs}] | s.vi[{ft}]")
+            return vi_set(vid, f"{VI(fs)} | {VI(ft)}")
         sp = lower_special(l)
         if sp == 0x30:
-            return [f"vu1n::stf<{m}>(s.vf[{ft}], vu1n::ld(s, {fs}));"] if ft else []
+            return [SETF(ft, m, V(fs))] if ft else []
         if sp == 0x31:
-            return [f"{{ __m128 v = vu1n::ld(s, {fs}); vu1n::stf<{m}>(s.vf[{ft}], _mm_shuffle_ps(v, v, _MM_SHUFFLE(0, 3, 2, 1))); }}"] if ft else []
+            if not ft:
+                return []
+            return [f"{{ __m128 v = {V(fs)}; {SETF(ft, m, '_mm_shuffle_ps(v, v, _MM_SHUFFLE(0, 3, 2, 1))')} }}"]
         if sp == 0x34:  # LQI
             out = []
             if ft:
-                out.append(f"{{ uint32_t a = vu1n::qaddr(n, (uint16_t)s.vi[{fs}]); vu1n::stf<{m}>(s.vf[{ft}], vu1n::ldq(n, a)); }}")
-            else:
-                pass
+                out.append(f"{{ uint32_t a = vu1n::qaddr(n, (uint16_t){VI(fs)}); {SETF(ft, m, 'vu1n::ldq(n, a)')} }}")
             if fs:
-                out.append(f"s.vi[{fs}] = vu1n::sx16(s.vi[{fs}] + 1);")
+                out.append(RG.setvi(fs, f"vu1n::sx16({VI(fs)} + 1)"))
             return out
         if sp == 0x35:  # SQI
-            out = [f"{{ uint32_t a = vu1n::qaddr(n, (uint16_t)s.vi[{ft}]); vu1n::stq<{m}>(n, a, vu1n::ld(s, {fs})); }}"]
+            out = [f"{{ uint32_t a = vu1n::qaddr(n, (uint16_t){VI(ft)}); {sq('a', fs)} }}"]
             if ft:
-                out.append(f"s.vi[{ft}] = vu1n::sx16(s.vi[{ft}] + 1);")
+                out.append(RG.setvi(ft, f"vu1n::sx16({VI(ft)} + 1)"))
             return out
         if sp == 0x36:  # LQD
             out = []
             if fs:
-                out.append(f"s.vi[{fs}] = vu1n::sx16(s.vi[{fs}] - 1);")
+                out.append(RG.setvi(fs, f"vu1n::sx16({VI(fs)} - 1)"))
             if ft:
-                out.append(f"{{ uint32_t a = vu1n::qaddr(n, (uint16_t)s.vi[{fs}]); vu1n::stf<{m}>(s.vf[{ft}], vu1n::ldq(n, a)); }}")
+                out.append(f"{{ uint32_t a = vu1n::qaddr(n, (uint16_t){VI(fs)}); {SETF(ft, m, 'vu1n::ldq(n, a)')} }}")
             return out
         if sp == 0x37:  # SQD
             out = []
             if ft:
-                out.append(f"s.vi[{ft}] = vu1n::sx16(s.vi[{ft}] - 1);")
-            out.append(f"{{ uint32_t a = vu1n::qaddr(n, (uint16_t)s.vi[{ft}]); vu1n::stq<{m}>(n, a, vu1n::ld(s, {fs})); }}")
+                out.append(RG.setvi(ft, f"vu1n::sx16({VI(ft)} - 1)"))
+            out.append(f"{{ uint32_t a = vu1n::qaddr(n, (uint16_t){VI(ft)}); {sq('a', fs)} }}")
             return out
         fsf, ftf = (l >> 21) & 3, (l >> 23) & 3
         if sp == 0x38:
-            return [f"vu1n::divOp(s, {fs}, {fsf}, {ft}, {ftf});"]
+            if not RG.local:
+                return [f"vu1n::divOp(s, {fs}, {fsf}, {ft}, {ftf});"]
+            return [RG.setq(f"vu1n::divv(vu1n::lane<{fsf}>({V(fs)}), vu1n::lane<{ftf}>({V(ft)}))")]
         if sp == 0x39:
-            return [f"vu1n::sqrtOp(s, {ft}, {ftf});"]
+            if not RG.local:
+                return [f"vu1n::sqrtOp(s, {ft}, {ftf});"]
+            return [RG.setq(f"vu1n::sqrtv(vu1n::lane<{ftf}>({V(ft)}))")]
         if sp == 0x3A:
-            return [f"vu1n::rsqrtOp(s, {fs}, {fsf}, {ft}, {ftf});"]
+            if not RG.local:
+                return [f"vu1n::rsqrtOp(s, {fs}, {fsf}, {ft}, {ftf});"]
+            return [RG.setq(f"vu1n::rsqrtv(vu1n::lane<{fsf}>({V(fs)}), vu1n::lane<{ftf}>({V(ft)}))")]
         if sp == 0x3B:
             return []
         if sp == 0x3C:
-            return vi_set(ft, f"vu1n::compBits(s, {fs}, {fsf})")
+            if not RG.local:
+                return vi_set(ft, f"vu1n::compBits(s, {fs}, {fsf})")
+            return vi_set(ft, f"vu1n::laneBits16<{fsf}>({V(fs)})")
         if sp == 0x3D:
-            return [f"vu1n::stf<{m}>(s.vf[{ft}], vu1n::fromInt(vu1n::sx16(s.vi[{fs}])));"] if ft else []
+            return [SETF(ft, m, f"vu1n::fromInt(vu1n::sx16({VI(fs)}))")] if ft else []
         if sp == 0x3E:
-            return vi_set(ft, f"vu1n::ldWord(n, vu1n::qaddr(n, (uint16_t)s.vi[{fs}]), {dest_comp(dest)})")
+            return vi_set(ft, f"vu1n::ldWord(n, vu1n::qaddr(n, (uint16_t){VI(fs)}), {dest_comp(dest)})")
         if sp == 0x3F:
-            return [f"vu1n::stWords(n, vu1n::qaddr(n, (uint16_t)s.vi[{fs}]), s.vi[{ft}], {dest});"]
+            return [f"vu1n::stWords(n, vu1n::qaddr(n, (uint16_t){VI(fs)}), {VI(ft)}, {dest});"]
         if sp == 0x64:
-            return [f"vu1n::stf<{m}>(s.vf[{ft}], _mm_set1_ps(s.p));"] if ft else []
+            return [SETF(ft, m, "_mm_set1_ps(s.p)")] if ft else []
         if sp == 0x68:
             return vi_set(ft, "(int32_t)(s.top & 0x3FFu)")
         if sp == 0x69:
             return vi_set(ft, "(int32_t)(s.itop & 0x3FFu)")
         if sp == 0x6C:
-            return [f"VU1NativeAccess::xgkick(n, (uint32_t)(uint16_t)s.vi[{fs}]);"]
+            return [f"VU1NativeAccess::xgkick(n, (uint32_t)(uint16_t){VI(fs)});"]
+    assert not RG.local
     return [f"VU1NativeAccess::callLower(n, {pc}u, 0x{l:08x}u, 0x{upper:08x}u);"]
 
 
-def gen_block(pc0, pairs, tail_out=None):
+def gen_block(pc0, pairs, tail_out=None, selfname=None):
     """tail_out: list that receives the block's VU1TailDesc (mac pairs, mac masks, clip pairs) when it has one.
+    selfname: the block's own function name when it may repeat itself in place (self-loop, see the exit below).
     C++ body for a block, or None if the block uses something the native backend does not support."""
     n = len(pairs)
     infos = [lower_info(l) if not (u >> 31) else lower_info(0) for (l, u) in pairs]
@@ -448,6 +633,11 @@ def gen_block(pc0, pairs, tail_out=None):
     last_is_branch_block = n >= 2 and is_branch(*pairs[n - 2])
     if n >= 1 and is_branch(*pairs[n - 1]) and not last_is_branch_block:
         return None                     # branch without delay slot
+    # register file in locals unless a pair calls out to the exact engine (it reads and writes the VU1State)
+    global RG
+    calls_out = any((not (u >> 31) and infos[i]['calls_out']) or classify(u)[0] in ('opmsub', 'opmula', 'other')
+                    for i, (l, u) in enumerate(pairs))
+    RG = Regs(LOCALS and not calls_out)
     # Flag model of the exact engine: an FMAC / CLIP / FCSET issued at pair j becomes visible to flag readers 4 cycles later
     # (kFmacLatency, on the exact engine's stall-model cycles n.cyc, computed at block entry from the pipeline state the
     # previous block left). Flags older than the block come from the exact engine's
@@ -528,6 +718,7 @@ def gen_block(pc0, pairs, tail_out=None):
         return out
 
     lines = []
+    branch_targets = []         # constant branch target of the block's branch (self-loops), none for JR / JALR
     clean_regs = set()          # vf registers known to hold normalised (finite) values: FMAC results of this block
     for i, (l, u) in enumerate(pairs):
         pc = pc0 + 8 * i
@@ -551,7 +742,7 @@ def gen_block(pc0, pairs, tail_out=None):
                 nf = lower_fields(nl)
                 regs = lower_info(nl)['vi_reads']
                 if li['delay'] in regs:
-                    backup.append(f"const int32_t vib{i + 1} = s.vi[{li['delay']}];")
+                    backup.append(f"const int32_t vib{i + 1} = {RG.vi(li['delay'])};")
         lines.append(f"// pair {i} pc=0x{pc:04x} lower={l:08x} upper={u:08x}")
         lines.extend(backup)
         if is_branch(l, u):
@@ -562,23 +753,24 @@ def gen_block(pc0, pairs, tail_out=None):
             def rd(reg):
                 if i > 0 and infos[i - 1]['delay'] == reg and reg != 0:
                     return f"vib{i}"
-                return f"s.vi[{reg}]"
+                return RG.vi(reg)
             tgt = (pc + 8 + imm * 8) & 0x3FFF
+            branch_targets = [] if op in (0x24, 0x25) else [tgt]
             if op == 0x20:
                 lines.append("bool taken = true;")
                 lines.append(f"uint32_t target = {tgt}u;")
             elif op == 0x21:
                 if ft:
-                    lines.append(f"s.vi[{ft}] = {(pc + 16) // 8};")
+                    lines.append(RG.setvi(ft, f"{(pc + 16) // 8}"))
                 lines.append("bool taken = true;")
                 lines.append(f"uint32_t target = {tgt}u;")
             elif op == 0x24:
                 lines.append("bool taken = true;")
-                lines.append(f"uint32_t target = (((uint32_t)(uint16_t)s.vi[{fs}]) * 8u) & 0x3FFFu;")
+                lines.append(f"uint32_t target = (((uint32_t)(uint16_t){RG.vi(fs)}) * 8u) & 0x3FFFu;")
             elif op == 0x25:
-                lines.append(f"uint32_t target = (((uint32_t)(uint16_t)s.vi[{fs}]) * 8u) & 0x3FFFu;")
+                lines.append(f"uint32_t target = (((uint32_t)(uint16_t){RG.vi(fs)}) * 8u) & 0x3FFFu;")
                 if ft:
-                    lines.append(f"s.vi[{ft}] = {(pc + 16) // 8};")
+                    lines.append(RG.setvi(ft, f"{(pc + 16) // 8}"))
                 lines.append("bool taken = true;")
             else:
                 cmp = {0x28: "==", 0x29: "!="}.get(op)
@@ -593,13 +785,18 @@ def gen_block(pc0, pairs, tail_out=None):
             lines.extend(emit_upper(u, pc, i, f"m{i}" if i in mac_w else None, f"c{i}", clip_prev(i), clean_i))
             continue
         # ordinary pair
-        up = emit_upper(u, pc, i, f"m{i}" if i in mac_w else None, f"c{i}", clip_prev(i), clean_i)
-        lo = [] if iBit else emit_lower(l, pc, u, None, mac_src(i), clip_src(i), f"c{i}")
+        # generated in execution order: the register file (Regs) loads a register at block entry when its first use reads it
+        if lower_first:
+            lo = emit_lower(l, pc, u, None, mac_src(i), clip_src(i), f"c{i}")
+            up = emit_upper(u, pc, i, f"m{i}" if i in mac_w else None, f"c{i}", clip_prev(i), clean_i)
+        else:
+            up = emit_upper(u, pc, i, f"m{i}" if i in mac_w else None, f"c{i}", clip_prev(i), clean_i)
+            lo = [] if iBit else emit_lower(l, pc, u, None, mac_src(i), clip_src(i), f"c{i}")
         if iBit:
             lines.extend(up)
             lines.append(f"s.i = vu1n::qnorm(*(const float *)&(const uint32_t &)(0x{l:08x}u)); // I register")
             # (the line above is replaced below to avoid UB)
-            lines[-1] = f"{{ const uint32_t bits = 0x{l:08x}u; float imm; std::memcpy(&imm, &bits, 4); s.i = vu1n::qnorm(imm); }}"
+            lines[-1] = f"{{ const uint32_t bits = 0x{l:08x}u; float imm; std::memcpy(&imm, &bits, 4); {RG.setireg('vu1n::qnorm(imm)')} }}"
         elif lower_first:
             lines.extend(lo)
             lines.extend(up)
@@ -612,19 +809,28 @@ def gen_block(pc0, pairs, tail_out=None):
             clean_regs |= {x for x in uw}
         # D/T halt bits
         if (u >> 28) & 1:
-            lines.append("if (s.dBitEnabled) { " + " ".join(flush(i)) + f" s.stoppedByD = true; return kVu1nEnded | {(pc + 8) & 0x3FFF}u; }}")
+            lines.append("if (s.dBitEnabled) { " + " ".join(flush(i) + RG.writeback()) + f" s.stoppedByD = true; return kVu1nEnded | {(pc + 8) & 0x3FFF}u; }}")
         if (u >> 27) & 1:
-            lines.append("if (s.tBitEnabled) { " + " ".join(flush(i)) + f" s.stoppedByT = true; return kVu1nEnded | {(pc + 8) & 0x3FFF}u; }}")
+            lines.append("if (s.tBitEnabled) { " + " ".join(flush(i) + RG.writeback()) + f" s.stoppedByT = true; return kVu1nEnded | {(pc + 8) & 0x3FFF}u; }}")
     end_pc = (pc0 + 8 * n) & 0x3FFF
     ebit = any((u >> 30) & 1 for (l, u) in pairs)
     lines.extend(flush_final(n - 1))
-    if last_is_branch_block:
-        lines.append(f"return taken ? target : {end_pc}u;")
-    elif ebit:
-        lines.append(f"return kVu1nEnded | {end_pc}u;")
-    else:
-        lines.append(f"return {end_pc}u;")
-    return lines
+    if ebit:
+        return RG.decls() + lines + RG.writeback() + [f"return kVu1nEnded | {end_pc}u;"]
+    # exit: a branch back to the block's own start repeats it with the registers still in locals, when chainTo agrees
+    nx = f"taken ? target : {end_pc}u" if last_is_branch_block else f"{end_pc}u"
+    self_loop = bool(selfname) and RG.local and (pc0 in branch_targets or (not last_is_branch_block and end_pc == pc0))
+    out = RG.decls()
+    if not self_loop:
+        return out + lines + RG.writeback() + [f"return {nx};"]
+    q_dirty = ('q',) in RG.dirty
+    exit_lines = [f"const uint32_t nx = {nx};", "uint32_t lg = 0u;", f"if (nx == {pc0}u)", "{"]
+    exit_lines += ["    s.q = QR; // FDIV timing (scalarStart) reads it"] if q_dirty else []
+    exit_lines += [f"    lg = VU1NativeAccess::chainTo(n, {pc0}u, {selfname});"]
+    exit_lines += ["    QR = s.q;"] if q_dirty else []
+    exit_lines += ["    if (lg == 1u)", "        continue;", "}"]
+    exit_lines += RG.writeback() + ["return nx | (lg ? kVu1nFinished : 0u);"]
+    return out + ["for (;;)", "{"] + ["    " + ln for ln in lines + exit_lines] + ["}"]
 
 
 def main():
@@ -638,6 +844,10 @@ def main():
         if args[i] == '--heads':
             heads_file = args[i + 1]
             i += 2
+        elif args[i] == '--locals':
+            global LOCALS
+            LOCALS = True
+            i += 1
         elif args[i] == '--parts':
             parts = int(args[i + 1])
             i += 2
@@ -670,8 +880,9 @@ def main():
             key = fnv_block(pc, words)
             if key in blocks:
                 continue
+            name = f"b{pc:04x}_{key & 0xFFFFFFFF:08x}"
             tail = []
-            body = gen_block(pc, pairs, tail)
+            body = gen_block(pc, pairs, tail, name if LOOPS and LOCALS else None)
             blocks[key] = (pc, len(pairs), body, tail[0] if tail else None)
             if body is None:
                 unsupported += 1

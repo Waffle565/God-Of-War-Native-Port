@@ -26,7 +26,8 @@ on the block's issue cycles `n.cyc`. Flags older than the block come from the fl
 
 **Flag rings** (`VU1FlagRing`, MAC and clip):
 - They hold the last 4 writers. The VU issues at most one FMAC / CLIP per cycle, so 4 writers cover the latency
-  window.
+  window. Eight slots: the newest four at next-1 .. next-4, the writer pushed out last at next-5, so a push copies
+  nothing.
 - A native block pushes only its newest writer. MAC writers are pushed with their unclamped FMAC result and DEST
   mask, and the flags are computed only when something reads them (`vu1n::macValRt`).
 - The older writers that can still be the visible one after the exit are those whose successor lies in the block's

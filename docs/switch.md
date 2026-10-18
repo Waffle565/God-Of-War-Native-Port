@@ -375,6 +375,35 @@ Each area went to one fork (agent/sw-vu, agent/sw-ee, agent/sw-gs).
   was gated on its own (port/swvu2). v8 in Citron (title/menu): EE busy 2870 -> 1120 ms per 5 s (the wait loops
   no longer spin on ARM either), ~31 guest fps (Citron stays GL-thread bound, gsq_wait ~7.5 s per 5 s), no errors.
 
+### VU1 on the A57 (ext agent/sw-vu1, 2026-10-19)
+Console v15: VU1 (`vu_ms`) ~3.9 s per 5 s in the menu (~31 ms per guest frame), ~47 ms per frame in gameplay.
+- Measuring without the console: `tools/vu1_harness/` (WSL) builds the runtime's VU1 sources plus a generated
+  vu1n set as a standalone aarch64 Linux program (Switch compiler flags) that replays `GOW_VU1N_RECORD` files under
+  qemu; `icount.sh` gives the dynamic instruction count per function (128-bit NEON instructions counted twice, the
+  A57's FP pipes are 64 bits wide), `GOW_VU1N_REPLAY_DUMP` + `dumpdiff.py` compare two builds record by record (an
+  x86-64 build of the same harness is the reference). Recordings hold game data: keep them out of git.
+- Bug found: GCC's default `-ffp-contract=fast` fused multiply + add into FMLA (one rounding): 220 of 1832 recorded
+  gameplay runs differed from the PC build (1-ulp values, larger through P/Q). The Switch build now passes
+  `-ffp-contract=off` (ps2xRuntime/CMakeLists.txt); all 1832 then match. It cost no speed (fusion was rare).
+- Changes, all bit-exact (1832 records, 0 differences on x86 and ARM):
+  - `vu1n_gen.py --locals` (passed by the branch's CMake): each block keeps the VU registers it uses in C++ locals,
+    loaded at entry, stored back at every exit (the data-memory stores through `n.data` may alias the VU1State, so the
+    compiler could not keep them in registers before).
+  - Self-loops: a block that branches back to its own start repeats inside its function with the registers still in
+    locals; `VU1NativeAccess::chainTo` does what runNative does between two blocks (timing/history entry, FDIV
+    retire, stop/budget check, next start cycle and tail record); runNative finishes the block the function returns
+    from (`ctx.slot`, `kVu1nFinished`).
+  - Flag rings with 8 slots: a push no longer copies the evicted writer (it stays at slot next-5).
+  - ARM: `madd`'s overflow test is one UMAX + one compare, and its wide fallback runs inline in double NEON lanes (no
+    call, so no vector register spills); `nrm` is BIC + UMIN + BSL (3 ops instead of 4, same bits); runNative counts
+    pairs only with GOW_VU1N_DIAG.
+- Result (A57 cost per warm replay pass of 100 gameplay runs, the replay's own hashing excluded): 12.3 M -> 9.1 M
+  (-26 %); generated blocks 8.5 M -> 6.3 M, dispatch 2.8 M -> 2.3 M. Expected on the console: vu_ms about a quarter lower.
+- Tried and dropped (no gain on the A57): going straight on to other successor blocks, as one function per group of
+  blocks with gotos (GCC spilled the vector registers across the large functions) or by guaranteed tail calls
+  (`chainTo` costs about what runNative's dispatch does). Left: runNative's ~100 instructions per block, the flag-ring
+  pushes and tail stores at block exits.
+
 ### Console logs (`log switch/`, from the user)
 - `python -I tools/switch_log_summary.py "log switch/<file>"` prints the speed windows, the GL-thread time per op,
   the GPU time per draw path and the bisect phases against their baselines.
