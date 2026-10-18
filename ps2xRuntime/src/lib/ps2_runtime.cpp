@@ -1,4 +1,5 @@
 #include "ps2_runtime.h"
+#include "runtime/settings_menu.h"
 #include "runtime/gs/gs_stage.h"
 #include "vu_pcsx2/pcsx2_vu1_bridge.h"
 static bool gowUsePcsx2Vu1(); // GOW_VU1_PCSX2=1, defined before PS2Runtime::initialize
@@ -2703,10 +2704,16 @@ void PS2Runtime::run()
             }
         });
         // GOW-Port: el helper real termina el batch antes del próximo Acquire.
+#if !defined(PLATFORM_VITA)
+        const bool settingsStop = settings_menu::update(); // GOW-Port: F1 / Select+Start panel (docs/settings.md)
+#endif
         m_hostPresentation->renderFrame(m_gs, m_eeScheduler->currentVSyncTick(), [this]
         {
             if (m_debugUiInitialized && m_debugUiDrawCallback)
                 m_debugUiDrawCallback(*this, m_debugUiUserData);
+#if !defined(PLATFORM_VITA)
+            settings_menu::draw();
+#endif
         });
         if (ps2_perf::countFrames()) ps2_perf::hostFrames.fetch_add(1, std::memory_order_relaxed);
         ps2_perf::report();
@@ -2715,6 +2722,14 @@ void PS2Runtime::run()
             ToggleFullscreen(); // GOW-Port: windowed <-> fullscreen, like a PC game
 #endif
 
+#if !defined(PLATFORM_VITA)
+        if (settingsStop)
+        {
+            RUNTIME_LOG("[run] settings panel: restart/quit, breaking out of loop");
+            requestStop();
+            break;
+        }
+#endif
         if (WindowShouldClose())
         {
             RUNTIME_LOG("[run] window close requested, breaking out of loop");

@@ -1,4 +1,5 @@
 #include "ps2_runtime.h"
+#include "runtime/settings_menu.h"
 
 void ps2InstallEeDiff(PS2Runtime &runtime); // src/lib/ee_ref/ee_diff.cpp
 void ps2InstallEeWatch(PS2Runtime &runtime);
@@ -241,7 +242,7 @@ int main(int argc, char *argv[])
 #endif
         std::cout.flush();
         std::cerr.flush();
-        std::_Exit(0);
+        std::_Exit(settings_menu::exitCode()); // GOW-Port: 3 = restart (the launcher starts the game again)
     }
     catch (const std::exception &e)
     {

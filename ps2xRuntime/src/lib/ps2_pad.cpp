@@ -1,5 +1,6 @@
 #include "runtime/ps2_pad.h"
 #include "ps2_host_backend.h"
+#include "runtime/settings_menu.h"
 #include <cstdio>
 #include <cstring>
 
@@ -41,6 +42,8 @@ bool PSPadBackend::readState(int /*port*/, int /*slot*/, uint8_t *data, size_t s
     data[2] = 0xFF;
     data[3] = 0xFF;
     data[4] = data[5] = data[6] = data[7] = kPadStickCenter;
+    if (settings_menu::isOpen())
+        return true; // GOW-Port: the settings panel has the input; the game sees a released pad
 
     uint16_t btns = 0xFFFFu;
     // GOW-Port: GLFW can list racing gear (handbrake, pedals) as gamepads before the real pad. The pad whose
