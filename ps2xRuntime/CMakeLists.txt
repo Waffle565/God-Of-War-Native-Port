@@ -59,6 +59,10 @@ if(NINTENDO_SWITCH)
     # sse2neon: x86 results for min/max with NaN inputs (PS2 code uses NaN bit patterns such as 0x7FFFFFFF as large
     # values), division, square root and dot products, instead of NEON's faster approximations
     add_compile_definitions(SSE2NEON_PRECISE_MINMAX=1 SSE2NEON_PRECISE_DIV=1 SSE2NEON_PRECISE_SQRT=1 SSE2NEON_PRECISE_DP=1)
+    # GCC's default -ffp-contract=fast fuses a multiply and an add (also sse2neon's _mm_mul_ps + _mm_add_ps) into one
+    # FMLA with a single rounding: 12 % of recorded VU1 runs then differed from the PC build and the exact engine
+    # (1-ulp results, larger ones through P/Q), as MSVC's /fp:precise never contracts
+    add_compile_options(-ffp-contract=off)
 endif()
 
 set(PS2X_SWITCH_APP_NAME "God of War" CACHE STRING "Title shown in the Switch homebrew menu")
@@ -654,7 +658,7 @@ elseif(PS2X_VU1_MICROCODE_DIR AND PS2X_VU1_GENERATOR_SOURCE AND NOT PS2X_IS_ANDR
                 set(PS2X_VU1N_HEADS_DEP "${PS2X_VU1N_HEADS}")
             endif()
             add_custom_command(OUTPUT ${PS2X_VU1N_PARTS}
-                COMMAND "${Python3_EXECUTABLE}" -I "${PS2X_VU1N_GEN}" "${PS2X_VU1N_DIR}" "${PS2X_VU1_MICROCODE_DIR}" --heads "${PS2X_VU1N_HEADS}" --parts 6
+                COMMAND "${Python3_EXECUTABLE}" -I "${PS2X_VU1N_GEN}" "${PS2X_VU1N_DIR}" "${PS2X_VU1_MICROCODE_DIR}" --heads "${PS2X_VU1N_HEADS}" --parts 6 --locals
                 DEPENDS "${PS2X_VU1N_GEN}" ${PS2X_VU1_IMAGES} ${PS2X_VU1N_HEADS_DEP}
                 VERBATIM)
             target_sources(ps2EntryRunner PRIVATE ${PS2X_VU1N_PARTS})

@@ -46,36 +46,31 @@ struct VU1FlagTail
     uint32_t c[3];
 };
 
-// MAC / clip flags while native blocks run: the last four writers (issue cycle, value) in slots 0-3 and, in slot 4, the
-// writer pushed out last (visible before them). The VU issues at most one FMAC / CLIP per cycle, so four writers cover
-// the whole latency window (kFmacLatency). A MAC writer pushed by a native block keeps its FMAC result (raw, DEST mask in
-// SSE order): the flags are computed only when something reads them; mask 0 = value holds the flags. A native block
-// pushes only its newest writer, with its tail record: the older writers there are visible before it.
+// MAC / clip flags while native blocks run: the last four writers (issue cycle, value) in slots next-1 .. next-4 (newest
+// first) and, in slot next-5, the writer pushed out last (visible before them; its issue cycle is not looked at). The VU
+// issues at most one FMAC / CLIP per cycle, so four writers cover the whole latency window (kFmacLatency). Eight slots: a
+// push overwrites the slot two pushes behind the one it pushes out, so nothing is copied. A MAC writer pushed by a native
+// block keeps its FMAC result (raw, DEST mask in SSE order): the flags are computed only when something reads them; mask
+// 0 = value holds the flags. A native block pushes only its newest writer, with its tail record: the older writers there
+// are visible before it.
 struct VU1FlagRing
 {
-    __m128 raw[5] = {};
-    uint64_t issue[4] = {};
-    uint32_t value[5] = {};
-    uint32_t mask[5] = {};
-    const VU1FlagTail *tail[5] = {};
-    uint32_t next = 0; // slot of the next push (the oldest writer)
+    static constexpr uint32_t kSlots = 8u, kWrap = kSlots - 1u;
+    __m128 raw[kSlots] = {};
+    uint64_t issue[kSlots] = {};
+    uint32_t value[kSlots] = {};
+    uint32_t mask[kSlots] = {};
+    const VU1FlagTail *tail[kSlots] = {};
+    uint32_t next = 0; // slot of the next push
     bool clip = false;
     void reset(uint32_t value0)
     {
-        for (uint32_t k = 0; k < 5u; ++k)
-            value[k] = value0, mask[k] = 0u, tail[k] = nullptr;
-        for (uint32_t k = 0; k < 4u; ++k)
-            issue[k] = 0u;
+        for (uint32_t k = 0; k < kSlots; ++k)
+            value[k] = value0, mask[k] = 0u, tail[k] = nullptr, issue[k] = 0u;
         next = 0u;
     }
     uint32_t valueOf(uint32_t k) const { return mask[k] ? vu1n::macValRt(raw[k], mask[k]) : value[k]; }
-    void evict()
-    {
-        raw[4] = raw[next];
-        value[4] = value[next];
-        mask[4] = mask[next];
-        tail[4] = tail[next];
-    }
+    static uint32_t back(uint32_t next, uint32_t k) { return (next + kSlots - k) & kWrap; } // k-th newest (1 = newest)
 };
 
 struct VU1NativeCtx
@@ -89,12 +84,16 @@ struct VU1NativeCtx
     uint64_t start = 0;           // exact-engine cycle at which the running block's pair 0 issues
     VU1FlagRing *macRing = nullptr, *clipRing = nullptr;
     VU1FlagTail *tail = nullptr; // the running block's tail record (blocks with a VU1TailDesc)
+    const void *slot = nullptr;  // the running block's VU1Interpreter::NativeState::Slot (chainTo)
+    uint32_t cycId = 0;          // its timing id (finishBlockTiming)
+    uint64_t budgetEnd = 0;      // the run's cycle budget (StepContext::budgetEnd)
 };
 
 // Return value of a native block: next pc in the low 16 bits; kEnded when the program finished; kBail when the exact
 // engine must continue at the returned pc (D/T halt enabled, ...).
 constexpr uint32_t kVu1nEnded = 0x80000000u;
 constexpr uint32_t kVu1nBail = 0x40000000u;
+constexpr uint32_t kVu1nFinished = 0x20000000u; // a chained block already finished its timing (chainTo)
 using VU1NativeFn = uint32_t (*)(VU1NativeCtx &);
 
 // Registered by the generated tables: key = FNV-1a over (pc, block words), see vu1n::blockKey. pairs: block length in the
@@ -216,6 +215,7 @@ struct VU1NativeAccess
     static void syncInflight(VU1Interpreter &vu);
     static void finishBlockTiming(VU1Interpreter &vu, const VU1Interpreter::NativeState::Slot &sl, const uint8_t *cyc, uint32_t cycId,
                                   uint64_t start);
+    static uint32_t chainTo(VU1NativeCtx &n, uint32_t pc, VU1NativeFn expected);
     static void callLower(VU1NativeCtx &n, uint32_t pc, uint32_t lower, uint32_t upper);
     static void callUpper(VU1NativeCtx &n, uint32_t pc, uint32_t upper);
     static void xgkick(VU1NativeCtx &n, uint32_t qwordAddress);
@@ -238,7 +238,6 @@ struct VU1NativeAccess
 #define VU1N_INLINE inline __attribute__((always_inline))
 #define VU1N_NOINLINE __attribute__((noinline))
 #endif
-
 // --- flags across native blocks (inline: the generated blocks call these at every exit / entry-flag read) -------------
 // Flags keep their latency across native blocks, and blocks that read older flags get their exact issue cycles from the
 // pipeline state at entry (character shadows; docs/vu1-native-flags.md).
@@ -265,24 +264,24 @@ VU1N_INLINE uint32_t VU1NativeAccess::ringAt(const VU1Interpreter::NativeState::
 {
     for (uint32_t k = 1; k <= 4u; ++k)
     {
-        const uint32_t i = (r.next + 4u - k) & 3u; // newest first
+        const uint32_t i = VU1FlagRing::back(r.next, k); // newest first
         if (r.issue[i] + VU1Interpreter::kFmacLatency <= at)
             return r.valueOf(i);
         uint32_t v;
         if (r.tail[i] && tailVisible(r, i, at, v))
             return v;
     }
-    return r.valueOf(4u);
+    return r.valueOf(VU1FlagRing::back(r.next, 5u));
 }
 
 VU1N_INLINE void VU1NativeAccess::ringPush(VU1Interpreter::NativeState::FlagRing &r, uint64_t issue, uint32_t value)
 {
-    r.evict(); // the oldest leaves: newer writers hide it from every later reader once visible
+    // the oldest of the four leaves (it becomes slot next-5): newer writers hide it from every later reader once visible
     r.issue[r.next] = issue;
     r.value[r.next] = value;
     r.mask[r.next] = 0u;
     r.tail[r.next] = nullptr;
-    r.next = (r.next + 1u) & 3u;
+    r.next = (r.next + 1u) & VU1FlagRing::kWrap;
 }
 
 VU1N_INLINE uint32_t VU1NativeAccess::macAt(VU1NativeCtx &n, uint32_t rel) { return ringAt(*n.macRing, n.start + rel); }
@@ -291,28 +290,166 @@ VU1N_INLINE uint32_t VU1NativeAccess::clipChain(VU1NativeCtx &n) { return n.vu->
 VU1N_INLINE void VU1NativeAccess::pushMacRaw(VU1NativeCtx &n, uint32_t rel, __m128 raw, uint32_t mask, const VU1FlagTail *tail)
 {
     VU1FlagRing &r = *n.macRing;
-    r.evict();
     r.issue[r.next] = n.start + rel;
     r.raw[r.next] = raw;
     r.mask[r.next] = mask;
     r.tail[r.next] = tail;
-    r.next = (r.next + 1u) & 3u;
+    r.next = (r.next + 1u) & VU1FlagRing::kWrap;
 }
 VU1N_INLINE void VU1NativeAccess::pushClipTail(VU1NativeCtx &n, uint32_t rel, uint32_t clip, const VU1FlagTail *tail)
 {
     n.vu->m_workingClip = clip;
     VU1FlagRing &r = *n.clipRing;
-    r.evict();
     r.issue[r.next] = n.start + rel;
     r.value[r.next] = clip;
     r.mask[r.next] = 0u;
     r.tail[r.next] = tail;
-    r.next = (r.next + 1u) & 3u;
+    r.next = (r.next + 1u) & VU1FlagRing::kWrap;
 }
 VU1N_INLINE void VU1NativeAccess::pushClip(VU1NativeCtx &n, uint32_t rel, uint32_t clip)
 {
     n.vu->m_workingClip = clip;
     ringPush(*n.clipRing, n.start + rel, clip);
+}
+
+// --- pipeline timing between native blocks (inline: runNative and the self-loops of the generated blocks) ----------
+VU1N_INLINE void VU1NativeAccess::scalarStart(VU1Interpreter &vu, uint64_t issue, uint32_t latency, bool fdiv)
+{
+    if (fdiv)
+    {
+        vu.m_fdiv.valid = true;
+        vu.m_fdiv.readyCycle = issue + latency;
+        vu.m_fdiv.value = vu.m_state.q;
+        vu.m_fdiv.statusDi = vu.m_state.status & 0x30u;
+        vu.m_nextCommitCycle = std::min(vu.m_nextCommitCycle, vu.m_fdiv.readyCycle);
+        return;
+    }
+    // EFU instructions run through callLower, which queued their result at the block's start cycle: move the newest
+    // entry to the pair's real issue cycle
+    VU1Interpreter::ScalarPipelineEntry *newest = nullptr;
+    for (VU1Interpreter::ScalarPipelineEntry &e : vu.m_efu)
+        if (e.valid && (!newest || e.readyCycle >= newest->readyCycle))
+            newest = &e;
+    if (newest)
+    {
+        newest->readyCycle = issue + latency;
+        vu.m_nextCommitCycle = std::min(vu.m_nextCommitCycle, newest->readyCycle);
+    }
+    vu.m_efuResourceReady = issue + (latency > 0u ? latency - 1u : 0u);
+}
+
+// commitReadyPipelines once m_cycle reached m_nextCommitCycle after a native block. The blocks write their values
+// directly and queue only FDIV/EFU entries (kept for timing, scalarStart). While no other queue holds anything (the
+// usual case; otherwise commitReadyPipelines runs), only those entries can be due: retired here with the same effects
+// and the same next commit cycle as commitReadyPipelines, without its call and its scan of the other queues.
+VU1N_INLINE void VU1NativeAccess::commitDue(VU1Interpreter &vu)
+{
+    if ((vu.m_storePending | vu.m_vfPending | vu.m_viPending | vu.m_accPending) != 0u || vu.m_flagCount != 0u)
+    {
+        vu.commitReadyPipelines();
+        return;
+    }
+    uint64_t next = ~0ull;
+    if (vu.m_fdiv.valid)
+    {
+        if (vu.m_fdiv.readyCycle <= vu.m_cycle)
+        {
+            vu.m_state.q = vu.m_fdiv.value;
+            const uint32_t currentDi = vu.m_fdiv.statusDi & 0x30u;
+            vu.m_state.status = (vu.m_state.status & 0xFCFu) | currentDi | (currentDi << 6);
+            vu.m_fdiv.valid = false;
+        }
+        else
+            next = vu.m_fdiv.readyCycle;
+    }
+    for (VU1Interpreter::ScalarPipelineEntry &entry : vu.m_efu)
+    {
+        if (!entry.valid)
+            continue;
+        if (entry.readyCycle <= vu.m_cycle)
+        {
+            vu.m_state.p = entry.value;
+            entry.valid = false;
+        }
+        else
+            next = std::min(next, entry.readyCycle);
+    }
+    vu.m_nextCommitCycle = next;
+}
+
+// After a native block: it joins the history (its results that outlive it are found there when needed); FDIV/EFU stay
+// busy until their ready cycle.
+VU1N_INLINE void VU1NativeAccess::finishBlockTiming(VU1Interpreter &vu, const VU1Interpreter::NativeState::Slot &sl, const uint8_t *cyc,
+                                                     uint32_t cycId, uint64_t start)
+{
+    using NS = VU1Interpreter::NativeState;
+    NS &ns = *vu.m_native;
+    // the idle table's length is in the slot: most blocks never touch their table's cache line here
+    const uint64_t end = start + (cyc == sl.idle ? sl.idleEnd : cyc[sl.pairs - 1u] + 1u);
+    NS::Hist &h = ns.hist[ns.histNext];
+    h.bt = sl.bt;
+    h.cyc = cyc;
+    h.start = start;
+    h.end = end;
+    h.cycId = cycId;
+    ns.histNext = (ns.histNext + 1u) % NS::kHist;
+    ++ns.histCount;
+    vu.m_cycle = end;
+    if (sl.scalarCount == 0u)
+        return;
+    if (sl.scalarCount != NS::kScalarMany)
+    {
+        for (uint32_t k = 0; k < sl.scalarCount; ++k)
+            scalarStart(vu, start + cyc[sl.scalar[k].pair], sl.scalar[k].latency, sl.scalar[k].fdiv);
+        return;
+    }
+    const NS::BlockTiming &bt = *sl.bt;
+    for (const uint8_t i : bt.scalarPairs)
+    {
+        const VU1Interpreter::DecodedInstructionPair &d = bt.dec[i];
+        scalarStart(vu, start + cyc[i], d.lowerUsage.latency, d.lowerUsage.pipeline == VU1Interpreter::PipelineFdiv);
+    }
+}
+
+
+// Chained blocks: the generated code puts the blocks of a microprogram that branch to each other into one function
+// (vu1n_gen.py regions), with the registers kept in locals, and goes from a block straight on to its successor when
+// that successor's slot holds the expected function (the words at its pc are the ones it was generated from). Between the
+// two blocks chainTo does what runNative does between two blocks: the finished block's timing and history entry, the
+// due FDIV/EFU retirement, the stop / budget check, and the successor's start cycle, timing table and tail record. Only
+// successors with an idle-pipeline timing table are entered (no entry-flag reads), and only while nothing from the exact
+// engine is pending (else commitDue would run commitReadyPipelines, which writes registers the block holds in locals).
+// Returns 0: nothing done (runNative finishes the block), 1: successor set up, 2: block finished, runNative dispatches
+// the successor (the block returns with kVu1nFinished).
+VU1N_INLINE uint32_t VU1NativeAccess::chainTo(VU1NativeCtx &n, uint32_t pc, VU1NativeFn expected)
+{
+    using NS = VU1Interpreter::NativeState;
+    VU1Interpreter &vu = *n.vu;
+    NS &ns = *vu.m_native;
+    const NS::Slot &sl = *static_cast<const NS::Slot *>(n.slot);
+    if (ns.limit != ~0u || (vu.m_storePending | vu.m_vfPending | vu.m_viPending | vu.m_accPending) != 0u || vu.m_flagCount != 0u)
+        return 0u;
+    finishBlockTiming(vu, sl, n.cyc, n.cycId, n.start);
+    if (vu.m_cycle >= vu.m_nextCommitCycle)
+        commitDue(vu);
+    const NS::Slot &next = ns.slots[(pc & 0x3FF8u) >> 3];
+    if (vu.m_stopRequested || vu.m_cycle >= n.budgetEnd || next.fn != expected || !next.known || next.readsEntryFlags)
+        return 2u;
+    ++ns.nativeBlocks; // runNative counts the block the function returns from
+    ns.nativePairs += sl.pairs;
+    n.slot = &next;
+    n.start = vu.m_cycle;
+    n.cyc = next.idle;
+    n.cycId = 0u;
+    if (next.tail)
+    {
+        VU1FlagTail &t = ns.hist[ns.histNext].tail;
+        t.desc = next.tail;
+        t.cyc = next.idle;
+        t.start = n.start;
+        n.tail = &t;
+    }
+    return 1u;
 }
 
 namespace vu1n
@@ -340,12 +477,11 @@ namespace vu1n
     VU1N_INLINE __m128 nrm(__m128 v)
     {
 #if defined(__aarch64__)
-        // NEON: the same selects as two BSL (sse2neon's blendv adds a shift to build its byte mask), for every operand
+        // NEON, for every operand: the magnitude bits as an unsigned minimum with FLT_MAX's (exponent 255 is exactly what
+        // exceeds 0x7F7FFFFF), the sign kept by one BSL: BIC, UMIN, BSL
         const uint32x4_t b = vreinterpretq_u32_f32(v);
-        const uint32x4_t expMask = vdupq_n_u32(0x7F800000u);
-        const uint32x4_t bad = vceqq_u32(vandq_u32(b, expMask), expMask);
-        const uint32x4_t fixed = vbslq_u32(vdupq_n_u32(0x80000000u), b, vdupq_n_u32(0x7F7FFFFFu));
-        return vreinterpretq_f32_u32(vbslq_u32(bad, fixed, b));
+        const uint32x4_t sign = vdupq_n_u32(0x80000000u);
+        return vreinterpretq_f32_u32(vbslq_u32(sign, b, vminq_u32(vbicq_u32(b, sign), vdupq_n_u32(0x7F7FFFFFu))));
 #else
         const __m128i b = _mm_castps_si128(v);
         const __m128i expMask = _mm_set1_epi32(0x7F800000);
@@ -442,17 +578,32 @@ namespace vu1n
         __m128 r = Sub ? _mm_sub_ps(acc, p) : _mm_add_ps(acc, p);
         // round-toward-zero saturates an overflowing product to FLT_MAX instead of infinity: any lane at/over FLT_MAX in the product
         // or the sum needs the wide evaluation
+#if defined(__aarch64__)
+        // NEON: the larger magnitude of product and sum per lane, its maximum against the limit (one compare in a general
+        // register), and the wide evaluation inline in double lanes: no call, so the block keeps its vector registers
+        const uint32x4_t sign = vdupq_n_u32(0x80000000u);
+        const uint32x4_t mag = vmaxq_u32(vbicq_u32(vreinterpretq_u32_f32(p), sign), vbicq_u32(vreinterpretq_u32_f32(r), sign));
+        if (__builtin_expect(vmaxvq_u32(mag) <= 0x7F7FFFFEu, 1))
+            return r;
+        const float64x2_t aLo = vcvt_f64_f32(vget_low_f32(acc)), aHi = vcvt_high_f64_f32(acc);
+        const float64x2_t pLo = vmulq_f64(vcvt_f64_f32(vget_low_f32(a)), vcvt_f64_f32(vget_low_f32(b)));
+        const float64x2_t pHi = vmulq_f64(vcvt_high_f64_f32(a), vcvt_high_f64_f32(b));
+        const float64x2_t xLo = Sub ? vsubq_f64(aLo, pLo) : vaddq_f64(aLo, pLo);
+        const float64x2_t xHi = Sub ? vsubq_f64(aHi, pHi) : vaddq_f64(aHi, pHi);
+        const float32x4_t narrow = vcvt_high_f32_f64(vcvt_f32_f64(xLo), xHi);
+        const float64x2_t big = vdupq_n_f64(static_cast<double>(FLT_MAX));
+        const uint32x4_t over = vcombine_u32(vmovn_u64(vcagtq_f64(xLo, big)), vmovn_u64(vcagtq_f64(xHi, big)));
+        // beyond FLT_MAX: infinity of the result's sign (maddWide's HUGE_VALF), else the float conversion
+        const uint32x4_t inf = vorrq_u32(vandq_u32(vreinterpretq_u32_f32(narrow), sign), vdupq_n_u32(0x7F800000u));
+        return vreinterpretq_f32_u32(vbslq_u32(over, inf, vreinterpretq_u32_f32(narrow)));
+#else
         const __m128i lim = _mm_set1_epi32(0x7F7FFFFE);
         const __m128i hot = _mm_or_si128(_mm_cmpgt_epi32(_mm_and_si128(_mm_castps_si128(p), _mm_set1_epi32(0x7FFFFFFF)), lim),
                                          _mm_cmpgt_epi32(_mm_and_si128(_mm_castps_si128(r), _mm_set1_epi32(0x7FFFFFFF)), lim));
-#if defined(__aarch64__)
-        if (vmaxvq_u32(vreinterpretq_u32_m128i(hot)) == 0u) // one UMAXV instead of sse2neon's byte movemask
-            return r;
-#else
         if (_mm_movemask_epi8(hot) == 0)
             return r;
-#endif
         return maddWide<Sub>(acc, a, b);
+#endif
     }
     // macVal with the DEST mask (SSE order) at run time: flags of a MAC writer read after its block ended
     inline uint32_t macValRt(__m128 r, uint32_t m)
@@ -671,6 +822,9 @@ namespace vu1n
     {
         constexpr float scale = Shift == 0 ? 1.0f : Shift == 4 ? 16.0f : Shift == 12 ? 4096.0f : 32768.0f;
         const __m128 v = _mm_mul_ps(clampv(normalized), _mm_set1_ps(scale));
+#if defined(__aarch64__)
+        return vreinterpretq_f32_s32(vcvtq_s32_f32(v)); // FCVTZS saturates like floatToInt (see ftoi)
+#endif
         const __m128 big = _mm_cmpge_ps(v, _mm_set1_ps(2147483648.0f));
         const __m128i i = _mm_cvttps_epi32(v);
         return _mm_blendv_ps(_mm_castsi128_ps(i), _mm_castsi128_ps(_mm_set1_epi32(0x7FFFFFFF)), big);
