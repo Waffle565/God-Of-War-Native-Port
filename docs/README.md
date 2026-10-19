@@ -33,6 +33,7 @@ The user wants the game **totally playable**; work continues until then. Game da
 | [visual-audit.md](visual-audit.md) | Suspected rendering defects found in the zone captures (vs PCSX2), with the likely GS cause. |
 | [fmv.md](fmv.md) | Movies: libmpeg2 decoder, how the game plays a movie, what is still open. |
 | [sound.md](sound.md) | Native sound engine: the LIBSD API boundary, SoundEngine, what is mixed. |
+| [iop-thread.md](iop-thread.md) | The IOP on its own host thread (`IopRun`): batch queue, sync points with take-back, deferred IOP effects on EE state, bounded lead, env switches, PC results and what to watch on the console. |
 | [memory-card.md](memory-card.md) | PS2 memory card format and how the game reaches the card (for the native card service). |
 | [settings.md](settings.md) | Player settings: text/voice language from the European disc via disc overlays, the save wording (menu text format), no subtitles in the game data. |
 | [status-map/](status-map/detail.md) | Status map shown on the GitHub page: edit `data.toml`, run `python tools/status_map.py`. Keep it in step with status.md. |

@@ -118,3 +118,9 @@ Gameplay on the console (log `port/switch/logs/20261019_s16`, ship fight, ~21 fp
   the services stay on the EE thread. PC: about 64 % of the mixing moves to the thread (IOP time on the EE thread
   -16 % mean over the zones gate, -25 % in slot 2); the rest is mixed at the driver's calls. Not yet measured on the
   console; if the wakes are cheap there, a smaller `GOW_SOUND_BATCH` moves more.
+- The IOP off core 1 (sw-iopthr d404373, docs/iop-thread.md): the IOP scheduler, the native IRX code and the
+  services run on their own `IopRun` thread, core 0 by default (`GOW_CORE_IopRun=<0-2>`); the EE thread only queues
+  the due batches, and every EE call into the IOP drains them first (take-back), so the IOP state the EE sees is
+  the inline one. PC zones gate: EE-thread `iop_ms` 168-281 -> 19-32 ms per 5 s (-90 %; what stays is the RPC calls
+  themselves), 5/5 ok at 60 fps, savetest and SEMO01 unchanged. Expected on the console: most of the ~1.2 s per 5 s
+  of IOP time leaves core 1 for core 0; not yet measured there. `GOW_IOP_THREAD=0` is the A/B switch.

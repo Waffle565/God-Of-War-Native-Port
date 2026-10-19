@@ -97,3 +97,9 @@ in `ext/PS2Recomp/ps2xIOP`, uncommitted.
   PCSX2's PadDualshock2 for the commands this game uses.
 - Drivers' view (from disassembly): SIO2D +0x1518 treats a port as missing if RECV1 bit 13 or bit 16 is set.
   DS2U_D builds SEND3 as (old & ~3) | port | 0x40 and treats (RECV1 >> 14) & 3 == 0 as connected.
+
+## IOP batches run by any owner thread (2026-10-19, ext agent/sw-iopthr)
+- `IopSubsystem::takePendingIopCycles()` / `runIopCycles(n)` (and the same pair on `IopEmulator`): `runPendingEeCycles`
+  split in two halves, so the EE thread can take a due batch and the IOP host thread (or the EE at a sync point) run
+  it. The accrual fields (`eeCycleCarry`, `pendingIopCycles`) stay EE-thread-only; everything `runCycles` touches is
+  owned by whichever thread holds the IOP (docs/iop-thread.md). Same result as `runPendingEeCycles`.
