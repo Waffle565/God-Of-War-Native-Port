@@ -70,8 +70,8 @@ namespace ThreadNaming
             core = 1, boost = 1;
         else if (name == "GSWorker" || name == "VU1Run") // VU1Run: PS2X_VU1_ASYNC=1 (move GSWorker with GOW_CORE_GSWorker)
             core = 2;
-        else if (name == "VU1Split")
-            boost = -1; // GOW_VU1_SPLIT helper: spins between jobs, so below every other thread of its core (deko3d's)
+        // VU1Split (GOW_VU1_SPLIT helper): core 0 at the default priority, which is already the lowest an application
+        // thread gets (59: one step below fails); its wait loop yields to the deko3d thread (ps2_vu1_split.inl)
         else if (name == "IopRun")
             boost = 1; // GOW_IOP_THREAD=1: above GSThread (deko3d) on core 0, which never yields to an equal priority
         const std::string variable = "GOW_CORE_" + std::string(name);

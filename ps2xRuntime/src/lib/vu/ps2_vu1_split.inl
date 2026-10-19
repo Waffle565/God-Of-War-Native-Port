@@ -17,6 +17,8 @@
 //   is the memory at Tk: the worker waits there), copies the written words and takes the helper's final state over.
 // Any difference, a stalled helper (preempted), a timing-cache change on the worker meanwhile or a callout cancels the
 // split: the worker simply goes on. Results are bit-exact by construction (replay harness: docs/vu1-hle.md).
+// Off by default (GOW_VU1_SPLIT=1): the loops are short (~25 vertices, ~5 us on the A57) and the probe, the state
+// copies and the hand-off cost more than the helper saves (console replay benchmark +4..24 %, docs/vu1-hle.md).
 #include <atomic>
 #include <condition_variable>
 #include <mutex>
@@ -359,7 +361,8 @@ struct VU1Split
         if (ns.splitMode < 0)
         {
             const char *v = std::getenv("GOW_VU1_SPLIT");
-            ns.splitMode = (v && std::atoi(v) == 0) ? 0 : 1;
+            // off by default: on the console it costs more than it saves (docs/vu1-hle.md); GOW_VU1_SPLIT=1 turns it on
+            ns.splitMode = (v && std::atoi(v) != 0) ? 1 : 0;
             if (ns.specMode || ns.verifyLeft != 0u || std::getenv("GOW_VU1N_BLOCKPROF") || std::getenv("GOW_VU1N_TRACEREC"))
                 ns.splitMode = 0;
             if (ns.splitMode)
@@ -371,7 +374,7 @@ struct VU1Split
                 sp->hvu->m_native->splitMode = 0;
                 ns.split = sp;
                 if (!sp->sync)
-                    std::thread([sp] { sp->helperMain(); }).detach();
+                    new std::thread([sp] { sp->helperMain(); }); // never joined (libnx has no pthread_detach)
                 std::fprintf(stderr, "[vu1-split] on (min %u cycles, warm %u, lat %u, %s)\n", sp->minCyc, sp->warm, sp->lat,
                              sp->sync ? "inline helper" : "helper thread VU1Split");
             }
@@ -681,12 +684,14 @@ struct VU1Split
             return;
         std::fprintf(stderr,
                      "[vu1-split] window=%.2f probes=%llu plans=%llu reached=%llu adopted=%llu blocks_saved=%llu no_period=%llu short=%llu "
-                     "off=%llu not_started=%llu stall=%llu helper_fail=%llu mismatch=%llu mem=%llu epoch=%llu wait_ms=%.1f helper_ms=%.1f\n",
+                     "off=%llu not_started=%llu stall=%llu helper_fail=%llu mismatch=%llu mem=%llu epoch=%llu wait_ms=%.1f helper_ms=%.1f "
+                     "helper_state=%u jobs=%u\n",
                      (now - lastReport) * 1e-9, (unsigned long long)sProbe, (unsigned long long)sPlan, (unsigned long long)sReach,
                      (unsigned long long)sAdopt, (unsigned long long)sBlocksSaved, (unsigned long long)sNoPeriod,
                      (unsigned long long)sShort, (unsigned long long)sOff, (unsigned long long)sNotStarted, (unsigned long long)sStall,
                      (unsigned long long)sHelperFail, (unsigned long long)sMismatch, (unsigned long long)sMem, (unsigned long long)sEpoch,
-                     sWaitNs * 1e-6, helperNs.exchange(0u) * 1e-6);
+                     sWaitNs * 1e-6, helperNs.exchange(0u) * 1e-6, state.load(std::memory_order_relaxed),
+                     jobSeq.load(std::memory_order_relaxed));
         sProbe = sPlan = sReach = sAdopt = sOff = sNotStarted = sStall = sHelperFail = sMismatch = sMem = sEpoch = sNoPeriod = sShort =
             sBlocksSaved = sWaitNs = 0;
         lastReport = now;
@@ -705,7 +710,11 @@ struct VU1Split
             const uint64_t until = ps2_perf::nowNanos() + spinNs;
             for (uint32_t n = 0; jobSeq.load(std::memory_order_acquire) == seen; ++n)
             {
+#if defined(__SWITCH__)
+                std::this_thread::yield(); // Horizon does not time-slice one priority: let the core's other threads run
+#else
                 vu1SplitPause();
+#endif
                 if ((n & 63u) == 0u && ps2_perf::nowNanos() >= until)
                 {
                     std::unique_lock<std::mutex> lock(mutex);
