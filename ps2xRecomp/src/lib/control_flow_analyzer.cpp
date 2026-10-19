@@ -194,7 +194,13 @@ namespace ps2recomp
             {
                 if (jrInst->function == SPECIAL_JALR)
                 {
+                    // GOW-Port: a JALR is a call. The callee is its own function (the runtime dispatches the
+                    // target), and control comes back only at the return address, queued here. Treating it as an
+                    // unresolved jump made every instruction of the caller a resume entry (1079 GoW functions,
+                    // 109k instructions): a label and a switch case each, which stopped the C++ compiler from
+                    // keeping anything in registers across instructions and cleared the constant tracking.
                     queueResumeEntryTarget(jrInst->address + 8u);
+                    continue;
                 }
 
                 bool foundTable = false;
