@@ -6,7 +6,8 @@
 # usage: tools/vu1_harness/build.sh <arch> <name> <ext worktree> <vu1n_generado dir>
 #   arch: arm (aarch64 Linux, Switch compiler flags; runs under qemu-aarch64 through binfmt) or x86 (x86-64 Linux, SSE4.2)
 #   output: /root/vu1h/<name>; run it as  /root/vu1h/<name> <records> [reps]  (GOW_VU1N_REPLAY_DUMP=<file> dumps results)
-#   REBUILD=1 recompiles everything (the VU1 .inl files are not tracked as dependencies).
+#   REBUILD=1 recompiles everything (the VU1 .inl files are not tracked as dependencies). EXTRA=<flags> adds compiler
+#   flags (e.g. -DVU1N_FAST_STATS: fast-variant entry checks passed / failed, printed at exit).
 # Then: icount.sh (dynamic aarch64 instruction profile), dumpdiff.py (compare two dumps record by record).
 set -e
 arch=$1; name=$2; wt=$3; gen=$4
@@ -19,7 +20,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 O=$H/obj_$name
 [ -n "$REBUILD" ] && rm -rf $O
 mkdir -p $O
-COMMON="-std=c++20 -O2 -DNDEBUG -fsigned-char -ffp-contract=off -ffunction-sections -fdata-sections -I$R/include -I$R/include/runtime -I$R/src/lib"
+COMMON="$EXTRA -std=c++20 -O2 -DNDEBUG -fsigned-char -ffp-contract=off -ffunction-sections -fdata-sections -I$R/include -I$R/include/runtime -I$R/src/lib"
 if [ "$arch" = arm ]; then
     SSE2NEON=${SSE2NEON:-$(ls -d /root/gow-switch-build*/_deps/sse2neon-src 2>/dev/null | head -1)}
     [ -f "$SSE2NEON/sse2neon.h" ] || { echo "no sse2neon.h (set SSE2NEON=<dir>, e.g. a Switch build's _deps/sse2neon-src)" >&2; exit 1; }

@@ -3,6 +3,76 @@
 Goal: VU1 is the limit of the Switch build in gameplay (~4.0 s busy per 5 s at ~20 fps, docs/switch-deko3d.md); 60 fps
 needs it ~2.4x faster. This page records what the VU1 time is spent on and what the generator does about it.
 
+## Exact float handling out of the hot loops (2026-10-19, ext agent/sw-vu1fast)
+**Handoff.** Branch `agent/sw-vu1fast` (ext 31a482d + nothing in the runtime; worktree ext/PS2Recomp-kl-vu1fast, own
+build dir `out/build-pc` configured with `-DPS2X_VU1N_GEN_OVERRIDE=<root>/port/vu1fast/gen/vu1n_gen.py`, which is the
+committed tools/vu1/vu1n_gen.py). Only the generator changed: `tools/vu1/vu1n_gen.py` emits a *fast variant* for 704 of
+the 1704 block functions (all loop functions with a gain, plus plain blocks that save more than their entry check);
+`--no-fast` gives the previous output. Not yet run on the console (see "Console" below for how to build it).
+
+**What the exact handling was.** The native blocks already run in the VU's float mode: `runNative` sets round toward
+zero and flush to zero (ARM64 FPCR RMode=RZ + FZ, x86 MXCSR RC + FTZ/DAZ) before the first block and restores it after,
+so a plain `fmul`/`fadd` already gives the exact engine's result for finite operands (no denormals in or out, overflow
+saturates to FLT_MAX instead of infinity). What the generated code still did for every FMAC:
+- the operand view `nrm` (Inf/NaN -> +-FLT_MAX; BIC, UMIN, BSL per operand) for lanes not known finite;
+- `clampv` after ADD/SUB/MUL (FMAXNM, FMINNM) - the identity for finite operands under round toward zero;
+- MADD/MSUB through `maddc`: product and sum compared with FLT_MAX in **all four lanes** (two BIC, UMAX, UMAXV, FMOV,
+  CMP, branch), the wide (double, one rounding) path when any lane reaches it;
+- CLIP through two stores and six scalar compares, FTOI with a clamp of an already finite view.
+DIV/SQRT/RSQRT already use the hardware divide and square root under RZ (`divv`: `qnorm` of the operands, a zero test,
+`qfinish`); their cost is the divide latency, left as is.
+
+**Fast variants (range analysis in the generator, `Bounds`).** For every VF lane, ACC lane, Q and I the generator tracks
+a bound |x| < 2^e (or unknown: loads, FTOI results, MFIR/MFP, integer bits) through the generated code: MUL e_a+e_b,
+ADD/SUB max+1, MADD max(e_acc, e_a+e_b)+1, MAX/MINI max, ITOF 32-shift, MOVE/MR32 copy, LOI from the constant, DIV
+results finite. Where the bounds prove the exact handling is the identity it emits the plain op: the raw register for a
+finite view, no clamp, `acc +/- a*b` for a MADD whose product and sum stay below 2^127 in all four lanes, CLIP in vector
+compares (`vu1nf::clipv`), FTOI without the clamp (`vu1nf::ftoiv`).
+- **Entry check.** The function's entry values get an assumed bound per lane (origin); the code records which origins it
+  relied on and how - their bound (a plain MADD) or only their being finite (a skipped view or clamp: every value the
+  analysis knows is finite when its origins are, whatever their size, because round toward zero never overflows to
+  infinity). The function starts by testing exactly those lanes (magnitude bits against a per-lane limit, two vector ops
+  per register, one compare per limit vector); if one fails it calls `<name>_x`, the exact function as generated before.
+- **Loops** (self-loops, two-block cycles): the loop-carried bounds are iterated to a fixed point (join with the entry
+  state, widening to the float range after six rounds; Q is unknown after `chainTo`, which reloads it).
+- **Bounds per origin** (`_search`): all start at 2^64; while MADDs stay on `maddc` with every lane known, the origins
+  behind the failing product (or ACC) with the highest bound are lowered by 4 (a chain of two matrix transforms ends
+  with equal bounds, ~2^36-2^40), keeping the best map. Plain blocks get a variant only when the estimated saving exceeds
+  the check by 8 instructions.
+- **Bit-exact by construction**, with one subtlety found by the replay: the MADD test must cover all four lanes as
+  `maddc` does. Deciding on the DEST lanes only (what the exact engine and the hardware do) made 282 of the 1832 PC zone
+  records differ: a NaN or huge lane outside DEST (integer bits) sends `maddc` to the wide path, whose single rounding
+  gives other DEST values than the two-step fast path (`VU1N_FAST_DEST=1` reproduces it). So a function whose entry
+  lane outside DEST holds such bits falls back to `_x`.
+
+**Results** (replay harness, x86 and aarch64 builds, against the recorded hashes):
+
+| recording | records | differ (x86 / aarch64) | fast entries / exact entries (`EXTRA=-DVU1N_FAST_STATS`) |
+|---|---|---|---|
+| ship (console, `vu1ship.rec`) | 2000 | 0 / 0 | 150077 / 36 |
+| consecutive (console, `vu1seq.rec`) | 3000 | 0 / 0 | 309842 / 210 |
+| PC zone walk (`game.rec`) | 1832 | 0 / 0 | 120610 / 18710 (b1748: F1.w holds 0xffff80xx) |
+
+- The seven vertex-loop variants (0x2840 ... 0x3c20) have no `maddc`, `nrm` or `clampv` left.
+- qemu aarch64 cost (instructions + Q instructions, one warm pass of 30 ship records, the replay's hashing left out):
+  1.691 M -> 1.418 M (**-16 %**), generated blocks 1.359 -> 1.085 M (-20 %; e.g. b2ee0 0.169 -> 0.107 M, b2b90
+  0.186 -> 0.127 M); 30 PC zone records: 2.343 -> 1.983 M (-15 %), generated blocks 1.601 -> 1.242 M (-22 %).
+  What remains: `runNative` + `blockTiming` 0.57 M (40 %: the B halves of the loops read entry flags, so `chainTo` hands
+  every pass back to runNative), then flags, blends, loads/stores and register spills (~30 vector registers live).
+- x86 replay (WSL, noisy): ship 44.6-46.8 -> 39.0-41.3 ms, consecutive 84.5-90.6 -> 77.7-77.8 ms (5 warm passes).
+- Expected on the console: qemu matched the A57 for sw-vu1-hle's change (-9.5 % predicted, -10 % measured), so the
+  replay benchmark should drop from 137 ms by ~12-16 % (~115-120 ms), VU1 busy ~3.8-4.1 s -> ~3.3-3.6 s per 5 s.
+- PC build (`out/build-pc`, generated parts identical to the replayed ones): zone gate port/vu1fast/gate/20261019_143226
+  5/5 ok (60 fps, speed 1.00-1.01, no capture flagged against port/swvu1par/gate/20261019_130004), savetest 129 pages,
+  card directory intact.
+- Console build: `VU1_PREGEN=<root>/ext/PS2Recomp-kl-vu1fast/out/vu1pregen` (vu1_generado = sw-vu1-par's, vu1n_generado
+  from this generator; or any folder regenerated with `python -I tools/vu1/vu1n_gen.py <dir>/vu1n_generado
+  port/vu1_micro --heads port/vu1n_heads.txt --parts 6 --locals`) with switch/build.sh of the sw-vu1-par worktree (the
+  runtime is unchanged); then the replay benchmark env.txt as above.
+- Diagnostics: harness `EXTRA=-DVU1N_FAST_STATS` (fast / exact entry counts at exit, first misses by function),
+  `-DVU1N_FAST_STATS_REGS` (the register, lane values and limits of each failed check); port/vu1fast/dbg_fast.py runs the
+  search for one block (not in git).
+
 ## The VU1 thread on the console: split, overlap, sync points (2026-10-19, ext agent/sw-vu1-par)
 **Handoff (where this stopped).** Branch `agent/sw-vu1-par` (worktree ext/PS2Recomp-kl-vu1par, own build dirs
 `out/build-pc`, WSL `/root/gow-switch-par`, VU1 blocks `out/vu1pregen` = sw-vu1-hle's; agent/sw-ee5 merged, Switch
@@ -133,4 +203,5 @@ magnitude, one UMAXV and a branch), clamps, blends for DEST masks, masked VU mem
 overhead gone the arithmetic stays; the probe without exact float handling (sw-vu1b) gave -29 % and changes 23-27 % of
 the PC Olympus runs' output. A native rewrite of the loop with plain float math would only pay with a per-batch range
 check proving that no operand or result can reach FLT_MAX (then the exact and plain results are equal), which needs
-the input magnitudes (matrices, positions) checked per batch - not done.
+the input magnitudes (matrices, positions) checked per batch - done in the generator since sw-vu1fast (top section:
+range analysis and an entry check per function call).

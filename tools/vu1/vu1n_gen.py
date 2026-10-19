@@ -10,6 +10,7 @@ heads.txt (optional): extra entry pcs (hex, one per line), e.g. misses logged by
 --locals: each block keeps the VU registers it uses in C++ locals (loaded at entry, stored back at every exit) and a block
 that branches back to its own start repeats inside its function (VU1NativeAccess::chainTo); needs a runtime with chainTo
 (ext branch agent/sw-vu1 and later). Without it the blocks read and write the VU1State directly (same output as before).
+--no-fast: no fast variants (range analysis, see Bounds; on by default with --locals).
 """
 import os
 import struct
@@ -129,7 +130,17 @@ class Regs:
     def fn(self, r, clean=None, lanes=15):
         """operand view (Inf/NaN -> +-FLT_MAX) of VF r. vf0 is its own view, and so is a register whose lanes the
         operation uses (lanes: SSE order) are all clean (clean: {vf: SSE lane mask known finite})"""
-        if r == 0 or (clean and (clean.get(r, 0) & lanes) == lanes):
+        if BND is not None and self.local:
+            # fast variant: the raw value when the used lanes are known finite (range analysis, Bounds)
+            ok, vals = BND.view(r, lanes)
+            BND.last = vals
+            if ok:
+                BND.require_lanes(('f', r), lanes, vals)
+                if r != 0:
+                    BND.score += 3   # nrm: BIC, UMIN, BSL
+                return self.f(r)
+            clean = None
+        elif r == 0 or (clean and (clean.get(r, 0) & lanes) == lanes):
             return self.f(r)
         if not self.local:
             return f"vu1n::ldn(s, {r})"
@@ -248,6 +259,127 @@ RG = Regs(False)
 
 
 # ---------------------------------------------------------------------------------------------------------------------
+# fast variants (docs/vu1-hle.md "Exact float handling out of the hot loops"): range analysis on the generated code.
+# The native blocks already run in the VU's float mode (round toward zero, flush to zero: runNative sets FPCR / MXCSR), so
+# a plain float op gives the exact engine's result for finite operands. What is left of the exact handling is the operand
+# view (nrm: Inf/NaN -> +-FLT_MAX), the clamp after ADD/SUB/MUL (the identity for finite operands: round toward zero never
+# overflows to infinity) and MADD/MSUB's overflow test (maddc: a product or sum at FLT_MAX in any of the four lanes takes
+# the wide path). Bounds tracks for every VF lane, ACC lane, Q and I a bound |x| < 2^e (None: unknown, may be Inf/NaN or
+# integer bits) through the generated code; where the bounds prove the exact handling is the identity the fast variant
+# emits the plain op:
+# - operand view of lanes known finite: the raw register;
+# - ADD/SUB/MUL with finite operands: no clamp; CLIP in vector compares; FTOI without its clamp;
+# - MADD/MSUB whose product and sum stay below 2^127 in all four lanes (as maddc tests them): acc +/- a*b, no test.
+# The function's entry values get an assumed bound 2^E per lane (origin); the fast code records which origins it relied on
+# and how (the bound, or only being finite: every value the analysis knows is finite when its origins are), and its entry
+# check tests exactly those, else the exact function (<name>_x, the code as before) runs. Loops: fixed point of the
+# loop-carried bounds (join with the entry state). E per origin: _search. Functions: self-loops, gen_cycle, and plain
+# blocks when the saving exceeds the check (fast_straight). Bit-exact by construction: each change is an identity under
+# the proven bounds.
+FAST = True
+# plain MADD decided on all four lanes, as maddc tests them (VU1N_FAST_DEST=1: on the DEST lanes only, as the exact engine
+# does; 282 of the 1832 PC zone-walk records then differ from the native blocks: a huge or NaN lane outside DEST sends
+# maddc to the wide path, whose single rounding gives other DEST values than the two-step fast path)
+FAST_DEST_ONLY = os.environ.get('VU1N_FAST_DEST', '0') == '1'
+FAST_CLIPV = os.environ.get('VU1N_FAST_CLIPV', '1') == '1'
+ZERO_E = -1000            # bound of an exact zero
+BND = None                # Bounds while a fast variant is generated
+LAST = {}                 # gen_block / gen_cycle: facts about the last generated function (self_loop, decls)
+
+
+def _join(a, b):
+    if a is None or b is None:
+        return None
+    return (max(a[0], b[0]), a[1] | b[1])
+
+
+def _f32_e(bits):
+    """bound exponent of a float constant after qnorm"""
+    ex = (bits >> 23) & 0xFF
+    if ex == 0:
+        return (ZERO_E, frozenset())
+    if ex == 255:
+        return (128, frozenset())
+    return (ex - 127 + 1, frozenset())
+
+
+class Bounds:
+    def __init__(self, start):
+        self.st = {k: (list(v) if isinstance(v, list) else v) for k, v in start.items()}
+        self.req = {}     # origin -> 2: its bound 2^E was relied on (plain MADD), 1: only that it is finite
+        self.score = 0
+        self.fails = []   # origins of MADDs left on maddc although every lane is known (_search lowers their bounds)
+        self.last = None
+
+    @staticmethod
+    def entry(Emap, Edef):
+        def v(o):
+            return (Emap.get(o, Edef), frozenset({o}))
+        st = {}
+        for r in range(32):
+            st[('f', r)] = [v(('f', r, k)) for k in range(4)]
+        st[('acc',)] = [v(('acc', k)) for k in range(4)]
+        st[('q',)] = v(('q',))
+        st[('I',)] = v(('I',))
+        return st
+
+    @staticmethod
+    def join_states(a, b):
+        out = {}
+        for k in a:
+            if isinstance(a[k], list):
+                out[k] = [_join(x, y) for x, y in zip(a[k], b[k])]
+            else:
+                out[k] = _join(a[k], b[k])
+        return out
+
+    @staticmethod
+    def widen(old, new):
+        """lanes whose bound still grows go to the float range (|x| <= FLT_MAX < 2^128)"""
+        def w(o, n):
+            if o is None or n is None:
+                return n
+            return (128, n[1]) if n[0] > o[0] else n
+        out = {}
+        for k in new:
+            if isinstance(new[k], list):
+                out[k] = [w(x, y) for x, y in zip(old[k], new[k])]
+            else:
+                out[k] = w(old[k], new[k])
+        return out
+
+    def lanes(self, key):
+        return self.st[key]
+
+    def view(self, r, lanes):
+        """(raw ok, per-lane values of the operand view): ok when every used lane is known; else the view is nrm()"""
+        v = self.st[('f', r)]
+        ok = all(v[k] is not None for k in range(4) if lanes & (1 << k))
+        if ok:
+            return True, list(v)
+        return False, [x if x is not None else (128, frozenset()) for x in v]
+
+    def require(self, val, level=2):
+        """the code relies on val's bound (level 2) or only on its being finite (level 1): a value known to the analysis
+        is finite whenever its origins are (round toward zero never overflows to infinity), whatever their magnitude"""
+        if val is not None:
+            for o in val[1]:
+                if self.req.get(o, 0) < level:
+                    self.req[o] = level
+
+    def require_lanes(self, key, lanes, vals):
+        for k in range(4):
+            if lanes & (1 << k):
+                self.require(vals[k], 1)
+
+    def setv(self, key, m, vals):
+        cur = self.st[key]
+        self.st[key] = [vals[k] if m & (1 << k) else cur[k] for k in range(4)]
+
+
+
+
+# ---------------------------------------------------------------------------------------------------------------------
 # upper (FMAC) decode
 
 def classify(u):
@@ -329,6 +461,8 @@ def emit_upper(u, pc, idx, mac_var, clip_var, prev_clip, clean=None):
     if kind == 'clip':
         if not RG.local:
             return [f"const uint32_t {clip_var} = vu1n::clipVal(s, {fs}, {ft}, {prev_clip});"]
+        if BND is not None and FAST_CLIPV:
+            return [f"const uint32_t {clip_var} = vu1nf::clipv({RG.fn(fs)}, {RG.fn(ft)}, {prev_clip});"]
         return [f"const uint32_t {clip_var} = vu1n::clipValv({RG.fn(fs)}, {RG.fn(ft)}, {prev_clip});"]
     if dest == 0:
         return L
@@ -337,19 +471,29 @@ def emit_upper(u, pc, idx, mac_var, clip_var, prev_clip, clean=None):
             return L
         if not RG.local:
             return [f"vu1n::itof<{src}, {m}>(s, {fs}, {ft});"]
-        return [RG.setf(ft, m, f"vu1n::itofv<{src}>({RG.f(fs)})")]
+        line = RG.setf(ft, m, f"vu1n::itofv<{src}>({RG.f(fs)})")
+        if BND is not None:
+            BND.setv(('f', ft), m, [(32 - src, frozenset())] * 4)  # |int32| <= 2^31, scaled by 2^-src
+        return [line]
     if kind == 'ftoi':
         if not ft:
             return L
         if not RG.local:
             return [f"vu1n::ftoi<{src}, {m}>(s, {fs}, {ft});"]
+        if BND is not None:
+            line = RG.setf(ft, m, f"vu1nf::ftoiv<{src}>({RG.fn(fs, clean, m)})")
+            BND.setv(('f', ft), m, [None] * 4)  # integer bits
+            return [line]
         return [RG.setf(ft, m, f"vu1n::ftoiv<{src}>({RG.fn(fs, clean, m)})")]
     if kind == 'abs':
         if not ft:
             return L
         if not RG.local:
             return [f"vu1n::absOp<{m}>(s, {fs}, {ft});"]
-        return [RG.setf(ft, m, f"vu1n::absv({RG.fn(fs, clean, m)})")]
+        line = RG.setf(ft, m, f"vu1n::absv({RG.fn(fs, clean, m)})")
+        if BND is not None:
+            BND.setv(('f', ft), m, BND.last)
+        return [line]
     if kind in ('opmsub', 'opmula', 'other'):
         assert not RG.local
         return [f"VU1NativeAccess::callUpper(n, {pc}u, 0x{u:08x}u);"]
@@ -358,15 +502,27 @@ def emit_upper(u, pc, idx, mac_var, clip_var, prev_clip, clean=None):
     def opnd(r, lanes):
         return RG.fn(r, clean, lanes)
     a = opnd(fs, m)
+    va = BND.last if BND is not None else None
+    vb = None
     if src == 'bc':
         b = f"vu1n::bc<{bc}>({opnd(ft, 1 << bc)})"
+        if BND is not None:
+            vb = [BND.last[bc]] * 4
     elif src == 'q':
         b = f"_mm_set1_ps({RG.q()})"
+        if BND is not None:
+            vb = [BND.st[('q',)]] * 4
     elif src == 'i':
         b = f"_mm_set1_ps({RG.ireg()})"
+        if BND is not None:
+            vb = [BND.st[('I',)]] * 4
     else:
         b = opnd(ft, m)
+        if BND is not None:
+            vb = BND.last
     acc = RG.acc() if kind in ('madd', 'msub') else None
+    if BND is not None:
+        return emit_upper_fast(kind, src, toacc, m, fd, idx, mac_var, a, b, acc, va, vb)
     if kind == 'add':
         r = f"_mm_add_ps({a}, {b})"
     elif kind == 'sub':
@@ -397,6 +553,78 @@ def emit_upper(u, pc, idx, mac_var, clip_var, prev_clip, clean=None):
         out.append(RG.setacc(m, f"r{idx}"))
     elif fd:
         out.append(RG.setf(fd, m, f"r{idx}"))
+    return out
+
+
+def emit_upper_fast(kind, src, toacc, m, fd, idx, mac_var, a, b, acc, va, vb):
+    """ADD/SUB/MUL/MADD/MSUB/MAX/MINI of a fast variant (Bounds): operands a, b (views va, vb per lane), raw acc"""
+    lm = [k for k in range(4) if m & (1 << k)]
+    res = [None] * 4
+    if kind in ('madd', 'msub'):
+        vacc = BND.st[('acc',)]
+        # per DEST lane, as the exact engine (normalizeFmacResult) and the hardware: the other lanes are not written and
+        # their MAC bits are masked off (maddc's test covers all four lanes, so a huge or NaN lane outside DEST sends it to
+        # the wide path; with every DEST lane in range that gives the same DEST values unless the two-step and the wide
+        # rounding differ there)
+        lm4 = lm if FAST_DEST_ONLY else range(4)
+        ok = all(va[k] is not None and vb[k] is not None and vacc[k] is not None for k in lm4)
+        if ok:
+            culprit = frozenset()
+            for k in lm4:
+                pe = va[k][0] + vb[k][0]
+                re = max(vacc[k][0], pe) + 1
+                if pe > 127 or re > 127:
+                    ok = False
+                    # the operands that make it overflow: the product's, or ACC's when it dominates the sum
+                    culprit |= va[k][1] | vb[k][1] if pe > 127 or pe >= vacc[k][0] else vacc[k][1]
+                res[k] = (re, va[k][1] | vb[k][1] | vacc[k][1])
+            if not ok:
+                BND.fails.append(culprit)
+                res = [None] * 4
+        sub = kind == 'msub'
+        if ok:
+            # product and sum below 2^127 in every lane: maddc's fast path, which is these two ops
+            for k in lm4:
+                BND.require(va[k]); BND.require(vb[k]); BND.require(vacc[k])
+            BND.score += 7   # maddc's test: two BIC, UMAX, UMAXV, FMOV, CMP, branch
+            out = [f"__m128 r{idx} = _mm_{'sub' if sub else 'add'}_ps({acc}, _mm_mul_ps({a}, {b}));",
+                   f"const __m128 q{idx} = r{idx};"]
+        else:
+            res = [(128, frozenset())] * 4   # maddc: below FLT_MAX or clamped
+            out = [f"__m128 q{idx};", f"__m128 r{idx} = vu1n::maddc<{'true' if sub else 'false'}>({acc}, {a}, {b}, q{idx});"]
+        if mac_var:
+            out.append(f"const uint32_t {mac_var} = vu1n::macVal<{m}>(q{idx});")
+    elif kind in ('add', 'sub', 'mul'):
+        op = {'add': '_mm_add_ps', 'sub': '_mm_sub_ps', 'mul': '_mm_mul_ps'}[kind]
+        out = [f"__m128 r{idx} = {op}({a}, {b});"]
+        if mac_var:
+            out.append(f"const uint32_t {mac_var} = vu1n::macVal<{m}>(r{idx});")
+            out.append(f"const __m128 q{idx} = r{idx};  // unclamped: flags computed later if it outlives the block")
+        # the views a, b are finite; a Q / I operand only when its bound is known
+        fin = all(vb[k] is not None for k in lm)
+        if fin:
+            if src in ('q', 'i'):
+                for k in lm:
+                    BND.require(vb[k], 1)
+            BND.score += 2   # clampv: FMAXNM, FMINNM
+            for k in lm:
+                e = va[k][0] + vb[k][0] if kind == 'mul' else max(va[k][0], vb[k][0]) + 1
+                res[k] = (min(e, 128), va[k][1] | vb[k][1])   # round toward zero: finite operands, finite result
+        else:
+            out.append(f"r{idx} = vu1n::clampv(r{idx});")
+            res = [(128, frozenset())] * 4
+    else:
+        op = '_mm_max_ps' if kind == 'max' else '_mm_min_ps'
+        out = [f"__m128 r{idx} = {op}({a}, {b});"]
+        for k in lm:
+            if va[k] is not None and vb[k] is not None:
+                res[k] = (max(va[k][0], vb[k][0]), va[k][1] | vb[k][1])
+    if toacc:
+        out.append(RG.setacc(m, f"r{idx}"))
+        BND.setv(('acc',), m, res)
+    elif fd:
+        out.append(RG.setf(fd, m, f"r{idx}"))
+        BND.setv(('f', fd), m, res)
     return out
 
 
@@ -520,6 +748,9 @@ def emit_lower(l, pc, upper, bkp, mac_expr, clip_expr, clip_var):
     V, VN, SETF, VI = RG.f, RG.fn, RG.setf, RG.vi
     def vi_set(reg, expr):
         return [RG.setvi(reg, expr)] if reg else []
+    def unknown(reg):
+        if BND is not None:
+            BND.setv(('f', reg), m, [None] * 4)
     def sq(addr, reg):
         if not RG.local:
             return f"vu1n::stq<{m}>(n, {addr}, vu1n::ld(s, {reg}));"
@@ -527,6 +758,7 @@ def emit_lower(l, pc, upper, bkp, mac_expr, clip_expr, clip_var):
     if op == 0x00:
         if ft:
             L.append(f"{{ uint32_t a = vu1n::qaddr(n, {VI(fs)} + {imm11}); {SETF(ft, m, 'vu1n::ldq(n, a)')} }}")
+            unknown(ft)
         return L
     if op == 0x01:
         return [f"{{ uint32_t a = vu1n::qaddr(n, {VI(ft)} + {imm11}); {sq('a', fs)} }}"]
@@ -568,15 +800,25 @@ def emit_lower(l, pc, upper, bkp, mac_expr, clip_expr, clip_var):
             return vi_set(vid, f"{VI(fs)} | {VI(ft)}")
         sp = lower_special(l)
         if sp == 0x30:
+            if ft and BND is not None:
+                src_v = BND.st[('f', fs)]
+                line = SETF(ft, m, V(fs))
+                BND.setv(('f', ft), m, list(src_v))
+                return [line]
             return [SETF(ft, m, V(fs))] if ft else []
         if sp == 0x31:
             if not ft:
                 return []
-            return [f"{{ __m128 v = {V(fs)}; {SETF(ft, m, '_mm_shuffle_ps(v, v, _MM_SHUFFLE(0, 3, 2, 1))')} }}"]
+            src_v = BND.st[('f', fs)] if BND is not None else None
+            line = f"{{ __m128 v = {V(fs)}; {SETF(ft, m, '_mm_shuffle_ps(v, v, _MM_SHUFFLE(0, 3, 2, 1))')} }}"
+            if BND is not None:
+                BND.setv(('f', ft), m, [src_v[(k + 1) % 4] for k in range(4)])
+            return [line]
         if sp == 0x34:  # LQI
             out = []
             if ft:
                 out.append(f"{{ uint32_t a = vu1n::qaddr(n, (uint16_t){VI(fs)}); {SETF(ft, m, 'vu1n::ldq(n, a)')} }}")
+                unknown(ft)
             if fs:
                 out.append(RG.setvi(fs, f"vu1n::sx16({VI(fs)} + 1)"))
             return out
@@ -591,6 +833,7 @@ def emit_lower(l, pc, upper, bkp, mac_expr, clip_expr, clip_var):
                 out.append(RG.setvi(fs, f"vu1n::sx16({VI(fs)} - 1)"))
             if ft:
                 out.append(f"{{ uint32_t a = vu1n::qaddr(n, (uint16_t){VI(fs)}); {SETF(ft, m, 'vu1n::ldq(n, a)')} }}")
+                unknown(ft)
             return out
         if sp == 0x37:  # SQD
             out = []
@@ -599,6 +842,8 @@ def emit_lower(l, pc, upper, bkp, mac_expr, clip_expr, clip_var):
             out.append(f"{{ uint32_t a = vu1n::qaddr(n, (uint16_t){VI(ft)}); {sq('a', fs)} }}")
             return out
         fsf, ftf = (l >> 21) & 3, (l >> 23) & 3
+        if sp in (0x38, 0x39, 0x3A) and BND is not None:
+            BND.st[('q',)] = (128, frozenset())  # qfinish: finite
         if sp == 0x38:
             if not RG.local:
                 return [f"vu1n::divOp(s, {fs}, {fsf}, {ft}, {ftf});"]
@@ -618,12 +863,16 @@ def emit_lower(l, pc, upper, bkp, mac_expr, clip_expr, clip_var):
                 return vi_set(ft, f"vu1n::compBits(s, {fs}, {fsf})")
             return vi_set(ft, f"vu1n::laneBits16<{fsf}>({V(fs)})")
         if sp == 0x3D:
+            if ft:
+                unknown(ft)
             return [SETF(ft, m, f"vu1n::fromInt(vu1n::sx16({VI(fs)}))")] if ft else []
         if sp == 0x3E:
             return vi_set(ft, f"vu1n::ldWord(n, vu1n::qaddr(n, (uint16_t){VI(fs)}), {dest_comp(dest)})")
         if sp == 0x3F:
             return [f"vu1n::stWords(n, vu1n::qaddr(n, (uint16_t){VI(fs)}), {VI(ft)}, {dest});"]
         if sp == 0x64:
+            if ft:
+                unknown(ft)
             return [SETF(ft, m, "_mm_set1_ps(s.p)")] if ft else []
         if sp == 0x68:
             return vi_set(ft, "(int32_t)(s.top & 0x3FFu)")
@@ -658,7 +907,8 @@ def gen_block(pc0, pairs, tail_out=None, selfname=None, regs=None, pieces=None):
     if n >= 1 and is_branch(*pairs[n - 1]) and not last_is_branch_block:
         return None                     # branch without delay slot
     # register file in locals unless a pair calls out to the exact engine (it reads and writes the VU1State)
-    global RG
+    global RG, BND
+    LAST.clear()
     calls_out = any((not (u >> 31) and infos[i]['calls_out']) or classify(u)[0] in ('opmsub', 'opmula', 'other')
                     for i, (l, u) in enumerate(pairs))
     if regs is not None:
@@ -670,8 +920,10 @@ def gen_block(pc0, pairs, tail_out=None, selfname=None, regs=None, pieces=None):
         if selfname and LOCALS and not calls_out:
             # a block that may repeat itself: the VF registers it never writes get their operand view once (Regs.inv)
             pre = Regs(True)
+            saved, BND = BND, None
             if gen_block(pc0, pairs, [], None, regs=pre, pieces={}) == 'pieces':
                 inv = {k[1] for k in pre.defined if k[0] == 'f' and k not in pre.dirty and k[1] != 0}
+            BND = saved
         RG = Regs(LOCALS and not calls_out)
         RG.inv = inv
     # Flag model of the exact engine: an FMAC / CLIP / FCSET issued at pair j becomes visible to flag readers 4 cycles later
@@ -836,6 +1088,8 @@ def gen_block(pc0, pairs, tail_out=None, selfname=None, regs=None, pieces=None):
             lines.append(f"s.i = vu1n::qnorm(*(const float *)&(const uint32_t &)(0x{l:08x}u)); // I register")
             # (the line above is replaced below to avoid UB)
             lines[-1] = f"{{ const uint32_t bits = 0x{l:08x}u; float imm; std::memcpy(&imm, &bits, 4); {RG.setireg('vu1n::qnorm(imm)')} }}"
+            if BND is not None:
+                BND.st[('I',)] = _f32_e(l)
         elif lower_first:
             lines.extend(lo)
             lines.extend(up)
@@ -871,6 +1125,7 @@ def gen_block(pc0, pairs, tail_out=None, selfname=None, regs=None, pieces=None):
         return 'pieces'
     self_loop = bool(selfname) and RG.local and (pc0 in branch_targets or (not last_is_branch_block and end_pc == pc0))
     out = RG.decls()
+    LAST.update(self_loop=self_loop, decls=len(out), q_dirty=('q',) in RG.dirty, local=RG.local)
     if not self_loop:
         return out + lines + RG.writeback() + [f"return {nx};"]
     q_dirty = ('q',) in RG.dirty
@@ -895,31 +1150,53 @@ def branch_target(pc0, pairs):
     return (pc0 + 8 * (n - 2) + 8 + sx(l & 0x7FF, 11) * 8) & 0x3FFF
 
 
-def gen_cycle(pc_a, pairs_a, pc_b, pairs_b, name_a, name_b):
+def gen_cycle(pc_a, pairs_a, pc_b, pairs_b, name_a, name_b, bstate=None):
     """Two blocks that branch to each other (a loop unrolled into two blocks, e.g. the vertex loop at 0x2840/0x2898 of
     the main renderer, docs/vu1-hle.md): one function for A that goes on into B and back while chainTo agrees, the
     registers of both in locals the whole time. Before, every pass through the loop left through runNative twice (each
     block loading and storing its ~20 registers). Exits: like the single blocks (writeback, next pc). Returns the body
     lines or None (falls back to A's own function)."""
+    global BND
     if not (LOCALS and LOOPS):
         return None
+    saved, BND = BND, None
     # pass 1: the registers either block touches; pass 2: generated with all of them loaded at entry and stored at every
     # exit (an exit after A has to store what B wrote in earlier passes)
     union = Regs(True)
     for pc, pairs in ((pc_a, pairs_a), (pc_b, pairs_b)):
         p = {}
         if gen_block(pc, pairs, [], None, regs=union, pieces=p) != 'pieces':
+            BND = saved
             return None
+    BND = saved
     seeded = Regs(True)
     seeded.defined = list(union.defined)
     seeded.need = list(union.defined)
     seeded.dirty = list(union.dirty)
     seeded.inv = {k[1] for k in union.defined if k[0] == 'f' and k not in union.dirty and k[1] != 0}
     pa, pb = {}, {}
+    # fast variant (bstate: A's start state, B's start state without A's end): A, then B from A's end joined
+    if bstate is not None:
+        BND = Bounds(bstate['SA'])
     if gen_block(pc_a, pairs_a, [], None, regs=seeded, pieces=pa) != 'pieces':
+        BND = saved
         return None
+    info = {}
+    if bstate is not None:
+        info['end_A'] = BND.st
+        sb = _q_unknown(BND.st)
+        if bstate.get('Bextra') is not None:
+            sb = Bounds.join_states(sb, bstate['Bextra'])
+        nb = Bounds(sb)
+        nb.req, nb.score, nb.fails = BND.req, BND.score, BND.fails
+        info['SB'] = nb.st
+        BND = nb
     if gen_block(pc_b, pairs_b, [], None, regs=seeded, pieces=pb) != 'pieces':
+        BND = saved
         return None
+    if bstate is not None:
+        info.update(end_B=BND.st, req=BND.req, score=BND.score, fails=BND.fails)
+    BND = saved
     q_dirty = ('q',) in seeded.dirty
     wb = seeded.writeback()
 
@@ -936,12 +1213,297 @@ def gen_cycle(pc_a, pairs_a, pc_b, pairs_b, name_a, name_b):
         out += [f"else if (nx == {own_pc}u)", "{"] + chain(own_pc, own_fn, own_then) + ["}"]
         return out + wb + ["return nx | (lg ? kVu1nFinished : 0u);"]
 
-    body = seeded.decls() + ["for (;;)", "{", "    {"]
+    body = seeded.decls()
+    info['decls'] = len(body)
+    LAST.clear()
+    LAST.update(info)
+    body += ["for (;;)", "{", "    {"]
     body += ["        " + ln for ln in pa['lines'] + exit_of(pa, pc_a, name_a, "continue", pc_b, name_b, "goto cycleB")]
     body += ["    }", "cycleB:", "    {"]
     body += ["        " + ln for ln in pb['lines'] + exit_of(pb, pc_b, name_b, "goto cycleB", pc_a, name_a, "continue")]
     body += ["    }", "}"]
     return body
+
+
+def _q_unknown(st):
+    st = dict(st)
+    st[('q',)] = None   # Q is reloaded from the state after chainTo (commitDue may write it)
+    return st
+
+
+def _lim(E):
+    """largest magnitude bits below 2^E; E = 128: the largest finite value (Inf / NaN fail)"""
+    return ((min(E, 128) + 127) << 23) - 1
+
+
+def _check_lines(req, Emap, Edef, xname):
+    """entry check of a fast variant: every entry lane its code relied on (origin) below 2^E in magnitude (E per origin),
+    else the exact function"""
+    vf, acc, scal = {}, {}, []
+    for o, level in req.items():
+        E = Emap.get(o, Edef) if level == 2 else 128
+        if o[0] == 'f':
+            vf.setdefault(o[1], {})[o[2]] = E
+        elif o[0] == 'acc':
+            acc[o[1]] = E
+        else:
+            scal.append(({'q': 'QR', 'I': 'IR'}[o[0]], E))
+
+    def limv(lanes):
+        l = [_lim(lanes[k]) if k in lanes else 0x7FFFFFFF for k in range(4)]
+        return f"_mm_set_epi32(0x{l[3]:08x}, 0x{l[2]:08x}, 0x{l[1]:08x}, 0x{l[0]:08x})"
+    pairs = [(f"F{r}", limv(ln)) for r, ln in sorted(vf.items())]
+    if acc:
+        pairs.append(("ACC", limv(acc)))
+    pairs += [(f"_mm_set_ss({x})", limv({0: E})) for x, E in sorted(scal)]
+    if not pairs:
+        return []
+    terms = [f"vu1nf::gt({v}, {lv})" for v, lv in pairs]
+    # registers with the same per-lane limits: maximum of the magnitudes first (two vector ops per register), one compare
+    groups = {}
+    for v, lv in pairs:
+        groups.setdefault(lv, []).append(f"vu1nf::mg({v})")
+    cmps = []
+    for lv, ms in groups.items():
+        m = ms[0]
+        for x in ms[1:]:
+            m = f"_mm_max_epu32({m}, {x})"
+        cmps.append(f"_mm_cmpgt_epi32({m}, {lv})")
+    expr = cmps[0]
+    for t in cmps[1:]:
+        expr = f"_mm_or_si128({expr}, {t})"
+    out = [f"if (vu1nf::any({expr})) // fast variant: entry values in range (vu1n_gen.py Bounds)",
+           "{",
+           f"    VU1NF_MISS(\"{xname}\");",
+           "#if defined(VU1N_FAST_STATS_REGS)"]
+    out += [f"    if (vu1nf::any({t})) vu1nf::why(\"{xname}\", \"{v[:12]}\", {v}, {lv});" for t, (v, lv) in zip(terms, pairs)]
+    out += ["#endif", f"    return {xname}(n);", "}", "VU1NF_HIT();"]
+    return out
+
+
+def _fixpoint(gen, entry):
+    """gen(start) -> list of end-of-pass states that flow back into the start. Iterates the start state of a loop function
+    to its fixed point (join with the entry state, widening after a few rounds); returns the final start state"""
+    start = entry
+    for it in range(40):
+        back = gen(start)
+        if back is None:
+            return None
+        new = entry
+        for b in back:
+            new = Bounds.join_states(new, _q_unknown(b))
+        if it >= 6:
+            new = Bounds.widen(start, new)
+        if new == start:
+            return start
+        start = new
+    return None
+
+
+FAST_E0 = 64      # entry bound tried first for every origin
+FAST_FLOOR = 16   # lowest entry bound the search goes to
+FAST_STEP = 4
+
+
+def _search(run):
+    """run(Emap) -> (body, decls, score, req, fails) or None. Entry bounds per origin: all start at FAST_E0; while MADDs
+    stay on maddc although every lane is known, the origins they depend on that have the highest bound are lowered by
+    FAST_STEP (balanced: a chain of matrix transforms ends with equal bounds), keeping the best-scoring map."""
+    Emap = {}
+    cur = run(Emap)
+    if cur is None:
+        return None
+    best = (cur, dict(Emap))
+    stall = 0
+    for step in range(80):
+        cand = {}
+        for origs in cur[4]:
+            for o in origs:
+                if Emap.get(o, FAST_E0) > FAST_FLOOR:
+                    cand[o] = Emap.get(o, FAST_E0)
+        if not cand:
+            break
+        top = max(cand.values())
+        for o, e in cand.items():
+            if e == top:
+                Emap[o] = e - FAST_STEP
+        cur = run(Emap)
+        if cur is None:
+            break
+        if cur[2] > best[0][2]:
+            best = (cur, dict(Emap))
+            stall = 0
+        else:
+            stall += 1
+            if stall >= 14:
+                break
+    return best
+
+
+def fast_self_loop(pc, pairs, name):
+    """fast variant of a self-loop block: (body lines, Emap, score) or None"""
+    def run(Emap):
+        global BND
+        entry = Bounds.entry(Emap, FAST_E0)
+
+        def gen(start):
+            global BND
+            BND = Bounds(start)
+            body = gen_block(pc, pairs, [], name)
+            end = BND.st
+            BND = None
+            return None if body is None else [end]
+        start = _fixpoint(gen, entry)
+        if start is None:
+            return None
+        BND = Bounds(start)
+        body = gen_block(pc, pairs, [], name)
+        b, BND = BND, None
+        if body is None or not LAST.get('self_loop'):
+            return None
+        return (body, LAST['decls'], b.score, b.req, b.fails)
+    best = _search(run)
+    if best is None or not best[0][2]:
+        return None
+    (body, nd, score, req, _), Emap = best
+    return body[:nd] + _check_lines(req, Emap, FAST_E0, name + "_x") + body[nd:], Emap, score
+
+
+def _check_cost(req):
+    """instructions of the entry check: two per register (magnitude, maximum), a compare per limit vector, the branch"""
+    regs = {o[:2] for o in req}
+    return 2 * len(regs) + 6
+
+
+FAST_STRAIGHT_MIN = 8   # a block that runs once per entry needs this many instructions saved beyond its check
+
+
+def fast_straight(pc, pairs, name):
+    """fast variant of a block without a loop: one pass, no fixed point; only when it saves more than its check costs"""
+    def run(Emap):
+        global BND
+        BND = Bounds(Bounds.entry(Emap, FAST_E0))
+        body = gen_block(pc, pairs, [], name)
+        b, BND = BND, None
+        if body is None or LAST.get('self_loop') or 'decls' not in LAST:
+            return None
+        return (body, LAST['decls'], b.score, b.req, b.fails)
+    best = _search(run)
+    if best is None or best[0][2] - _check_cost(best[0][3]) < FAST_STRAIGHT_MIN:
+        return None
+    (body, nd, score, req, _), Emap = best
+    return body[:nd] + _check_lines(req, Emap, FAST_E0, name + "_x") + body[nd:], Emap, score
+
+
+def fast_cycle(pc, pairs, tgt, pairs_b, name, name_b):
+    def run(Emap):
+        entry = Bounds.entry(Emap, FAST_E0)
+        sa, bextra = entry, None
+        for it in range(40):
+            if gen_cycle(pc, pairs, tgt, pairs_b, name, name_b, {'SA': sa, 'Bextra': bextra}) is None:
+                return None
+            ea, eb = _q_unknown(LAST['end_A']), _q_unknown(LAST['end_B'])
+            nsa = Bounds.join_states(Bounds.join_states(entry, ea), eb)
+            nbx = eb
+            if it >= 6:
+                nsa = Bounds.widen(sa, nsa)
+                nbx = Bounds.widen(bextra, nbx) if bextra is not None else nbx
+            # B's start = join(A's end, B's end): stable when A's start and B's own back edge are
+            if nsa == sa and nbx == bextra:
+                body = gen_cycle(pc, pairs, tgt, pairs_b, name, name_b, {'SA': sa, 'Bextra': bextra})
+                if body is None:
+                    return None
+                return (body, LAST['decls'], LAST['score'], LAST['req'], LAST['fails'])
+            sa, bextra = nsa, nbx
+        return None
+    best = _search(run)
+    if best is None or not best[0][2]:
+        return None
+    (body, nd, score, req, _), Emap = best
+    return body[:nd] + _check_lines(req, Emap, FAST_E0, name + "_x") + body[nd:], Emap, score
+
+
+FAST_PREAMBLE = r"""// fast variants (vu1n_gen.py Bounds): entry check helpers, FTOI of a finite view
+#if defined(VU1N_FAST_STATS) // entry checks passed / failed, reported at exit (replay harness)
+#include <cstdio>
+namespace vu1nf
+{
+    inline uint64_t g_hit = 0, g_miss = 0;
+    struct Report
+    {
+        ~Report() { std::fprintf(stderr, "[vu1nf] fast %llu, exact %llu\n", (unsigned long long)g_hit, (unsigned long long)g_miss); }
+    };
+    inline Report g_report;
+}
+namespace vu1nf
+{
+    inline void why(const char *fn, const char *what, __m128 v, __m128i lim)
+    {
+        static int n = 0;
+        alignas(16) uint32_t b[4], l[4];
+        _mm_store_si128(reinterpret_cast<__m128i *>(b), _mm_castps_si128(v));
+        _mm_store_si128(reinterpret_cast<__m128i *>(l), lim);
+        if (n++ < 400)
+            std::fprintf(stderr, "[vu1nf] why %s %s %08x/%08x %08x/%08x %08x/%08x %08x/%08x\n", fn, what, b[0], l[0], b[1], l[1], b[2], l[2], b[3], l[3]);
+    }
+}
+#define VU1NF_HIT() (++vu1nf::g_hit)
+#define VU1NF_MISS(name) do { static int c_ = 0; ++vu1nf::g_miss; if (c_++ < 2) std::fprintf(stderr, "[vu1nf] miss %s\n", name); } while (0)
+#else
+#define VU1NF_HIT() ((void)0)
+#define VU1NF_MISS(name) ((void)0)
+#endif
+namespace vu1nf
+{
+    // magnitude bits
+    VU1N_INLINE __m128i mg(__m128 v) { return _mm_and_si128(_mm_castps_si128(v), _mm_set1_epi32(0x7FFFFFFF)); }
+    // lanes whose magnitude bits exceed the per-lane limit (Inf / NaN exceed every limit below 0x7F800000)
+    VU1N_INLINE __m128i gt(__m128 v, __m128i lim)
+    {
+        return _mm_cmpgt_epi32(_mm_and_si128(_mm_castps_si128(v), _mm_set1_epi32(0x7FFFFFFF)), lim);
+    }
+    VU1N_INLINE bool any(__m128i m)
+    {
+#if defined(__aarch64__)
+        return vmaxvq_u32(vreinterpretq_u32_s32(vreinterpretq_s32_m128i(m))) != 0u;
+#else
+        return _mm_movemask_epi8(m) != 0;
+#endif
+    }
+    // vu1n::clipValv in vector compares (same compares, same flush-to-zero mode)
+    VU1N_INLINE uint32_t clipv(__m128 v, __m128 t, uint32_t prev)
+    {
+        const __m128 w = _mm_and_ps(_mm_shuffle_ps(t, t, _MM_SHUFFLE(3, 3, 3, 3)), _mm_castsi128_ps(_mm_set1_epi32(0x7FFFFFFF)));
+        const __m128 nw = _mm_xor_ps(w, _mm_castsi128_ps(_mm_set1_epi32(static_cast<int>(0x80000000u))));
+        const __m128i gt = _mm_castps_si128(_mm_cmpgt_ps(v, w));
+        const __m128i lt = _mm_castps_si128(_mm_cmplt_ps(v, nw));
+#if defined(__aarch64__)
+        const uint32x4_t bits = vorrq_u32(vandq_u32(vreinterpretq_u32_m128i(gt), (uint32x4_t){1u, 4u, 16u, 0u}),
+                                          vandq_u32(vreinterpretq_u32_m128i(lt), (uint32x4_t){2u, 8u, 32u, 0u}));
+        const uint32_t f = vaddvq_u32(bits);
+#else
+        const uint32_t g = static_cast<uint32_t>(_mm_movemask_ps(_mm_castsi128_ps(gt))), l = static_cast<uint32_t>(_mm_movemask_ps(_mm_castsi128_ps(lt)));
+        const uint32_t f = (g & 1u) | ((l & 1u) << 1) | ((g & 2u) << 1) | ((l & 2u) << 2) | ((g & 4u) << 2) | ((l & 4u) << 3);
+#endif
+        return ((prev << 6) | f) & 0xFFFFFFu;
+    }
+    // vu1n::ftoiv without the clamp: the operand is a view (finite), where clampv is the identity
+    template <int Shift>
+    VU1N_INLINE __m128 ftoiv(__m128 finite)
+    {
+        constexpr float scale = Shift == 0 ? 1.0f : Shift == 4 ? 16.0f : Shift == 12 ? 4096.0f : 32768.0f;
+        const __m128 v = _mm_mul_ps(finite, _mm_set1_ps(scale));
+#if defined(__aarch64__)
+        return vreinterpretq_f32_s32(vcvtq_s32_f32(v));
+#else
+        const __m128 big = _mm_cmpge_ps(v, _mm_set1_ps(2147483648.0f));
+        const __m128i i = _mm_cvttps_epi32(v);
+        return _mm_blendv_ps(_mm_castsi128_ps(i), _mm_castsi128_ps(_mm_set1_epi32(0x7FFFFFFF)), big);
+#endif
+    }
+}
+
+"""
 
 
 def main():
@@ -958,6 +1520,10 @@ def main():
         elif args[i] == '--locals':
             global LOCALS
             LOCALS = True
+            i += 1
+        elif args[i] == '--no-fast':
+            global FAST
+            FAST = False
             i += 1
         elif args[i] == '--no-cycles':
             global CYCLES
@@ -984,6 +1550,7 @@ def main():
     blocks = {}
     unsupported = 0
     fused = {}            # A's key -> B's function name (gen_cycle)
+    fast = {}             # key -> (fast variant body, E, score): the block's function; the exact one becomes <name>_x
     extern_names = set()  # B functions called by name from another block's function: not static, declared before use
     for f in inputs:
         code = open(f, 'rb').read()
@@ -1006,6 +1573,10 @@ def main():
             blocks[key] = (pc, len(pairs), body, tail[0] if tail else None, reads_entry)
             if body is None:
                 unsupported += 1
+            elif FAST and LAST.get('local') and 'decls' in LAST:
+                fb = fast_self_loop(pc, pairs, name) if LAST.get('self_loop') else fast_straight(pc, pairs, name)
+                if fb is not None:
+                    fast[key] = fb
         # two-block cycles (A branches to B, B back to A): A's function runs both (gen_cycle)
         if CYCLES:
             for pc in sorted(heads_of(code, extra)):
@@ -1025,6 +1596,11 @@ def main():
                 body = gen_cycle(pc, pairs, tgt, pairs_b, name, name_b)
                 if body is None:
                     continue
+                fast.pop(key, None)
+                if FAST:
+                    fb = fast_cycle(pc, pairs, tgt, pairs_b, name, name_b)
+                    if fb is not None:
+                        fast[key] = fb
                 fused[key] = name_b
                 extern_names.add(name_b)
                 p, npairs, _, tail, reads_entry = blocks[key]
@@ -1046,6 +1622,12 @@ def main():
             mp, mm, cp = (list(x) + [0] * (3 - len(x)) for x in tail)
             t.append(f"static const VU1TailDesc {name}_tail = {{{len(tail[0])}, {len(tail[2])}, {{{mp[0]}, {mp[1]}, {mp[2]}}}, "
                      f"{{{mm[0]}, {mm[1]}, {mm[2]}}}, {{{cp[0]}, {cp[1]}, {cp[2]}}}}};")
+        if key in fast:
+            t.append(f"{'' if name in extern_names else 'static '}uint32_t {name}(VU1NativeCtx &n);")
+            t += [f"static VU1N_NOINLINE uint32_t {name}_x(VU1NativeCtx &n)", "{", "    VU1State &s = *n.s;"]
+            t += ["    " + ln for ln in body]
+            t += ["}", ""]
+            body = fast[key][0]
         t += [f"{'' if name in extern_names else 'static '}uint32_t {name}(VU1NativeCtx &n)", "{", "    VU1State &s = *n.s;"]
         t += ["    " + ln for ln in body]
         t += ["}", ""]
@@ -1059,7 +1641,7 @@ def main():
               '#ifndef VU1N_HAS_MADDC // runtimes before agent/sw-vu1-hle: same result, clamp always\n'
               'namespace vu1n\n{\n    template <bool Sub>\n'
               '    inline __m128 maddc(__m128 acc, __m128 a, __m128 b, __m128 &raw)\n    {\n'
-              '        raw = madd<Sub>(acc, a, b);\n        return clampv(raw);\n    }\n}\n#endif\n\n')
+              '        raw = madd<Sub>(acc, a, b);\n        return clampv(raw);\n    }\n}\n#endif\n\n' + FAST_PREAMBLE)
     footer = '\n#if defined(_MSC_VER)\n#pragma float_control(pop)\n#endif\n'
     for k in range(parts):
         body = header + "\n".join(texts[k]) + "\nnamespace\n{\n    const bool g_registered = []\n    {\n" + "\n".join(regs[k]) + "\n        return true;\n    }();\n}\n" + footer
@@ -1067,7 +1649,12 @@ def main():
         old = open(path, encoding='utf-8').read() if os.path.exists(path) else None
         if old != body:
             open(path, 'w', encoding='utf-8').write(body)
-    print(f"[vu1n_gen] {len(inputs)} images, {len(blocks)} distinct blocks, {count} generated, {unsupported} unsupported")
+    es = {}
+    for v in fast.values():
+        for e in v[1].values():
+            es[e] = es.get(e, 0) + 1
+    print(f"[vu1n_gen] {len(inputs)} images, {len(blocks)} distinct blocks, {count} generated, {unsupported} unsupported, "
+          f"{len(fast)} fast variants (lowered entry bounds: {dict(sorted(es.items()))})")
 
 
 if __name__ == '__main__':

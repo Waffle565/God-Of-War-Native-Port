@@ -131,6 +131,8 @@ threefold on the real core, so changes are timed on the console with the replay 
 | + clamp behind a predicted branch (`clampr`) | 160.0 | slower: dropped |
 | probe: no flag rings / block history / FDIV timing (wrong flags) | 140.6 | upper bound of the cycle-model bookkeeping: -7.6 % |
 | probe: no operand normalisation, no clamp, no wide MADD | 108.2 | -29 %, but not exact (below) |
+| sw-vu1-hle (two-block cycles, maddc, invariant views) | 137.0 | docs/vu1-hle.md |
+| sw-vu1fast: fast variants (range analysis + entry check, bit-exact) | not measured yet | qemu -16 %; docs/vu1-hle.md top section |
 
 - In game: 18.2 -> 16.9 ns per VU1 cycle with `--locals`; gameplay stays ~20-21 fps (VU1 still saturated).
   `switch/build.sh` now refuses pregenerated blocks without `--locals` (`ALLOW_OLD_VU1N=1` overrides).
@@ -141,7 +143,8 @@ threefold on the real core, so changes are timed on the console with the replay 
   (PC zone walk 1832, ship 2000, consecutive 3000; locals and memory forms).
 - **Exact float semantics cost ~29 %**, but cannot go: without them 1 of 2000 ship runs differs (vertex values and
   clip flags of one batch), yet 23-27 % of the PC Olympus runs do (each of operand normalisation, clamp and wide MADD
-  matters there).
+  matters there). sw-vu1fast removes them where a range analysis proves them the identity, guarded by a per-call entry
+  check (docs/vu1-hle.md, "Exact float handling out of the hot loops").
 - **Running VU1 programs in parallel does not pay.** Each MSCAL resets the pipeline state (`resetScheduler`), so
   run k+1 depends on run k only through registers and data memory. Replaying 3000 consecutive ship runs: between
   runs only the pc changes (registers flow from one program into the next), and started with the registers of run
