@@ -11,6 +11,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <atomic>
 #include <condition_variable>
 #include <mutex>
 #include <thread>
@@ -68,6 +69,12 @@ namespace ps2x::iop::detail
         // stereo samples produced so far (producer: IOP thread, consumer: host audio thread)
         [[nodiscard]] size_t pendingFrames() const;
         size_t drainOutput(int16_t *stereo, size_t maxFrames, size_t maxLatencyFrames = SIZE_MAX);
+        // seconds the mixer thread spent mixing since the last call (0 when mixing inline)
+        [[nodiscard]] double takeMixerSeconds() noexcept;
+        // caller thread: time spent waiting for the mixer thread in sync() since the last call, and how many waits
+        [[nodiscard]] double takeSyncWaitSeconds(uint64_t &waits) noexcept;
+        // samples the mixer thread mixed since the last call
+        [[nodiscard]] uint64_t takeWorkerSamples() noexcept { return m_workerSamples.exchange(0, std::memory_order_relaxed); }
 
     private:
         struct Voice
@@ -109,7 +116,7 @@ namespace ps2x::iop::detail
         static uint32_t naxOf(const Voice &v) noexcept;
         void streamSample(uint32_t core, int32_t &left, int32_t &right);
         void step();
-        void mixTo(uint64_t iopCycle);
+        uint64_t mixTo(uint64_t iopCycle); // returns the samples mixed
 
         // GOW-Port: mixing on its own thread ("SoundMix", docs/sound.md "Mixer thread"). advanceTo() only records the
         // cycle to mix up to; the worker mixes there. Every other call first waits until the worker has caught up
@@ -121,8 +128,14 @@ namespace ps2x::iop::detail
         void workerLoop();
         mutable std::mutex m_jobMutex;
         mutable std::condition_variable m_jobCv;
+        uint64_t m_batchCycles = 128u * CyclesPerSample; // GOW_SOUND_BATCH=<samples> (default 128, ~2.7 ms) per wake of the worker
+        std::atomic<uint64_t> m_workerSamples{0}; // samples mixed by the worker (the rest: inline in sync())
         uint64_t m_jobTarget = 0; // the latest advanceTo() cycle not yet handed to mixTo()
-        bool m_jobPending = false;
+        mutable uint64_t m_callerTarget = 0; // caller thread: the latest advanceTo() cycle
+        mutable uint64_t m_handedTarget = 0; // caller thread: the cycle mixed up to or handed to the worker
+        std::atomic<uint64_t> m_mixerNanos{0};
+        mutable uint64_t m_syncWaitNanos = 0, m_syncWaits = 0;
+        mutable bool m_jobPending = false; // sync() takes a batch back
         bool m_jobRunning = false;
         bool m_stop = false;
         bool m_async = false;
