@@ -17,6 +17,7 @@ static bool gowUsePcsx2Vu1(); // GOW_VU1_PCSX2=1, defined before PS2Runtime::ini
 #include "Kernel/Stubs/MPEG.h"
 #include "ps2_host_backend.h"
 #include "ps2_iop_host.h"
+#include "ps2_iop_thread.h"
 #include "ps2x/iop/iop_subsystem.h"
 
 #if defined(USE_SSE2NEON)
@@ -537,6 +538,7 @@ PS2Runtime::PS2Runtime()
 {
     m_iopHost = std::make_unique<PS2IopHostAdapter>(*this);
     m_iopSubsystem = std::make_unique<ps2x::iop::IopSubsystem>(*m_iopHost);
+    m_iopThread = std::make_unique<PS2IopThread>(*m_iopSubsystem);
 
     m_eeScheduler = std::make_unique<EeScheduler>(*this);
     // EE timer registers read the guest EE clock: the scheduler hands over the cycles its fast path deferred first.
@@ -604,6 +606,7 @@ PS2Runtime::~PS2Runtime()
 #if !defined(PLATFORM_VITA)
         stopSpu2Audio(); // GOW-Port: antes de destruir el IOP que produce las muestras
 #endif
+        m_iopThread.reset(); // GOW-Port: stop the IOP thread before the IOP goes away
         m_iopSubsystem.reset();
         m_iopHost.reset();
 #if defined(PLATFORM_VITA) || defined(PLATFORM_SWITCH)
@@ -638,44 +641,51 @@ PS2Runtime::~PS2Runtime()
 
 ps2x::iop::ModuleLoadResult PS2Runtime::loadIopModule(std::string_view path, const void *arguments, uint32_t argumentSize)
 {
+    PS2IopThread::Exclusive own(m_iopThread.get(), true); // the IOP thread's queued batches run first
     auto scope = m_iopHost->enterCall(nullptr, m_memory.getRDRAM());
     return m_iopSubsystem->loadModule(path, arguments, argumentSize);
 }
 
 ps2x::iop::ModuleLoadResult PS2Runtime::loadIopModuleBuffer(uint32_t guestAddress, const void *arguments, uint32_t argumentSize)
 {
+    PS2IopThread::Exclusive own(m_iopThread.get(), true); // the IOP thread's queued batches run first
     auto scope = m_iopHost->enterCall(nullptr, m_memory.getRDRAM());
     return m_iopSubsystem->loadModuleBuffer(guestAddress, arguments, argumentSize);
 }
 
 bool PS2Runtime::stopIopModule(int32_t moduleId, int32_t *result)
 {
+    PS2IopThread::Exclusive own(m_iopThread.get(), true); // the IOP thread's queued batches run first
     auto scope = m_iopHost->enterCall(nullptr, m_memory.getRDRAM());
     return m_iopSubsystem->stopModule(moduleId, result);
 }
 
 ps2x::iop::RpcAbi PS2Runtime::selectIopRpcAbi(const ps2x::iop::RpcAbiRequest &request) const
 {
+    PS2IopThread::Exclusive own(m_iopThread.get(), true); // the IOP thread's queued batches run first
     return m_iopSubsystem->selectRpcAbi(request);
 }
 
 bool PS2Runtime::canBindIopRpc(uint32_t sid) const noexcept
 {
+    PS2IopThread::Exclusive own(m_iopThread.get(), true); // the IOP thread's queued batches run first
     return m_iopSubsystem->canBindRpc(sid);
 }
 
 ps2x::iop::RpcResult PS2Runtime::handleIopRpc(uint8_t *rdram, R5900Context *ctx, ps2x::iop::RpcRequest request)
 {
+    ps2_perf::Scope perf(ps2_perf::Bucket::Iop);
+    PS2IopThread::Exclusive own(m_iopThread.get(), true); // the IOP thread's queued batches run first
     auto scope = m_iopHost->enterCall(ctx, rdram);
     request.callToken = scope.token();
-    ps2_perf::Scope perf(ps2_perf::Bucket::Iop);
     return m_iopSubsystem->handleRpc(request);
 }
 
 void PS2Runtime::notifyIopSifTransfer(uint8_t *rdram, const ps2x::iop::SifTransfer &transfer)
 {
-    auto scope = m_iopHost->enterCall(nullptr, rdram);
     ps2_perf::Scope perf(ps2_perf::Bucket::Iop);
+    PS2IopThread::Exclusive own(m_iopThread.get(), true); // the IOP thread's queued batches run first
+    auto scope = m_iopHost->enterCall(nullptr, rdram);
     m_iopSubsystem->onSifTransfer(transfer);
 }
 
@@ -683,10 +693,37 @@ void PS2Runtime::advanceIopEeCycles(uint64_t eeCycles) noexcept
 {
     // Called at every EE checkpoint (millions/s): only the batched IOP run is timed, the accrual is a few adds
     // (the perf scope reads the host clock twice, which was ~40 % of the EE thread with GOW_PERF_DIAG=1).
+    PS2IopThread *const thread = m_iopThread.get();
+    if (thread && thread->enabled())
+    {
+        // GOW-Port: the batch goes to the IOP thread (docs/iop-thread.md); what the thread did to EE state since the
+        // last checkpoint lands here, where inline mode would have done it
+        if (thread->hasEffects())
+        {
+            ps2_perf::Scope perf(ps2_perf::Bucket::Iop);
+            thread->applyEffects();
+        }
+        if (!m_iopSubsystem->accrueEeCycles(eeCycles))
+            return;
+        // queuing a batch is a few atomic operations: no perf scope (its two clock reads would cost more than the
+        // grant); a lead wait inside is charged to GuestWait
+        thread->grant(m_iopSubsystem->takePendingIopCycles());
+        return;
+    }
     if (!m_iopSubsystem->accrueEeCycles(eeCycles))
         return;
     ps2_perf::Scope perf(ps2_perf::Bucket::Iop);
     m_iopSubsystem->runPendingEeCycles();
+}
+
+bool PS2Runtime::syncIop()
+{
+    PS2IopThread *const thread = m_iopThread.get();
+    if (!thread || !thread->enabled() || !thread->busy())
+        return false;
+    ps2_perf::Scope perf(ps2_perf::Bucket::Iop);
+    PS2IopThread::Exclusive own(thread, true);
+    return true;
 }
 
 uint64_t PS2Runtime::iopEeCyclesUntilBatch() const noexcept
@@ -696,36 +733,43 @@ uint64_t PS2Runtime::iopEeCyclesUntilBatch() const noexcept
 
 void PS2Runtime::resetIop()
 {
+    PS2IopThread::Exclusive own(m_iopThread.get(), true); // the IOP thread's queued batches run first
     m_iopSubsystem->reset();
 }
 
 ps2x::iop::DebugSnapshot PS2Runtime::iopDebugSnapshot() const
 {
+    PS2IopThread::Exclusive own(m_iopThread.get(), false); // another thread: pause the IOP thread only
     return m_iopSubsystem->debugSnapshot();
 }
 
 uint32_t PS2Runtime::allocateIopMemory(uint32_t size, uint32_t alignment)
 {
+    PS2IopThread::Exclusive own(m_iopThread.get(), true); // the IOP thread's queued batches run first
     return m_iopSubsystem ? m_iopSubsystem->allocateMemory(size, alignment) : 0u;
 }
 
 bool PS2Runtime::freeIopMemory(uint32_t address)
 {
+    PS2IopThread::Exclusive own(m_iopThread.get(), true); // the IOP thread's queued batches run first
     return m_iopSubsystem && m_iopSubsystem->freeMemory(address);
 }
 
 bool PS2Runtime::readIopMemory(uint32_t address, void *destination, size_t size) const
 {
+    PS2IopThread::Exclusive own(m_iopThread.get(), true); // the IOP thread's queued batches run first
     return m_iopSubsystem && m_iopSubsystem->readMemory(address, destination, size);
 }
 
 bool PS2Runtime::writeIopMemory(uint32_t address, const void *source, size_t size)
 {
+    PS2IopThread::Exclusive own(m_iopThread.get(), true); // the IOP thread's queued batches run first
     return m_iopSubsystem && m_iopSubsystem->writeMemory(address, source, size);
 }
 
 bool PS2Runtime::zeroIopMemory(uint32_t address, size_t size)
 {
+    PS2IopThread::Exclusive own(m_iopThread.get(), true); // the IOP thread's queued batches run first
     return m_iopSubsystem && m_iopSubsystem->zeroMemory(address, size);
 }
 
@@ -1263,7 +1307,10 @@ bool PS2Runtime::loadELF(const std::string &elfPath)
         return false;
     }
 
-    m_iopSubsystem->reset();
+    {
+        PS2IopThread::Exclusive own(m_iopThread.get(), true);
+        m_iopSubsystem->reset();
+    }
 
     ps2_game_overrides::applyMatching(*this,
                                       elfPath,

@@ -33,6 +33,10 @@ namespace ps2x::iop
         // EE cycles that can still accrue before accrueEeCycles reports a batch (0: the next call does).
         [[nodiscard]] uint64_t eeCyclesUntilBatch() const noexcept;
         void runPendingEeCycles() noexcept;
+        // runPendingEeCycles in two halves for the IOP host thread (docs/iop-thread.md): the EE thread takes the due
+        // batch (IOP cycles, 0 if none) and whichever thread owns the IOP runs it; same result as runPendingEeCycles.
+        [[nodiscard]] uint64_t takePendingIopCycles() noexcept;
+        void runIopCycles(uint64_t iopCycles) noexcept;
 
         [[nodiscard]] RpcAbi selectRpcAbi(const RpcAbiRequest &request) const;
         [[nodiscard]] bool canBindRpc(uint32_t sid) const noexcept;

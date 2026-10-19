@@ -44,6 +44,7 @@ namespace ps2x::iop
 }
 
 class PS2IopHostAdapter;
+class PS2IopThread;
 class PS2IopTransport;
 class EeScheduler;
 struct EeEvent;
@@ -303,6 +304,10 @@ public:
     bool writeIopMemory(uint32_t address, const void *source, size_t size);
     bool zeroIopMemory(uint32_t address, size_t size);
     bool isIopMemoryRange(uint32_t address, size_t size) const;
+    // GOW-Port: the IOP's host thread (docs/iop-thread.md); null only during construction/destruction
+    [[nodiscard]] PS2IopThread *iopThread() noexcept { return m_iopThread.get(); }
+    // EE thread: run the IOP batches queued for the IOP thread and apply its effects on EE state (before idling)
+    bool syncIop();
 
     using DebugUiCallback = void (*)(PS2Runtime &runtime, void *userData);
     void setDebugUiCallbacks(DebugUiCallback initCallback,
@@ -511,6 +516,7 @@ private:
     bool m_hostWindowOwned = false;
     std::unique_ptr<PS2IopHostAdapter> m_iopHost;
     std::unique_ptr<ps2x::iop::IopSubsystem> m_iopSubsystem;
+    std::unique_ptr<PS2IopThread> m_iopThread;
     PS2AudioBackend m_audioBackend;
     PSPadBackend m_padBackend;
     PS2RomDevice m_romDevice;
