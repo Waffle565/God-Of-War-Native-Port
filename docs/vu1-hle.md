@@ -3,6 +3,67 @@
 Goal: VU1 is the limit of the Switch build in gameplay (~4.0 s busy per 5 s at ~20 fps, docs/switch-deko3d.md); 60 fps
 needs it ~2.4x faster. This page records what the VU1 time is spent on and what the generator does about it.
 
+## Loops that read entry flags stay in their function (2026-10-19, ext agent/sw-vu1cyc)
+**Handoff.** Branch `agent/sw-vu1cyc` (ext 31a482d + 823cf54; worktree ext/PS2Recomp-kl-vu1cyc, own build dir
+`out/build-pc`, configured like sw-vu1fast's with `-DPS2X_VU1N_GEN_OVERRIDE=<root>/port/vu1cyc/gen/vu1n_gen.py`).
+Only the runtime changed (ps2_vu1_native.h / .inl); the generator's default output is byte-identical to sw-vu1fast's
+(tools/vu1/vu1n_gen.py only gained the opt-in `--regions`, below). Not yet run on the console.
+
+**What it was.** About 40 % of what was left on the ship recording (qemu) was `runNative` + `blockTiming`. The hot
+self-loops and two-block cycles of the vertex loops (e.g. b3598, b2858: `FMEQ`/`FMAND` read the MAC flags of the
+previous pass, so the block "reads entry flags") could not chain: `chainTo` refused every successor that reads entry
+flags, so each pass returned to runNative, which ran `blockTiming` for it. Those blocks also hold a DIV (FDIV unit read
+at entry), so they were not `memoable` either: every pass did the full history walk, signature and cache search.
+
+**Change (bit-exact by construction).**
+- `VU1NativeAccess::entryTiming` (inline): the predecessor memo, then `blockTiming`. runNative and chainTo both use it.
+- The memo also serves blocks that read FDIV/EFU state: `scalarKey` packs the FDIV/EFU part of blockTiming's in-flight
+  signature (slack per unit, 0 = not busy) into one word, stored with the memo (`Slot::memoScalar`). Under the memo's
+  conditions (predecessor ended at this block's start after >= maxLat cycles, nothing from the exact engine in flight)
+  the lane part of the signature depends on the predecessor's timing table alone, so equal (predecessor, table, scalar
+  key) means equal signature, hence the same cached table and id that blockTiming would return.
+- `chainTo` enters a successor that reads entry flags with that entry timing (and its tail record on it), exactly as
+  runNative would set it up. The self-loops and cycles of the vertex loops now run every pass inside their function.
+- `GOW_VU1N_CHAIN_FLAGS=0`: the former behavior (same results; checked on all three recordings).
+- Replay: warm passes are checked too now (`(warm passes: N differ)`: hash or VU cycle count unlike the cold pass).
+
+**Results.**
+- Replay harness, x86 and aarch64 (qemu), against the recorded hashes: ship 2000, consecutive 3000, PC zone 1832 records,
+  0 differ, warm passes 0 differ; the result dumps (state incl. the VU cycle count, data memory, GIF packets) are
+  byte-identical to sw-vu1fast's x86 dumps. With `GOW_VU1N_CHAIN_FLAGS=0` likewise.
+- qemu aarch64 (one warm pass, replay hashing left out): ship 30 records **1.418 M -> 1.210 M (-14.7 %)**; blockTiming
+  0.199 M -> ~0, generated blocks 1.085 -> 1.064 M (b3598 0.167 -> 0.135 M: no entry check and register reload per
+  pass), runNative unchanged (0.372 -> 0.377 M: it now dispatches mostly the straight-line blocks and the multi-block
+  loops). PC zone 30 records 1.983 -> 1.950 M (-1.7 %): its hot loop (0x1728-0x1bc8) has six blocks per pass.
+- x86 replay (WSL, 5 warm passes, three alternating rounds; too noisy to rank): ship 33.9-36.5 -> 32.5-36.3 ms,
+  consecutive 64.3-76.3 -> 59.8-66.3 ms, PC zone 34.9-36.7 -> 36.2-37.3 ms.
+- PC build (`out/build-pc`, generated parts identical to the replayed ones): zone gate port/vu1cyc/gate/20261019_155028
+  5/5 ok (60 fps, speed 1.00-1.01, no capture flagged against port/vu1fast/gate/20261019_143226), savetest 129 pages,
+  card directory intact.
+- Expected on the console: qemu predicted the A57 well for the last two changes, so the ship replay benchmark should drop
+  by ~12-15 % against sw-vu1fast, and VU1 busy in fights by about as much (~3.3-3.6 -> ~2.9-3.2 s per 5 s, estimate).
+- Console build: `VU1_PREGEN=<root>/ext/PS2Recomp-kl-vu1cyc/out/vu1pregen` (a copy of sw-vu1fast's: vu1_generado =
+  sw-vu1-par's, vu1n_generado = the default generator output) with `switch/build.sh` of the **vu1cyc** worktree (the
+  runtime changed; copy the untracked build files of the sw-vu1-par worktree into a new WSL build dir); then the replay
+  benchmark env.txt (docs/vu1-native-flags.md). `GOW_VU1N_CHAIN_FLAGS=0` in env.txt gives the A/B on the same build.
+
+**Loop regions (`--regions`, measured, off by default).** The dispatches left are straight-line blocks and loops of
+three or more blocks (the shadow loop at 0x0cd8-0x0e10: 9 blocks, ~15 passes per run on the ship; the PC zones' loop
+0x1728-0x1bc8: 8 blocks, ~40 passes per run). `gen_region` gives every block of such a loop (strongly connected
+components of the static block graph, split into inner loops: `loop_regions`, at most 10 blocks / 64 pairs, blocks that
+call out to the exact engine end a loop) a function that runs the loop from it, going from block to block through
+chainTo. Bit-exact (0 differ on all recordings, x86 and aarch64), but slower in qemu:
+- all the loop's registers in locals across the function (first version): ship 1.227 M, PC zone 1.955 M (GCC spills);
+- each block's own body (fast variant and entry check included) in its own scope, registers through the VU1State between
+  the blocks (current `--regions`; a compiler barrier per block changes nothing): ship 1.296 M, PC zone 2.066 M. A chain
+  step costs more instructions than runNative's dispatch it replaces (runNative keeps its state in registers; in the
+  large function every step reloads it).
+x86 timings looked better for the second version (PC zone ~30-34 ms), but within the noise. Not used.
+
+**Next.** What is left on the ship: the generated blocks, then runNative (~0.38 M, ~170 dispatches per run: the
+straight-line program prologue, ~25 blocks, and the multi-block loops above). A cheaper dispatch would have to drop work
+per block (history entry, FDIV/EFU starts, commitDue), not just move it into chainTo.
+
 ## Exact float handling out of the hot loops (2026-10-19, ext agent/sw-vu1fast)
 **Handoff.** Branch `agent/sw-vu1fast` (ext 31a482d + nothing in the runtime; worktree ext/PS2Recomp-kl-vu1fast, own
 build dir `out/build-pc` configured with `-DPS2X_VU1N_GEN_OVERRIDE=<root>/port/vu1fast/gen/vu1n_gen.py`, which is the

@@ -46,7 +46,11 @@ entry. Every other block uses its idle-pipeline table.
 - The stall model runs once per distinct in-flight state (cached per block, 16 entries).
 - When the previous block ran for `maxLat` cycles or more and nothing from the exact engine is in flight, the
   predecessor (block + timing table) alone decides the entry state. Its result is memoized in the dispatch slot; the
-  shadow loop at 0x0d00 hits this every iteration.
+  shadow loop at 0x0d00 hits this every iteration. Blocks that read FDIV/EFU state at entry (a DIV in the loop) key the
+  memo by that state too (`scalarKey`: the FDIV/EFU part of the signature as one word), since sw-vu1cyc.
+- `entryTiming` (memo, else the stall model) gives the entry timing both in runNative and in `chainTo`: a self-loop or
+  cycle whose block reads entry flags runs every pass inside its generated function, with the same issue cycles as
+  when runNative dispatched each pass (`GOW_VU1N_CHAIN_FLAGS=0`: dispatched by runNative, as before; docs/vu1-hle.md).
 
 **Exit.** When the exact engine takes over, the readiness arrays get the lanes still in flight (`syncInflight`).
 
@@ -132,7 +136,8 @@ threefold on the real core, so changes are timed on the console with the replay 
 | probe: no flag rings / block history / FDIV timing (wrong flags) | 140.6 | upper bound of the cycle-model bookkeeping: -7.6 % |
 | probe: no operand normalisation, no clamp, no wide MADD | 108.2 | -29 %, but not exact (below) |
 | sw-vu1-hle (two-block cycles, maddc, invariant views) | 137.0 | docs/vu1-hle.md |
-| sw-vu1fast: fast variants (range analysis + entry check, bit-exact) | not measured yet | qemu -16 %; docs/vu1-hle.md top section |
+| sw-vu1fast: fast variants (range analysis + entry check, bit-exact) | not measured yet | qemu -16 %; docs/vu1-hle.md |
+| sw-vu1cyc: loops reading entry flags chained, memo with FDIV/EFU state (bit-exact) | not measured yet | qemu -14.7 % on top; docs/vu1-hle.md top section |
 
 - In game: 18.2 -> 16.9 ns per VU1 cycle with `--locals`; gameplay stays ~20-21 fps (VU1 still saturated).
   `switch/build.sh` now refuses pregenerated blocks without `--locals` (`ALLOW_OLD_VU1N=1` overrides).

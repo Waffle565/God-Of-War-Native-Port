@@ -11,8 +11,11 @@ heads.txt (optional): extra entry pcs (hex, one per line), e.g. misses logged by
 that branches back to its own start repeats inside its function (VU1NativeAccess::chainTo); needs a runtime with chainTo
 (ext branch agent/sw-vu1 and later). Without it the blocks read and write the VU1State directly (same output as before).
 --no-fast: no fast variants (range analysis, see Bounds; on by default with --locals).
+--no-cycles: no two-block cycles (gen_cycle) and no loop regions; --regions: loops of more blocks in one function
+(gen_region; off by default, measured slower, see REGIONS).
 """
 import os
+import re
 import struct
 import sys
 
@@ -27,6 +30,12 @@ LOCALS = False   # --locals: register file in C++ locals (Regs) and self-loops; 
 LOOPS = True
 # two-block cycles (needs LOCALS and LOOPS): gen_cycle. --no-cycles turns it off (A/B measurements).
 CYCLES = True
+# loops of more blocks (needs CYCLES): gen_region, one function per block of the loop that runs the whole loop (the shadow
+# loop at 0x0cd8, the PC zones' loop at 0x1728, ...). Off by default (--regions turns it on): bit-exact, but more qemu
+# instructions than runNative's dispatch it saves (ship +7 %, PC zone +6 %; docs/vu1-hle.md "Loop regions").
+REGIONS = False
+REGION_MAX_BLOCKS = 10
+REGION_MAX_PAIRS = 64
 
 
 def fnv_block(pc, words):
@@ -1225,6 +1234,157 @@ def gen_cycle(pc_a, pairs_a, pc_b, pairs_b, name_a, name_b, bstate=None):
     return body
 
 
+def static_succs(pc, pairs):
+    """static successors of a block (taken target and fall-through of a conditional branch, the target of B / BAL, the
+    next pc of a block without a branch), None for JR / JALR or an E-bit block"""
+    n = len(pairs)
+    end_pc = (pc + 8 * n) & 0x3FFF
+    if any((u >> 30) & 1 for (l, u) in pairs):
+        return None
+    if n >= 2 and is_branch(*pairs[n - 2]):
+        op = pairs[n - 2][0] >> 25
+        if op in (0x24, 0x25):
+            return None
+        tgt = branch_target(pc, pairs)
+        return [tgt] if op in (0x20, 0x21) else list(dict.fromkeys([tgt, end_pc]))
+    return [end_pc]
+
+
+_LOCAL_OK = {}      # loop_regions: block key -> the block can run with its registers in locals (gen_block pieces)
+_REGION_MEMO = {}   # loop_regions: a component's graph (blocks, edges, entries) -> its loops; images share most code
+
+
+def loop_regions(code, heads):
+    """loops of the image's static block graph (strongly connected components, or those inside a larger one) with two or
+    more blocks within REGION_MAX_BLOCKS / REGION_MAX_PAIRS (one block: self-loops; two-block cycles that gen_cycle took
+    keep it): [(member pcs, the members whose function runs this loop)], each block in the loop it leaves least often"""
+    global BND
+    ext, succ, full = {}, {}, {}
+    for pc in heads:
+        pairs = extent(code, pc)
+        if not pairs:
+            continue
+        ext[pc] = pairs
+        full[pc] = static_succs(pc, pairs) or [None]
+    # blocks that cannot keep their registers in locals (they call out to the exact engine) end every loop
+    saved, BND = BND, None
+    inner = set()
+    for pc in ext:
+        k = fnv_block(pc, [w for pr in ext[pc] for w in pr])
+        if k not in _LOCAL_OK:
+            _LOCAL_OK[k] = gen_block(pc, ext[pc], [], None, regs=Regs(True), pieces={}) == 'pieces'
+        if _LOCAL_OK[k]:
+            inner.add(pc)
+    BND = saved
+    for pc in inner:
+        succ[pc] = [t for t in full[pc] if t in inner]
+
+    def sccs(nodes):
+        reach = {}
+        for v in nodes:
+            seen, todo = set(), [v]
+            while todo:
+                x = todo.pop()
+                for w in succ.get(x, ()):
+                    if w in nodes and w not in seen:
+                        seen.add(w)
+                        todo.append(w)
+            reach[v] = seen
+        comps, done = [], set()
+        for v in sorted(nodes):
+            if v in done or v not in reach[v]:
+                continue
+            comp = sorted(w for w in reach[v] if v in reach[w])
+            done.update(comp)
+            comps.append(comp)
+        return comps
+
+    def fits(comp):
+        return len(comp) <= REGION_MAX_BLOCKS and sum(len(ext[q]) for q in comp) <= REGION_MAX_PAIRS
+
+    def decompose(top):
+        # candidates: the components that fit, else those of the component without one of its blocks (every choice:
+        # the outer loop's header is not always an entry block, as blocks overlap), without its entry blocks when large
+        cands, seen = set(), set()
+        todo = [top]
+        while todo and len(seen) < 2000:
+            comp = todo.pop()
+            key = frozenset(comp)
+            if key in seen:
+                continue
+            seen.add(key)
+            if fits(comp):
+                cands.add(key)
+                continue
+            cs = set(comp)
+            if len(comp) > 2 * REGION_MAX_BLOCKS:
+                entries = {w for v in succ if v not in cs for w in succ[v] if w in cs} or {comp[0]}
+                todo += [c for c in sccs(cs - entries) if len(c) >= 2]
+                continue
+            for v in comp:
+                todo += [c for c in sccs(cs - {v}) if len(c) >= 2]
+
+        # every block: the candidate that a pass leaves least often (fewest exit edges per edge inside: an inner loop
+        # rather than the outer one around it), then the one with most pairs
+        def rank(c):
+            inside = sum(1 for v in c for w in succ[v] if w in c)
+            exits = sum(1 for v in c for w in full[v] if w not in c)
+            return (exits / inside, -sum(len(ext[q]) for q in c), -len(c), sorted(c))
+        best = {}
+        for c in sorted(cands, key=rank):
+            for v in c:
+                best.setdefault(v, c)
+        out = {}
+        for v, c in best.items():
+            out.setdefault(c, []).append(v)
+        return [(sorted(c), sorted(roots)) for c, roots in out.items()]
+
+    result = []
+    for top in sccs(set(succ)):
+        if len(top) < 2:
+            continue
+        ts = set(top)
+        entries = sorted({w for v in succ if v not in ts for w in succ[v] if w in ts})
+        sig = (tuple((v, fnv_block(v, [w for pr in ext[v] for w in pr]), tuple(full[v])) for v in top), tuple(entries))
+        if sig not in _REGION_MEMO:
+            _REGION_MEMO[sig] = decompose(top)
+        result += _REGION_MEMO[sig]
+    return result
+
+
+_EXIT_RE = re.compile(r'^(\s*)return ((?:nx|taken \?|\d+u).*);$')
+
+
+def gen_region(root, members, code, names, bodies):
+    """A loop of two or more blocks (e.g. the shadow-volume loop at 0x0cd8-0x0e10, the PC zones' loop at 0x1728-0x1bc8):
+    one function entered at `root` that runs the loop's blocks one after the other while chainTo agrees, each block with
+    its own function body (fast variant and entry check, self-loop or cycle included) in its own scope, so it keeps only
+    its own registers in locals (a first version kept the registers of all the blocks in locals across the loop: GCC
+    spilled them and it was slower). It saves runNative's dispatch per block, not the register loads and stores. bodies:
+    pc -> the body lines of that block's own function; its exits to the next pc (`return nx...`) go to the chain step."""
+    order = [root] + [p for p in members if p != root]
+    out = []
+    for p in order:
+        lines = []
+        for ln in bodies[p]:
+            ln = ln.replace("cycleB", f"cycleB_{p:04x}")   # gen_cycle's label, once per scope
+            m = _EXIT_RE.match(ln)
+            lines.append(f"{m.group(1)}{{ rx = {m.group(2)}; goto exit_{p:04x}; }}" if m else ln)
+        step = ["if (!(rx & (kVu1nEnded | kVu1nBail | kVu1nFinished)))", "{", "    uint32_t lg = 0u;"]
+        kw = "if"
+        for t in static_succs(p, extent(code, p)) or []:
+            if t in names:
+                step += [f"    {kw} (rx == {t}u)", "    {", f"        lg = VU1NativeAccess::chainTo(n, {t}u, {names[t]});",
+                         "        if (lg == 1u)", f"            goto region_{t:04x};", "    }"]
+                kw = "else if"
+        step += ["    return rx | (lg ? kVu1nFinished : 0u);", "}", "return rx;"]
+        # the barrier: the next block reloads its registers from the VU1State (else GCC forwards the stores across the
+        # chain step and keeps every block's registers live through the whole function, spilling them)
+        out += [f"region_{p:04x}:", "{", "    VU1N_REGION_BARRIER();", "    uint32_t rx;", "    {"] + ["        " + ln for ln in lines]
+        out += ["    }", f"exit_{p:04x}:"] + ["    " + ln for ln in step] + ["}"]
+    return out
+
+
 def _q_unknown(st):
     st = dict(st)
     st[('q',)] = None   # Q is reloaded from the state after chainTo (commitDue may write it)
@@ -1423,6 +1583,14 @@ def fast_cycle(pc, pairs, tgt, pairs_b, name, name_b):
     return body[:nd] + _check_lines(req, Emap, FAST_E0, name + "_x") + body[nd:], Emap, score
 
 
+REGION_PREAMBLE = r"""// loop regions (gen_region): registers go through the VU1State between the blocks
+#if defined(_MSC_VER)
+#define VU1N_REGION_BARRIER() _ReadWriteBarrier()
+#else
+#define VU1N_REGION_BARRIER() __asm__ __volatile__("" ::: "memory")
+#endif
+"""
+
 FAST_PREAMBLE = r"""// fast variants (vu1n_gen.py Bounds): entry check helpers, FTOI of a finite view
 #if defined(VU1N_FAST_STATS) // entry checks passed / failed, reported at exit (replay harness)
 #include <cstdio>
@@ -1529,6 +1697,10 @@ def main():
             global CYCLES
             CYCLES = False
             i += 1
+        elif args[i] == '--regions':
+            global REGIONS
+            REGIONS = True
+            i += 1
         elif args[i] == '--parts':
             parts = int(args[i + 1])
             i += 2
@@ -1549,9 +1721,11 @@ def main():
                 extra.add(int(line, 16) & 0x3FF8)
     blocks = {}
     unsupported = 0
-    fused = {}            # A's key -> B's function name (gen_cycle)
+    fused = {}            # A's key -> the other functions its function chains to (gen_cycle: B, gen_region: the loop)
     fast = {}             # key -> (fast variant body, E, score): the block's function; the exact one becomes <name>_x
     extern_names = set()  # B functions called by name from another block's function: not static, declared before use
+    nregions = 0
+    region_of = {}        # key -> the body of its loop-region function (gen_region)
     for f in inputs:
         code = open(f, 'rb').read()
         if len(code) != CODE_SIZE:
@@ -1601,10 +1775,35 @@ def main():
                     fb = fast_cycle(pc, pairs, tgt, pairs_b, name, name_b)
                     if fb is not None:
                         fast[key] = fb
-                fused[key] = name_b
+                fused[key] = [name_b]
                 extern_names.add(name_b)
                 p, npairs, _, tail, reads_entry = blocks[key]
                 blocks[key] = (p, npairs, body, tail, reads_entry)
+    # loops of more blocks (after every image's blocks and cycles): the loop's blocks get a function that runs the loop
+    # from them (gen_region); the block's own function body stays as <name>_x when it has no exact twin yet
+    if CYCLES and REGIONS:
+        own = {key: (fast[key][0] if key in fast else blocks[key][2]) for key in blocks if blocks[key][2] is not None}
+        for f in inputs:
+            code = open(f, 'rb').read()
+            if len(code) != CODE_SIZE:
+                continue
+            for comp, roots in loop_regions(code, heads_of(code, extra)):
+                keys = {p: fnv_block(p, [w for pr in extent(code, p) for w in pr]) for p in comp}
+                if any(k not in own for k in keys.values()):
+                    continue
+                names = {p: f"b{p:04x}_{keys[p] & 0xFFFFFFFF:08x}" for p in comp}
+                for root in roots:
+                    key = keys[root]
+                    if key in fused or key in region_of:
+                        continue
+                    region_of[key] = gen_region(root, comp, code, names, {p: own[keys[p]] for p in comp})
+                    fused[key] = [names[p] for p in comp if p != root]
+                    for p in comp:
+                        if keys[p] in fast:   # its fast body calls <name>_x from the region function
+                            fused[key].append(names[p] + "_x")
+                            extern_names.add(names[p] + "_x")
+                    extern_names.update(names.values())
+                    nregions += 1
     os.makedirs(out, exist_ok=True)
     texts = [[] for _ in range(parts)]
     regs = [[] for _ in range(parts)]
@@ -1616,15 +1815,23 @@ def main():
         part = count % parts
         count += 1
         t = []
-        if key in fused:
-            t.append(f"uint32_t {fused[key]}(VU1NativeCtx &n);")
+        for other in fused.get(key, []):
+            t.append(f"{'VU1N_NOINLINE ' if other.endswith('_x') else ''}uint32_t {other}(VU1NativeCtx &n);")
         if tail:
             mp, mm, cp = (list(x) + [0] * (3 - len(x)) for x in tail)
             t.append(f"static const VU1TailDesc {name}_tail = {{{len(tail[0])}, {len(tail[2])}, {{{mp[0]}, {mp[1]}, {mp[2]}}}, "
                      f"{{{mm[0]}, {mm[1]}, {mm[2]}}}, {{{cp[0]}, {cp[1]}, {cp[2]}}}}};")
-        if key in fast:
+        if key in region_of:
+            # the region function's first scope is the block's own (fast) body: its exact twin <name>_x stays
             t.append(f"{'' if name in extern_names else 'static '}uint32_t {name}(VU1NativeCtx &n);")
-            t += [f"static VU1N_NOINLINE uint32_t {name}_x(VU1NativeCtx &n)", "{", "    VU1State &s = *n.s;"]
+            if key in fast:
+                t += [f"{'' if name + '_x' in extern_names else 'static '}VU1N_NOINLINE uint32_t {name}_x(VU1NativeCtx &n)", "{", "    VU1State &s = *n.s;"]
+                t += ["    " + ln for ln in body]
+                t += ["}", ""]
+            body = region_of[key]
+        elif key in fast:
+            t.append(f"{'' if name in extern_names else 'static '}uint32_t {name}(VU1NativeCtx &n);")
+            t += [f"{'' if name + '_x' in extern_names else 'static '}VU1N_NOINLINE uint32_t {name}_x(VU1NativeCtx &n)", "{", "    VU1State &s = *n.s;"]
             t += ["    " + ln for ln in body]
             t += ["}", ""]
             body = fast[key][0]
@@ -1641,7 +1848,7 @@ def main():
               '#ifndef VU1N_HAS_MADDC // runtimes before agent/sw-vu1-hle: same result, clamp always\n'
               'namespace vu1n\n{\n    template <bool Sub>\n'
               '    inline __m128 maddc(__m128 acc, __m128 a, __m128 b, __m128 &raw)\n    {\n'
-              '        raw = madd<Sub>(acc, a, b);\n        return clampv(raw);\n    }\n}\n#endif\n\n' + FAST_PREAMBLE)
+              '        raw = madd<Sub>(acc, a, b);\n        return clampv(raw);\n    }\n}\n#endif\n\n' + (REGION_PREAMBLE if REGIONS else '') + FAST_PREAMBLE)
     footer = '\n#if defined(_MSC_VER)\n#pragma float_control(pop)\n#endif\n'
     for k in range(parts):
         body = header + "\n".join(texts[k]) + "\nnamespace\n{\n    const bool g_registered = []\n    {\n" + "\n".join(regs[k]) + "\n        return true;\n    }();\n}\n" + footer
@@ -1654,7 +1861,7 @@ def main():
         for e in v[1].values():
             es[e] = es.get(e, 0) + 1
     print(f"[vu1n_gen] {len(inputs)} images, {len(blocks)} distinct blocks, {count} generated, {unsupported} unsupported, "
-          f"{len(fast)} fast variants (lowered entry bounds: {dict(sorted(es.items()))})")
+          f"{len(fast)} fast variants (lowered entry bounds: {dict(sorted(es.items()))}), {nregions} loop-region functions")
 
 
 if __name__ == '__main__':
