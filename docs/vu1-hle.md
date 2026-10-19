@@ -53,7 +53,8 @@ three or more blocks (the shadow loop at 0x0cd8-0x0e10: 9 blocks, ~15 passes per
 components of the static block graph, split into inner loops: `loop_regions`, at most 10 blocks / 64 pairs, blocks that
 call out to the exact engine end a loop) a function that runs the loop from it, going from block to block through
 chainTo. Bit-exact (0 differ on all recordings, x86 and aarch64), but slower in qemu:
-- all the loop's registers in locals across the function (first version): ship 1.227 M, PC zone 1.955 M (GCC spills);
+- all the loop's registers in locals across the function (first version, not kept): ship 1.213 M (+0.2 %), PC zone
+  1.914 M (-1.8 %); GCC spills the ~30 vector registers of the loop (b1748's region 0.79 M);
 - each block's own body (fast variant and entry check included) in its own scope, registers through the VU1State between
   the blocks (current `--regions`; a compiler barrier per block changes nothing): ship 1.296 M, PC zone 2.066 M. A chain
   step costs more instructions than runNative's dispatch it replaces (runNative keeps its state in registers; in the
