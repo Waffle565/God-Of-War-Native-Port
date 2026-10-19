@@ -109,7 +109,7 @@ bool PS2IopThread::popBatch(uint64_t &cycles) noexcept
 
 void PS2IopThread::threadLoop()
 {
-    ThreadNaming::SetCurrentThreadName("IopRun"); // Switch: core 0 by default, GOW_CORE_IopRun=<0-2> moves it
+    ThreadNaming::SetCurrentThreadName("IopRun"); // Switch: core 0, one priority step above GSThread (GOW_CORE_/GOW_PRIO_IopRun)
     t_onIopThread = true;
     const auto ready = [this]
     {

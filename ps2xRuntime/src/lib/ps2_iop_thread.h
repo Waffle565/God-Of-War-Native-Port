@@ -74,7 +74,7 @@ public:
     };
 
 private:
-    static constexpr uint32_t kRingSize = 1024u; // entries are >= 512 cycles: the lead bound keeps the ring short
+    static constexpr uint32_t kRingSize = 16384u; // entries are >= 512 cycles: GOW_IOP_LEAD (clamped to the ring) keeps it from filling
 
     void start();
     void threadLoop();

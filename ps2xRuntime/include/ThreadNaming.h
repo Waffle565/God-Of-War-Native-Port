@@ -25,6 +25,7 @@ extern "C"
 #elif defined(__APPLE__) || defined(__linux__)
 #include <pthread.h>
 #elif defined(__SWITCH__)
+#include <cstdio>
 #include <cstdlib>
 // GOW-Port: ps2_switch_runtime.cpp. libnx starts every thread on the process's default core and Horizon does not
 // time-slice threads of one priority, so the runtime's busy threads are spread over the three application cores.
@@ -69,9 +70,16 @@ namespace ThreadNaming
             core = 1, boost = 1;
         else if (name == "GSWorker" || name == "VU1Run") // VU1Run: PS2X_VU1_ASYNC=1 (move GSWorker with GOW_CORE_GSWorker)
             core = 2;
+        else if (name == "IopRun")
+            boost = 1; // GOW_IOP_THREAD=1: above GSThread (deko3d) on core 0, which never yields to an equal priority
         const std::string variable = "GOW_CORE_" + std::string(name);
         if (const char *value = std::getenv(variable.c_str()); value && value[0] >= '0' && value[0] <= '2' && value[1] == '\0')
             core = value[0] - '0';
+        // GOW_PRIO_<thread>=<0-9>: priority steps above the default thread priority (console tests without a rebuild)
+        const std::string prioVariable = "GOW_PRIO_" + std::string(name);
+        if (const char *value = std::getenv(prioVariable.c_str()); value && value[0] >= '0' && value[0] <= '9' && value[1] == '\0')
+            boost = value[0] - '0';
+        std::fprintf(stderr, "[switch] thread %.*s:\n", static_cast<int>(name.size()), name.data());
         ps2xSwitchPinCurrentThread(core, boost);
 #endif
     }

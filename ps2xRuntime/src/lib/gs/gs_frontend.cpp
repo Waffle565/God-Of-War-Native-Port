@@ -914,6 +914,41 @@ bool GS::hasPendingGIFPacket(GifPathId path) const
     return index == 0u || index >= m_gifInput.size() || m_gifInput[index].pending();
 }
 
+namespace
+{
+    uint64_t s_packedFastKicks = 0;   // vertex kicks the PACKED fast path took (under m_stateMutex), [gs-stage-run]
+    uint64_t s_packedCheckKicks = 0;  // GOW_GS_FASTPACK=2: kicks compared
+    uint64_t s_packedCheckDiffs = 0;  // ... that differed (whole log)
+
+    bool sameVertex(const GSVertex &a, const GSVertex &b) // every field but `kick` (stale in the vertex window)
+    {
+        return std::memcmp(&a.x, &b.x, sizeof a.x) == 0 && std::memcmp(&a.y, &b.y, sizeof a.y) == 0 &&
+               std::memcmp(&a.z, &b.z, sizeof a.z) == 0 && a.r == b.r && a.g == b.g && a.b == b.b && a.a == b.a &&
+               std::memcmp(&a.q, &b.q, sizeof a.q) == 0 && std::memcmp(&a.s, &b.s, sizeof a.s) == 0 &&
+               std::memcmp(&a.t, &b.t, sizeof a.t) == 0 && a.u == b.u && a.v == b.v && a.fog == b.fog;
+    }
+
+    // GOW-Port: GOW_GS_FASTPACK (default 1): the PACKED registers of a tag decoded in one loop (RGBAQ/ST/UV/NOP inline),
+    // and a strip/fan XYZ2/XYZF2 kick in the middle of an open vertex-kick run (GOW_GS_KICKS) appended straight to the
+    // run, without vertexKick's general bookkeeping; everything else goes to writeRegisterPacked as before. 0 = the
+    // generic path only, 2 = check mode: the generic path runs and every kick the fast path would take is compared with
+    // what it did ([gs-stage-run] check/diffs, [gs-fastpack] for the first differences).
+    int packedFastMode()
+    {
+        static const int mode = []
+        {
+            const char *v = std::getenv("GOW_GS_FASTPACK");
+            const char *k = std::getenv("GOW_GS_KICKS");
+            if ((k && *k == '0') || std::getenv("PS2X_GS_TRACE_TBP") || gowFogDiagStart() >= 0)
+                return 0; // runs off, or vertexKick's diagnostics wanted
+            if (!v || !*v)
+                return 1;
+            return v[0] == '2' ? 2 : v[0] == '0' ? 0 : 1;
+        }();
+        return mode;
+    }
+}
+
 void GS::processGIFPacket(const uint8_t *data, uint32_t sizeBytes, GifPathId path)
 {
     ps2_perf::Scope perf(ps2_perf::Bucket::Gs); // GOW-Port: incluye rasterizado y transferencias GIF.
@@ -948,6 +983,118 @@ void GS::processGIFPacket(const uint8_t *data, uint32_t sizeBytes, GifPathId pat
         }
     });
 
+    // GOW_GS_FASTPACK: the PACKED registers of a tag in one loop, mid-run strip/fan kicks appended to the run
+    const auto processPackedUnitsFast = [this, &input](const uint8_t *data, uint32_t offset, uint32_t units) -> uint32_t
+    {
+        const bool check = packedFastMode() == 2;
+        for (; units; --units)
+        {
+            const uint64_t lo = loadLE64(data + offset), hi = loadLE64(data + offset + 8u);
+            const uint8_t reg = input.regs[input.regIndex];
+            offset += 16u;
+            if (++input.regIndex == input.nreg) input.regIndex = 0u;
+            --input.registersLeft;
+            switch (reg)
+            {
+            case 0x01: // RGBAQ
+                m_curR = static_cast<uint8_t>(lo & 0xFF);
+                m_curG = static_cast<uint8_t>((lo >> 32) & 0xFF);
+                m_curB = static_cast<uint8_t>(hi & 0xFF);
+                m_curA = static_cast<uint8_t>((hi >> 32) & 0xFF);
+                m_curQ = m_packedStQ;
+                continue;
+            case 0x02: // ST (Q is latched for the next RGBAQ, see writeRegisterPacked)
+            {
+                const uint32_t sBits = static_cast<uint32_t>(lo), tBits = static_cast<uint32_t>(lo >> 32);
+                const uint32_t qBits = static_cast<uint32_t>(hi);
+                std::memcpy(&m_curS, &sBits, 4);
+                std::memcpy(&m_curT, &tBits, 4);
+                std::memcpy(&m_packedStQ, &qBits, 4);
+                if (m_packedStQ == 0.0f)
+                    m_packedStQ = 1.0f;
+                continue;
+            }
+            case 0x03: // UV
+                m_curU = static_cast<uint16_t>(lo & 0x3FFFu);
+                m_curV = static_cast<uint16_t>((lo >> 32) & 0x3FFFu);
+                continue;
+            case 0x04: // XYZF2
+            case 0x05: // XYZ2
+                break;
+            case 0x0F: // NOP
+                continue;
+            default:
+                writeRegisterPacked(reg, lo, hi);
+                continue;
+            }
+            // only a kick in the middle of a strip/fan run: the window holds two vertices and the run is open (its
+            // first draw, the window's first vertices and every other primitive take vertexKick)
+            if (m_kicks.empty() || m_vtxCount != 2 || !m_debugHistoryPaused ||
+                (m_prim.type != GS_PRIM_TRISTRIP && m_prim.type != GS_PRIM_TRIFAN))
+            {
+                writeRegisterPacked(reg, lo, hi);
+                continue;
+            }
+            GSVertex vtx;
+            vtx.x = static_cast<float>(static_cast<uint16_t>(lo & 0xFFFF)) / 16.0f;
+            vtx.y = static_cast<float>(static_cast<uint16_t>((lo >> 32) & 0xFFFF)) / 16.0f;
+            if (reg == 0x04)
+            {
+                vtx.z = static_cast<float>(static_cast<uint32_t>((hi >> 4) & 0xFFFFFF));
+                vtx.fog = static_cast<uint8_t>((hi >> 36) & 0xFF);
+            }
+            else
+            {
+                vtx.z = static_cast<double>(static_cast<uint32_t>(hi & 0xFFFFFFFF));
+                vtx.fog = m_curFog;
+            }
+            vtx.r = m_curR;
+            vtx.g = m_curG;
+            vtx.b = m_curB;
+            vtx.a = m_curA;
+            vtx.q = m_curQ;
+            vtx.s = m_curS;
+            vtx.t = m_curT;
+            vtx.u = m_curU;
+            vtx.v = m_curV;
+            const bool draws = ((hi >> 47) & 1) == 0; // ADC clear
+            vtx.kick = draws ? 1u : 0u;
+            const bool strip = m_prim.type == GS_PRIM_TRISTRIP;
+            if (check)
+            {
+                // what the fast path would leave, then the generic path for real, then compare
+                const GSVertex w0 = strip ? m_vtxQueue[1] : m_vtxQueue[0];
+                const size_t kicks = m_kicks.size();
+                const int index = m_vtxIndex;
+                writeRegisterPacked(reg, lo, hi);
+                ++s_packedCheckKicks;
+                const bool same = m_kicks.size() == kicks + 1u && sameVertex(m_kicks.back(), vtx) &&
+                                  m_kicks.back().kick == vtx.kick && m_vtxCount == 2 && m_vtxIndex == index + 1 &&
+                                  sameVertex(m_vtxQueue[0], w0) && sameVertex(m_vtxQueue[1], vtx) &&
+                                  sameVertex(m_vtxQueue[2], vtx);
+                if (!same && ++s_packedCheckDiffs <= 16u)
+                    std::fprintf(stderr, "[gs-fastpack] diff #%llu reg=%u prim=%u kicks=%zu->%zu count=%d\n",
+                                 static_cast<unsigned long long>(s_packedCheckDiffs), static_cast<unsigned>(reg),
+                                 static_cast<unsigned>(m_prim.type), kicks, m_kicks.size(), m_vtxCount);
+                continue;
+            }
+            ++m_vtxIndex;
+            ++s_packedFastKicks;
+            m_kicks.push_back(vtx);
+            if (draws)
+            {
+                static const GSPrimitiveVerts noSprite{};
+                updatePreferredDisplaySourceForDraw(m_runState, noSprite);
+            }
+            // the window as vertexKick leaves it: the new vertex in slot 2, then shifted (strip) or kept (fan)
+            m_vtxQueue[2] = vtx;
+            if (strip)
+                m_vtxQueue[0] = m_vtxQueue[1];
+            m_vtxQueue[1] = vtx;
+        }
+        return offset;
+    };
+
     // GOW-Port: como maximo se retienen 15 bytes por PATH, mas el cursor de la etiqueta.
     // No reiniciar Q/PRE ni perder el indice de registro al llegar otro fragmento.
     uint32_t offset = 0u;
@@ -966,7 +1113,13 @@ void GS::processGIFPacket(const uint8_t *data, uint32_t sizeBytes, GifPathId pat
         {
             // GOW-Port: the PACKED registers of a tag in one tight loop (the general path below does the same per unit
             // after deciding again what the unit is); a tag's registers are neither image data nor padding.
-            for (uint32_t units = std::min<uint32_t>(input.registersLeft, (sizeBytes - offset) / 16u); units; --units)
+            const uint32_t units = std::min<uint32_t>(input.registersLeft, (sizeBytes - offset) / 16u);
+            if (packedFastMode())
+            {
+                offset = processPackedUnitsFast(data, offset, units);
+                continue;
+            }
+            for (uint32_t n = units; n; --n)
             {
                 writeRegisterPacked(input.regs[input.regIndex], loadLE64(data + offset), loadLE64(data + offset + 8u));
                 offset += 16u;
@@ -2162,8 +2315,12 @@ void GS::flushRun()
     m_run.clear();
     if (end - t.last >= std::chrono::seconds(5))
     {
-        std::fprintf(stderr, "[gs-stage-run] runs=%llu prims=%llu kicks=%llu queue_ms=%.1f\n", static_cast<unsigned long long>(t.runs),
-                     static_cast<unsigned long long>(t.prims), static_cast<unsigned long long>(t.kicks), t.nanos * 1e-6);
+        std::fprintf(stderr, "[gs-stage-run] runs=%llu prims=%llu kicks=%llu queue_ms=%.1f fast=%llu check=%llu diffs=%llu\n",
+                     static_cast<unsigned long long>(t.runs), static_cast<unsigned long long>(t.prims),
+                     static_cast<unsigned long long>(t.kicks), t.nanos * 1e-6, static_cast<unsigned long long>(s_packedFastKicks),
+                     static_cast<unsigned long long>(s_packedCheckKicks), static_cast<unsigned long long>(s_packedCheckDiffs));
+        s_packedFastKicks = 0;
+        s_packedCheckKicks = 0;
         t = RunTiming{};
         t.last = end;
     }
