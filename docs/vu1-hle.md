@@ -3,6 +3,80 @@
 Goal: VU1 is the limit of the Switch build in gameplay (~4.0 s busy per 5 s at ~20 fps, docs/switch-deko3d.md); 60 fps
 needs it ~2.4x faster. This page records what the VU1 time is spent on and what the generator does about it.
 
+## Dispatch: direct chaining and traces (2026-10-19, ext agent/sw-vu1disp)
+**Handoff.** Branch `agent/sw-vu1disp` (ext 823cf54 + 665d3ce; worktree ext/PS2Recomp-kl-vu1disp, own build dir
+`out/build-pc` configured like sw-vu1cyc's with `-DPS2X_VU1N_GEN_OVERRIDE=<root>/port/vu1disp/gen/vu1n_gen.py` = the
+committed tools/vu1/vu1n_gen.py). Runtime (ps2_vu1_native.h / .inl) and generator changed together: the new default
+output needs this runtime (`--no-direct` gives the former output, which also runs on it). Not yet run on the console.
+
+**Measuring fix first.** `tools/vu1_harness/icount.py` printed only the 25 most expensive functions per run, and the
+warm-pass cost (`icb.sh`: run with 2 passes minus run with 1 pass) was summed over those lists: a function in one list
+but not the other counted with its whole run, startup ones negative. The totals of the sections below ("1.418 M",
+"1.210 M", ...) are off by that (e.g. sw-vu1cyc's ship figure is 1.690 M, not 1.210 M; the PC zone 2.291 M, not 1.950 M).
+`icount.py --all` prints every function; port/vu1disp/icb.sh (now with `--all`) also prints "VU1 functions" (runNative,
+the generated blocks and the runtime's VU1 code, without the replay's hashing and record copies). All figures here are
+that, one warm pass of 30 records (s30.rec / g30.rec), aarch64 under qemu, instructions + Q instructions.
+
+**What it was.** runNative's dispatch: ~110 qemu instructions per block (ship 0.377 M, PC zone 0.701 M per pass), plus
+each block's register loads and stores. A chain step through chainTo costs about the same (~95 instructions: history
+entry, FDIV/EFU, commit check, slot check, entry timing, tail record, plus the function's prologue and register
+traffic), so chaining alone (direct chaining below) moves the cost into the generated code: ship 1.690 -> 1.638 M,
+PC zone 2.291 -> 2.248 M. Only merging blocks removes it.
+
+**Changes (bit-exact by construction; the model in docs/vu1-native-flags.md "Direct chaining" and "Traces").**
+- Direct chaining (`chainDirect`): a block function that has stored its registers goes on to the block at its static
+  successor's pc itself (a tail call into whatever the slot holds for that block key: its function or a trace).
+- Traces: a block and its likely successors (blocks without loop functions, D/T/E bits or callouts; parts after the
+  first do not read entry flags) as one native block: one function with the registers in locals throughout, the parts'
+  idle tables one after the other, one history entry, one flag push; a branch that leaves the trace exits as the prefix
+  block (`tracePart`). 1057 traces (2676 parts, 6 loops, 36 whose part 0 reads entry flags). The PC zones' hot loop
+  (0x1788-0x1748, six blocks) is one trace that loops in place.
+- Likely successors from an edge profile: `GOW_VU1N_BLOCKPROF` also writes `e <from> <to> <count>`;
+  tools/vu1_harness/edgeprof.sh sums them over the three recordings (run with `GOW_VU1N_DIRECT=0 GOW_VU1N_TRACES=0`)
+  into port/vu1n_profile.txt (pcs and counts only), which the generator reads next to the heads file (`--profile`,
+  `--no-profile`: backward branches taken, forward not).
+- Entry-timing memo with two entries per slot (a trace entered from its loop and from a side exit in turn).
+- Flags: `--no-direct` (former output), `--no-traces`, `--no-trace-entry`; env `GOW_VU1N_DIRECT=0`, `GOW_VU1N_TRACES=0`
+  (same results, A/B on one build), `GOW_VU1N_TRACE_PC=<hex>` / `GOW_VU1N_TRACE_ENTRY=0` (diagnostics).
+
+**Results.**
+- Replay harness x86 and aarch64 (qemu): ship 2000, consecutive 3000, PC zone 1832 records, 0 differ, warm passes 0
+  differ; the result dumps (state incl. VU cycles, data memory, GIF packets) are byte-identical to sw-vu1fast's x86
+  dumps (aarch64 dumps identical to x86).
+- qemu, VU1 functions per warm pass of 30 records:
+
+| build | ship (s30) | PC zone (g30) |
+|---|---|---|
+| sw-vu1fast (vf4a) | 1.902 M | 2.321 M |
+| sw-vu1cyc (base of this branch; its section's "1.210 M / 1.950 M" with the old counting) | 1.690 M | 2.291 M |
+| + direct chaining | 1.638 M (-3 %) | 2.248 M (-2 %) |
+| + traces, static guess (`--no-profile`) | 1.626 M (-3.8 %) | 2.104 M (-8.2 %) |
+| + traces, edge profile (default) | **1.628 M (-3.7 %)** | **1.935 M (-15.5 %)** |
+
+  PC zone: runNative 0.701 -> 0.093 M, the loop trace t1788 0.45 M replaces six blocks (0.65 M with their dispatch).
+  Ship: what is left are the vertex-loop cycles (already one function each) and the JR-driven calls (~13 dispatches per
+  run: `jr vi4` dispatch, subroutine returns): no static successor, so neither chaining nor traces reach them.
+- x86 replay (WSL, 5 warm passes, three alternating rounds, very noisy): ship 46.4-57.6 -> 49.8-60.0 ms, consecutive
+  90.0-112.3 -> 86.5-109.2 ms, PC zone 45.2-62.5 -> 40.7-57.5 ms: the PC zone faster, the ship within the noise (maybe a
+  little slower: the trace functions add ~2x generated code).
+- PC build (`out/build-pc`, generated parts identical to the replayed ones): zone gate port/vu1disp/gate/20261019_191036
+  5/5 ok (60 fps, speed 1.01, no capture flagged against port/vu1cyc/gate/20261019_155028), savetest 129 pages, card
+  directory intact. The Switch compiler (devkitA64 GCC 16) builds the generated parts with `musttail`.
+- Expected on the console: the A57 gain should follow qemu roughly for the PC-zone-like work (-10 to -15 % VU1 there);
+  for the ship fight ~-3 %, plus whatever the direct branches save in indirect-branch mispredictions that qemu does not
+  count (runNative's one `blr` served every block before).
+- Console build: `VU1_PREGEN=<root>/ext/PS2Recomp-kl-vu1disp/out/vu1pregen` (vu1_generado = sw-vu1-par's, vu1n_generado
+  regenerated with this generator: `python -I tools/vu1/vu1n_gen.py <dir>/vu1n_generado port/vu1_micro --heads
+  port/vu1n_heads.txt --parts 6 --locals`, which picks up port/vu1n_profile.txt) with `switch/build.sh` of the
+  **vu1disp** worktree (runtime changed; copy the untracked build files of the sw-vu1-par worktree into a new WSL build
+  dir); then the replay benchmark env.txt (docs/vu1-native-flags.md). `GOW_VU1N_TRACES=0` / `GOW_VU1N_DIRECT=0` in
+  env.txt give the A/B on the same build.
+
+**Next.** The ship's remaining dispatches are JR targets: a per-JR-site guess (the profile's most frequent target,
+checked against the slot's key like chainDirect) would chain them too. The vertex-loop cycles have their own fast
+variants; traces exclude them. Traces have no fast (range-analysis) variants yet: the PC zone loop trace runs the exact
+float handling of b1748 (which failed its fast entry check often anyway).
+
 ## Loops that read entry flags stay in their function (2026-10-19, ext agent/sw-vu1cyc)
 **Handoff.** Branch `agent/sw-vu1cyc` (ext 31a482d + 823cf54; worktree ext/PS2Recomp-kl-vu1cyc, own build dir
 `out/build-pc`, configured like sw-vu1fast's with `-DPS2X_VU1N_GEN_OVERRIDE=<root>/port/vu1cyc/gen/vu1n_gen.py`).

@@ -59,6 +59,35 @@ function, idle table and its length in cycles (`idleEnd`, so a block run with id
 tail descriptor, FDIV/EFU starts. The entry-timing memo, used only by blocks that read entry flags, is in the second
 line.
 
+**Direct chaining** (since sw-vu1disp; `vu1n_gen.py --no-direct` / env `GOW_VU1N_DIRECT=0` turn it off). A generated
+block that has stored its registers back goes on to a static successor by calling that block's function itself
+(`return next(n)`; a tail call under GCC >= 15 / clang, `musttail`) through `VU1NativeAccess::chainDirect`, which does
+what runNative does between two blocks: history entry and FDIV/EFU starts of the finished block, `commitDue` (the
+registers are in the VU1State, so pending exact-engine results may be committed), stop / budget check, the successor's
+start cycle, entry timing (`entryTiming`) and tail record. A slot whose code changed has no function, so comparing the
+function is the whole slot check. At most 64 steps per runNative dispatch (`chainMax`: bounds the stack where the
+compiler does not make the call a jump, MSVC).
+
+**Traces** (since sw-vu1disp; `--no-traces`, env `GOW_VU1N_TRACES=0`). A trace is a block and the blocks it most likely
+goes on to, run as **one** native block: one function with all registers in locals, one timing table, one history
+entry, one flag push. The model is unchanged because the split form gives the same state:
+- every part after the first does not read entry flags, so in the split form it runs on its idle table, starting where
+  the part before ended: the trace's table is the parts' idle tables one after the other (part 0 may read entry flags:
+  its entry timing comes from the stall model over part 0 alone, `BlockTiming::simCount`, then the others follow);
+- the history entry of the trace has the newest writer of every lane (a part's writes replace the earlier parts'), at
+  the same cycles; entries that end later only make walkHistory report lanes that are ready anyway;
+- flags: inside the trace a reader sees the newest writer 4 cycles back on the trace's table, as the ring would; at the
+  end the newest writer is pushed with the older ones that can still be visible in the tail record (same rule as a
+  block). Writers of earlier parts that the split form pushed are never the visible ones after the trace's end.
+- A part's branch that leaves the trace exits as the prefix (parts 0..k) with its own timing data and tail descriptor
+  (`VU1NativeAccess::tracePart`, the slot's `parts`); blocks with D/T/E bits, callouts or a loop function (gen_cycle,
+  self-loops) are not in traces.
+- `vu1nRegisterTrace` registers the trace under part 0's block key; slotFor uses it when every other part holds the
+  block it was generated from (`setupTrace`) and the idle tables end within 120 cycles (with entry stalls every cycle
+  then fits the 8-bit tables); codeChanged tests every part's pairs.
+- Which successor: the edge profile `port/vu1n_profile.txt` (dispatch counts from the replay harness), else a backward
+  branch is taken and a forward one is not.
+
 **Code changes.** Slots are derived from the micro memory. When its generation changes (VIF MPG, EE stores), the
 native state compares the micro memory with its own copy and only slots whose extent overlaps a changed pair (the
 block's pairs plus the pair after it, which ended the extent scan) are set up again; the rest stay valid. The VIF
@@ -137,7 +166,8 @@ threefold on the real core, so changes are timed on the console with the replay 
 | probe: no operand normalisation, no clamp, no wide MADD | 108.2 | -29 %, but not exact (below) |
 | sw-vu1-hle (two-block cycles, maddc, invariant views) | 137.0 | docs/vu1-hle.md |
 | sw-vu1fast: fast variants (range analysis + entry check, bit-exact) | not measured yet | qemu -16 %; docs/vu1-hle.md |
-| sw-vu1cyc: loops reading entry flags chained, memo with FDIV/EFU state (bit-exact) | not measured yet | qemu -14.7 % on top; docs/vu1-hle.md top section |
+| sw-vu1cyc: loops reading entry flags chained, memo with FDIV/EFU state (bit-exact) | not measured yet | qemu -14.7 % on top; docs/vu1-hle.md |
+| sw-vu1disp: direct chaining + traces (bit-exact) | not measured yet | qemu (corrected counting) ship -3.7 %, PC zone -15.5 % on top; docs/vu1-hle.md top section |
 
 - In game: 18.2 -> 16.9 ns per VU1 cycle with `--locals`; gameplay stays ~20-21 fps (VU1 still saturated).
   `switch/build.sh` now refuses pregenerated blocks without `--locals` (`ALLOW_OLD_VU1N=1` overrides).
