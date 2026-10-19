@@ -114,6 +114,8 @@ private:
     friend struct VU1CompiledGenerator;
     friend struct VU1CompiledAccess;
     friend struct VU1NativeAccess; // GOW-Port: native (ahead-of-time translated) blocks, see ps2_vu1_native.h
+    friend struct VU1Split;        // GOW-Port: GOW_VU1_SPLIT, data-parallel vertex loops (ps2_vu1_split.inl)
+    friend struct VU1SplitSnap;
 
     enum Pipeline : uint8_t
     {

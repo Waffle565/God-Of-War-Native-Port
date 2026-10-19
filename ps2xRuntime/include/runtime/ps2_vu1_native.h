@@ -23,6 +23,8 @@
 #endif
 
 class PS2Memory;
+struct VU1Split;   // ps2_vu1_split.inl
+struct VU1SpecMem; // below
 
 namespace vu1n
 {
@@ -87,7 +89,23 @@ struct VU1NativeCtx
     const void *slot = nullptr;  // the running block's VU1Interpreter::NativeState::Slot (chainTo)
     uint32_t cycId = 0;          // its timing id (finishBlockTiming)
     uint64_t budgetEnd = 0;      // the run's cycle budget (StepContext::budgetEnd)
+    struct VU1SpecMem *spec = nullptr; // split helper (GOW_VU1_SPLIT): memory accesses logged (ps2_vu1_split.inl)
 };
+
+// GOW_VU1_SPLIT (ps2_vu1_split.inl): a helper thread runs the second half of a long vertex loop on its own copy of VU data
+// memory. While it is past the point where the VU1 thread will take its results over (`spec` set in its ctx), it logs
+// the words it reads before writing them (checked against the real memory at take-over) and marks the words it writes
+// (copied into the real memory). The hooks below cost the normal path one test per access.
+struct VU1SpecMem
+{
+    static constexpr uint32_t kLog = 4096u; // one entry per word at most (logged once)
+    uint64_t written[64];                    // 4096 words of VU1 data memory
+    uint64_t logged[64];
+    uint32_t count = 0;
+    struct Entry { uint32_t word, value; } log[kLog];
+};
+void vu1nSpecRead(const VU1NativeCtx &n, uint32_t addr, uint32_t words);  // words: bit c = word c of the qword
+void vu1nSpecWrite(const VU1NativeCtx &n, uint32_t addr, uint32_t words);
 
 // Return value of a native block: next pc in the low 16 bits; kEnded when the program finished; kBail when the exact
 // engine must continue at the returned pc (D/T halt enabled, ...).
@@ -154,6 +172,9 @@ struct VU1Interpreter::NativeState
         const uint8_t *memoCyc = nullptr;
         uint32_t memoPredId = 0, memoId = 0;
         uint32_t memoScalar = 0;
+        // GOW_VU1_SPLIT: VU cycles of the last dispatch from this slot (saturated), probe pacing
+        uint16_t splitLast = 0;
+        uint8_t splitSkip = 0;
     };
     static_assert(sizeof(Slot) == 128);
     static constexpr uint8_t kScalarMany = 0xFF;
@@ -176,6 +197,13 @@ struct VU1Interpreter::NativeState
     FlagRing macRing, clipRing;
     bool flagsInRings = false; // the rings hold the flag state (set at native entry, cleared when the exact engine continues)
     bool enabled = std::getenv("GOW_VU1_NATIVE_OFF") == nullptr;
+    // GOW_VU1_SPLIT (ps2_vu1_split.inl): the split engine of this state (VU1 thread), or, in a helper's own state, the
+    // marker that blocks run speculatively: no timing cache updates, no exact-engine callouts (specFail instead; limit is
+    // then set so chainTo hands every block back to the helper's dispatch loop)
+    struct VU1Split *split = nullptr;
+    int splitMode = -1; // -1 not read yet, 0 off, 1 on (GOW_VU1_SPLIT)
+    bool specMode = false, specFail = false;
+    uint32_t timingEpoch = 0; // blockTiming cache / memo writes, slot setups, code changes (a helper's copies stay valid)
     // chainTo also enters blocks that read entry flags (their entry timing through the memo or blockTiming), and the
     // memo also serves blocks that read FDIV/EFU state; GOW_VU1N_CHAIN_FLAGS=0: the former behavior (runNative
     // dispatches every such block; same results, docs/vu1-hle.md)
@@ -741,18 +769,32 @@ namespace vu1n
 
     // --- integer / memory helpers -------------------------------------------------------------------------------
     VU1N_INLINE uint32_t qaddr(const VU1NativeCtx &n, int32_t qw) { return (static_cast<uint32_t>(qw) * 16u) & n.mask; }
-    VU1N_INLINE __m128 ldq(const VU1NativeCtx &n, uint32_t addr) { return _mm_loadu_ps(reinterpret_cast<const float *>(n.data + addr)); }
+    VU1N_INLINE __m128 ldq(const VU1NativeCtx &n, uint32_t addr)
+    {
+        if (n.spec) [[unlikely]]
+            vu1nSpecRead(n, addr, 15u);
+        return _mm_loadu_ps(reinterpret_cast<const float *>(n.data + addr));
+    }
     template <int M>
-    VU1N_INLINE void stq(VU1NativeCtx &n, uint32_t addr, __m128 v) { stf<M>(reinterpret_cast<float *>(n.data + addr), v); }
+    VU1N_INLINE void stq(VU1NativeCtx &n, uint32_t addr, __m128 v)
+    {
+        if (n.spec) [[unlikely]]
+            vu1nSpecWrite(n, addr, static_cast<uint32_t>(M));
+        stf<M>(reinterpret_cast<float *>(n.data + addr), v);
+    }
     VU1N_INLINE int32_t sx16(int32_t v) { return static_cast<int16_t>(v); }
     VU1N_INLINE int32_t ldWord(const VU1NativeCtx &n, uint32_t addr, int comp)
     {
+        if (n.spec) [[unlikely]]
+            vu1nSpecRead(n, addr, 1u << comp);
         uint32_t v;
         std::memcpy(&v, n.data + addr + comp * 4, 4);
         return static_cast<int16_t>(v & 0xFFFFu);
     }
     VU1N_INLINE void stWords(VU1NativeCtx &n, uint32_t addr, int32_t value, int destMask)
     {
+        if (n.spec) [[unlikely]]
+            vu1nSpecWrite(n, addr, static_cast<uint32_t>(kRev4[destMask & 15]));
         const uint32_t w = static_cast<uint16_t>(value & 0xFFFF);
         for (int c = 0; c < 4; ++c)
             if (destMask & (8 >> c))

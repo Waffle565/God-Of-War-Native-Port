@@ -4,6 +4,8 @@
 #include <memory>
 #include <unordered_map>
 
+#include "ps2_vu1_split.inl" // GOW_VU1_SPLIT: data-parallel vertex loops (VU1Split, used by runNative below)
+
 // GOW_VU1N_BLOCKPROF=<file> (with GOW_VU1N_REPLAY): per dispatched block pc, runs and VU cycles of the warm replay
 // passes, written at the end of the replay ("pc runs cycles"); finds the hot paths of the microprograms (docs/vu1-hle.md)
 static std::unordered_map<uint32_t, std::pair<uint64_t, uint64_t>> *g_vu1nBlockProf = nullptr;
@@ -121,6 +123,8 @@ void VU1Interpreter::nativeTiming(const uint8_t *code, uint32_t pc, uint32_t cou
 void VU1NativeAccess::callLower(VU1NativeCtx &n, uint32_t pc, uint32_t lower, uint32_t upper)
 {
     VU1Interpreter &vu = *n.vu;
+    if (vu.m_native->specMode) // split helper: no exact-engine callouts (its result is dropped)
+        return VU1Split::specAbort(vu);
     auto &c = *static_cast<VU1Interpreter::StepContext *>(n.context);
     vu.m_state.pc = pc;
     vu.execLower(lower, c.vuData, c.dataSize, *c.gs, c.memory, upper);
@@ -131,6 +135,8 @@ void VU1NativeAccess::callLower(VU1NativeCtx &n, uint32_t pc, uint32_t lower, ui
 void VU1NativeAccess::callUpper(VU1NativeCtx &n, uint32_t pc, uint32_t upper)
 {
     VU1Interpreter &vu = *n.vu;
+    if (vu.m_native->specMode)
+        return VU1Split::specAbort(vu);
     vu.m_state.pc = pc;
     vu.execUpper(upper);
     VU1NativeAccess::commitValuesKeepTiming(vu);
@@ -140,6 +146,8 @@ void VU1NativeAccess::callUpper(VU1NativeCtx &n, uint32_t pc, uint32_t upper)
 void VU1NativeAccess::xgkick(VU1NativeCtx &n, uint32_t qwordAddress)
 {
     VU1Interpreter &vu = *n.vu;
+    if (vu.m_native->specMode)
+        return VU1Split::specAbort(vu);
     if (vu.m_unit != VU1Interpreter::Unit::VU1 || !vu.m_activeVuData || vu.m_activeVuDataSize < 16u)
         return;
     vu.m_xgkick.reset();
@@ -485,6 +493,13 @@ const uint8_t *VU1NativeAccess::blockTiming(VU1Interpreter &vu, VU1Interpreter::
 {
     using NS = VU1Interpreter::NativeState;
     NS &ns = *vu.m_native;
+    if (ns.specMode) [[unlikely]] // split helper: the timing caches are the VU1 thread's (the helper's run is dropped)
+    {
+        VU1Split::specAbort(vu);
+        cycId = 0u;
+        return sl.idle;
+    }
+    ++ns.timingEpoch; // memo / cache writes below (a split helper's copies of them must stay valid)
     NS::BlockTiming &bt = *sl.bt;
     const uint64_t start = vu.m_cycle;
     const NS::Hist *pred = ns.histCount ? &ns.hist[(ns.histNext + NS::kHist - 1u) % NS::kHist] : nullptr;
@@ -605,6 +620,7 @@ void VU1NativeAccess::codeChanged(VU1Interpreter::NativeState &ns, const uint8_t
     constexpr uint32_t kPairs = sizeof(ns.code) / 8u;
     static_assert(kPairs == std::size(ns.slots));
     ++ns.codeChanges;
+    ++ns.timingEpoch;
     if (!ns.codeValid)
     {
         for (NS::Slot &sl : ns.slots)
@@ -645,6 +661,7 @@ VU1Interpreter::NativeState::Slot &VU1NativeAccess::slotFor(VU1Interpreter &vu, 
     {
         uint32_t words[128];
         ++ns.slotSetups;
+        ++ns.timingEpoch;
         const uint32_t count = nativeExtent(code, codeSize, pc, words);
         sl = {};
         sl.known = true;
@@ -722,6 +739,8 @@ bool VU1Interpreter::runNative(StepContext &context)
     ctx.macRing = &ns.macRing;
     ctx.clipRing = &ns.clipRing;
     ctx.budgetEnd = context.budgetEnd;
+    // GOW_VU1_SPLIT (ps2_vu1_split.inl): long vertex loops shared with a helper thread
+    VU1Split *const split = ns.limit == ~0u ? VU1Split::engineFor(*this) : nullptr;
 
     bool handled = false;
     // per-block bookkeeping kept in registers across the block calls (the blocks are opaque calls: anything in memory is
@@ -784,6 +803,8 @@ bool VU1Interpreter::runNative(StepContext &context)
             ++ns.count;
             ns.trace.push_back(pc);
         }
+        if (split)
+            ctx.budgetEnd = split->before(*this, sl, context.budgetEnd);
         const uint64_t start = m_cycle;
         // Values never depend on timing, only flag reads do. A block that reads flags written before it gets its exact
         // issue cycles from the pipeline state at entry (the stalls decide which of those flags it sees); the others use
@@ -832,7 +853,11 @@ bool VU1Interpreter::runNative(StepContext &context)
         }
         if (result & kVu1nBail)
             break;
+        if (split)
+            split->after(*this, sl, start, context);
     }
+    if (split)
+        split->runExit();
     ns.nativePairs += pairs;
     ns.nativeBlocks += blocks;
     m_state.cycles = m_cycle; // only read outside the blocks (diagnostics)
@@ -1180,6 +1205,8 @@ void VU1NativeAccess::recordReplay(VU1Interpreter &vu, void *contextPtr, uint32_
             g_vu1nBlockProf = nullptr;
         }
         std::fclose(f);
+        if (vu.m_native->split)
+            vu.m_native->split->report(true);
         vu = saved;
         vu.m_native->generation = ~0ull - 1u;
         std::fprintf(stderr, "[vu1n-replay] %u records, %u differ (warm passes: %u differ)\n", total, differ, warmDiffer);
