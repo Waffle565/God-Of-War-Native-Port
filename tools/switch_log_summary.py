@@ -1,7 +1,7 @@
 """Summary of a Switch console log (log switch/*.txt): speed, GL thread, GPU per draw path, GPU bisect phases.
 
 usage: python -I tools/switch_log_summary.py "log switch/log (3).txt"
-Reads the [gow-perf], [gsw-split], [gs-stage-run], [IOP:thread], [gs-gl], [gs-gpu] and [gpu-bisect] lines (docs/switch.md "Console logs").
+Reads the [gow-perf], [gsw-split], [vu1-split], [gs-stage-run], [IOP:thread], [gs-gl], [gs-gpu] and [gpu-bisect] lines (docs/switch.md "Console logs").
 """
 import re
 import sys
@@ -34,6 +34,15 @@ def main(path):
         for f in split:
             print(' | '.join(f.get(k, '-') for k in ('job_ms', 'vu_ms', 'kick_ms', 'vif_ms', 'runs', 'kicks', 'jobs',
                                                     'async_wait_ms')))
+
+    vsp = [fields(l) for l in text if l.startswith('[vu1-split] window')]
+    if vsp:
+        print('\n## [vu1-split] data-parallel vertex loops (GOW_VU1_SPLIT; per window; docs/vu1-hle.md)')
+        keys = ('probes', 'plans', 'adopted', 'blocks_saved', 'not_started', 'stall', 'mismatch', 'helper_fail', 'mem',
+                'wait_ms', 'helper_ms')
+        print(' | '.join(keys))
+        for f in vsp:
+            print(' | '.join(f.get(k, '-') for k in keys))
 
     run = [fields(l) for l in text if l.startswith('[gs-stage-run]')]
     if any(int(f.get('kicks', 0)) for f in run):

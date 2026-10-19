@@ -20,7 +20,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 O=$H/obj_$name
 [ -n "$REBUILD" ] && rm -rf $O
 mkdir -p $O
-COMMON="$EXTRA -std=c++20 -O2 -DNDEBUG -fsigned-char -ffp-contract=off -ffunction-sections -fdata-sections -I$R/include -I$R/include/runtime -I$R/src/lib"
+COMMON="$EXTRA -pthread -std=c++20 -O2 -DNDEBUG -fsigned-char -ffp-contract=off -ffunction-sections -fdata-sections -I$R/include -I$R/include/runtime -I$R/src/lib"
 if [ "$arch" = arm ]; then
     SSE2NEON=${SSE2NEON:-$(ls -d /root/gow-switch-build*/_deps/sse2neon-src 2>/dev/null | head -1)}
     [ -f "$SSE2NEON/sse2neon.h" ] || { echo "no sse2neon.h (set SSE2NEON=<dir>, e.g. a Switch build's _deps/sse2neon-src)" >&2; exit 1; }
@@ -39,5 +39,5 @@ for f in $R/src/lib/vu/ps2_vu1_core.cpp $R/src/lib/vu/ps2_vu1_lower.cpp $R/src/l
     objs+=($o)
 done
 wait
-$LD -static -Wl,--gc-sections -o $H/$name "${objs[@]}"
+$LD -static -pthread -Wl,--gc-sections -o $H/$name "${objs[@]}"
 ls -la $H/$name

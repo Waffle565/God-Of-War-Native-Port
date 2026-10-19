@@ -3,6 +3,91 @@
 Goal: VU1 is the limit of the Switch build in gameplay (~4.0 s busy per 5 s at ~20 fps, docs/switch-deko3d.md); 60 fps
 needs it ~2.4x faster. This page records what the VU1 time is spent on and what the generator does about it.
 
+## Data-parallel vertex loops on a helper thread (2026-10-19, ext agent/sw-vu1split): works, bit-exact, does not pay
+**Handoff.** Branch `agent/sw-vu1split` (ext f8d61b1 = sw-core1 + the split runtime cebb869, sw-vu1disp 665d3ce merged
+in f4749a8, split off by default 20e04fe, sw-vu1jr 97a964b merged in b632e46; worktree ext/PS2Recomp-kl-vu1split, PC build `out/build-pc`, VU1 blocks `out/vu1pregen` =
+sw-vu1disp's (sw-vu1cyc's kept in `out/vu1pregen_cyc`); WSL copies `/root/src-vsplt` -> `/root/gow-switch-vsplt`, cloned
+from sw-core1's with the paths renamed, the changed runtime files copied in by scratchpad `vu1split/swsync.sh`).
+**Off by default**: `GOW_VU1_SPLIT=1` turns it on. Installed on the console: `port/switch/nsp/out/update_vsplit5`
+(b632e46: split off, sw-vu1disp + sw-vu1jr runtime with their defaults, no env.txt; `sdmc:/switch/gow/vu1ship.rec` is
+on the SD card for the replay benchmark).
+
+**What it does** (ps2_vu1_split.inl; hooks in runNative, the memory helpers and the callouts):
+- *Probe.* A dispatch whose last run from that pc lasted >= `GOW_VU1_SPLIT_MIN` (600) VU cycles is broken after every
+  block (ctx budget = now + 1: chainTo / chainDirect hand back exactly as at any budget end) until the block pcs repeat
+  with period P (1-3 blocks) and two periods have equal VU cycles and VI deltas. The VI registers with a constant delta
+  are the induction variables; one counting down gives the periods left R.
+- *Plan.* Take-over at k = (R + warm + lat) / 2 periods (`GOW_VU1_SPLIT_WARM` 5, `GOW_VU1_SPLIT_LAT` 2), cycle Tk. The
+  helper gets the worker's present state (registers, cycle, FDIV/EFU, flag rings, the 8 newest history entries) with the
+  linear VI registers advanced and every absolute cycle shifted by (k - warm) periods, copies of the loop's dispatch
+  slots, and copies the data-memory ranges its pointer registers will sweep (+-8 qwords).
+- *Helper* (thread `VU1Split`, pre-spawned, spins `GOW_VU1_SPLIT_SPINUS` 2000 us then waits on a condvar; on the Switch
+  the spin yields: core 0 at the default priority, which is already the lowest an application thread gets, so a step
+  below fails). Its own VU1Interpreter + NativeState in `specMode`: no timing-cache / memo writes (a miss aborts),
+  no exact-engine callouts, XGKICK aborts. It runs the restricted dispatch loop (the loop's slots only) to its first
+  block boundary >= Tk, publishes a snapshot, then runs to the loop exit (or the run's budget) with `ctx.spec` set:
+  `ldq/ldWord/stq/stWords` log the words read before written and mark the words written.
+- *Take-over.* The worker runs to Tk itself (budget break), compares its state with the snapshot (registers, cycle,
+  FDIV/EFU, flag values the rings still show by issue cycle and tail records, history entries in the maxLat window),
+  waits for the helper (stall limit `GOW_VU1_SPLIT_STALLUS` 40 us without progress), checks every logged read against
+  the real memory (which is the memory at Tk), checks that no timing cache / slot changed meanwhile (`timingEpoch`),
+  then copies the written words and takes the helper's final state over. Anything else: the worker just goes on.
+- Warm-up: 3 periods leave the cull loops' carried cross-product registers (vf27/vf28) wrong in ~5 % of plans; 5 fixes it.
+- Diagnostics: `GOW_VU1_SPLIT_STATS=1` (or `GOW_PERF_DIAG=1`): `[vu1-split] window=... probes plans reached adopted
+  blocks_saved ... mismatch mem wait_ms helper_ms helper_state jobs` every 5 s (and at the end of a replay;
+  tools/switch_log_summary.py prints them); `GOW_VU1_SPLIT_DIAG=<n>`: the first n state mismatches with the differing
+  registers; `GOW_VU1_SPLIT_SYNC=1`: the helper job runs inline at the post (deterministic test of the logic);
+  `GOW_VU1_SPLIT_PROBE` (24): block boundaries a probe looks at.
+
+**Bit-exact.** Replay harness (tools/vu1_harness, now linked with -pthread), all three recordings with 3 passes (cold +
+2 warm), x86 and aarch64 (qemu), split off / on inline / on threaded: ship 2000, consecutive 3000, PC zone 1832 records,
+**0 differ, warm passes 0 differ** in every combination (before and after the sw-vu1disp merge). On the console the
+replay benchmark with the split on also reports `2000 records, 0 differ`. PC zone gate with the split **on** (merged
+build, before the default went off): port/vu1split/gate/20261019_203831 5/5 ok, 60 fps, speed 1.01; final build (split
+off, 20e04fe): port/vu1split/gate/20261019_214655 5/5 ok, 60 fps, speed 1.01 (slot 0 `gow_pad_test_5` flagged: another
+moment of the same fight, renders right), savetest (`port/vu1split/savetest`) 129 pages, card directory intact. The
+sw-vu1jr merge (b632e46): x86 replay 0 differ (all three recordings, split off and on threaded), console replay 0 differ.
+
+**Why it does not pay.** The vertex loops are short: ~5-6 loop entries per program run, ~300 VU cycles (~25 vertices,
+~5 us on the A57) each. With the default threshold 30-40 % of the probes plan a split and ~85 % of those are taken over,
+yet the helper's committed blocks are only ~4-7 % of all loop blocks (`blocks_saved`), while every split pays the probe
+(5+ broken dispatches), three state snapshots (~2.5 KB each), the cross-core hand-off and a wait (the helper starts
+late and runs its blocks slower: logging, cold caches, and on core 0 it only runs when deko3d's thread blocks).
+Console replay benchmark (ship recording, 6000 warm runs, same build `update_vsplit3`):
+
+| env | ms | |
+|---|---|---|
+| split off (default), traces + direct chaining on | 122.9 / 122.7 | |
+| split off, `GOW_VU1N_TRACES=0 GOW_VU1N_DIRECT=0` | 119.0 / 118.6 | sw-vu1disp's traces/chaining are ~3 % **slower** on the A57 |
+| split on (min 600 cycles) | 152.2 | +24 % (2240 take-overs, 82881 blocks saved, wait 32 ms, helper 40 ms) |
+| split on, `GOW_VU1_SPLIT_MIN=2000` | 127.0 | +3.5 % (183 take-overs, 20638 blocks) |
+| `update_vsplit5` (+ sw-vu1jr's chain step), split off | 119.5 / 121.3 | -1.7 % against the line above it without sw-vu1jr |
+| `update_vsplit5`, `GOW_VU1N_TRACES=0 GOW_VU1N_DIRECT=0` | 116.6 | still ~3 % below traces + direct chaining on the A57 |
+
+Gameplay (bot fight, `PLAY=1`, logs port/switch/logs/20261019_vsplit_*), guest fps per 5 s window:
+
+| build / env | title | heavy fight (115-135 s) | later (140-200 s) | VU1 worker vu_ms per 5 s |
+|---|---|---|---|---|
+| before: sw-core1 `update_core1b` (docs/switch-deko3d.md) | 38.2-39.6 | 19.0-21.8 | 25.6-32.4 | 3.8-4.1 s job |
+| this build, split off (`s3off_a`) | 37.2-38.2 | 15.8-22.0 | 19.6-27.6 | 3.5-4.0 s |
+| final default build `update_vsplit4` (split off, no env, `s4def_a`) | 38.4-39.8 | 16.2-27.8 | 21.6-28.4 | 3.6-3.9 s |
+| split off, traces/direct off (`s3old_a`) | 35.8-36.0 | 17.2-27.4 | 22.0-30.4 | 3.5-4.0 s |
+| split on, min 600 (`s3on_a`) | 31.8-32.6 | 14.0-23.0 | 18.2-22.1 | 3.6-3.8 s (no drop) |
+| split on, min 1500 (`s3m1500`) | 34.8-36.0 | 16.0-23.8 | 20.0-22.2 | 3.7-3.9 s |
+
+Per-core busy did not change with the split (core 2 VU1 worker 3.5-4.0 s per 5 s either way; core 0 deko3d 1.7-1.9 s;
+the helper adds ~0.3-0.4 s on core 0 and the worker waits ~0.25-0.3 s for it). Open issue (moot while off): in both
+gameplay runs with the split on, the take-overs stopped after ~40 s of fighting and never resumed (the worker saw the
+helper busy for good: probes 0 in every later window); `helper_state` / `jobs` in the stats line were added to find
+out on the next run.
+
+**Next lever.** Not more threads for VU1 at this granularity: a split needs the per-split cost well under ~2 us to pay
+on 5 us loops. What could: (1) the vertex loop as straight data-parallel code inside one thread (the steady state of the
+cycle model is a fixed per-vertex pattern: once two periods match, the remaining passes could run as a tight loop
+without per-block history / flag-ring bookkeeping, validated the same way the split validates; this is the
+"cheaper dispatch" lever above); (2) traces/direct chaining off on the Switch (-3 % VU1 on the replay benchmark; gameplay A/B within the noise of one
+run each), or finding why they are slower on the A57 than qemu predicts (branch prediction of the tail calls?).
+
 ## JR / JALR exits and the chain step (2026-10-19, ext agent/sw-vu1jr)
 **Handoff.** Branch `agent/sw-vu1jr` (ext 665d3ce + 97a964b; worktree ext/PS2Recomp-kl-vu1jr, own build dir
 `out/build-pc` configured like sw-vu1disp's with `-DPS2X_VU1N_GEN_OVERRIDE=<root>/port/vu1jr/gen/vu1n_gen.py` = the
