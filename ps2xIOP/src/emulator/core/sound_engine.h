@@ -111,6 +111,8 @@ namespace ps2x::iop::detail
         std::array<bool, 2> m_streamHalf{};
         std::vector<int16_t> m_output;
         mutable std::mutex m_outputMutex;
+        // samples step() mixed during one advanceTo(), appended to m_output under one lock (EE thread only)
+        std::vector<int16_t> m_mixed;
         double m_resamplePhase = 0.0; // drainOutput: fractional read position when playing back faster
         uint64_t m_lastCycle = 0;
         // GOW_SND_STALE (streamSample): when the stream position was last polled, the largest advanceTo step, and a hash of

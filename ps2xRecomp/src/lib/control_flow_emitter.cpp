@@ -1,5 +1,6 @@
 #include "ps2recomp/Emitters/control_flow_emitter.h"
 
+#include "ps2recomp/codegen_helpers.h"
 #include "ps2recomp/control_flow_utils.h"
 #include "ps2recomp/instructions.h"
 #include "ps2recomp/r5900_decoder.h"
@@ -131,11 +132,19 @@ namespace ps2recomp
             return;
         }
 
-        m_ss << fmt::format("{}ctx->pc = 0x{:X}u;\n", indent, delayPc());
-        m_ss << fmt::format("{}ctx->in_delay_slot = true;\n", indent);
-        m_ss << fmt::format("{}ctx->branch_pc = 0x{:X}u;\n", indent, branchPc());
-
+        // GOW-Port: the delay-slot state (pc, in_delay_slot, branch_pc) is read only by the runtime, when the delay-slot
+        // instruction enters it (exceptions, syscalls, memory special paths). A pure register instruction cannot, so
+        // it gets no stores (on AArch64 three constant stores and a clear per branch).
         const std::string code = delaySlotCode();
+        const std::string body = m_delaySlotOverride.empty() ? m_gen.translateInstruction(m_delaySlot) : m_delaySlotOverride;
+        const bool pure = codegen::classifyPcUse(body) == codegen::PcUse::Pure;
+        if (!pure)
+        {
+            m_ss << fmt::format("{}ctx->pc = 0x{:X}u;\n", indent, delayPc());
+            m_ss << fmt::format("{}ctx->in_delay_slot = true;\n", indent);
+            m_ss << fmt::format("{}ctx->branch_pc = 0x{:X}u;\n", indent, branchPc());
+        }
+
         std::istringstream lines(code);
         std::string line;
         while (std::getline(lines, line))
@@ -146,7 +155,10 @@ namespace ps2recomp
             }
         }
 
-        m_ss << fmt::format("{}ctx->in_delay_slot = false;\n", indent);
+        if (!pure)
+        {
+            m_ss << fmt::format("{}ctx->in_delay_slot = false;\n", indent);
+        }
     }
 
     void ControlFlowEmitter::emitResumeFromDelaySlotEntry()
@@ -174,8 +186,14 @@ namespace ps2recomp
 
     void ControlFlowEmitter::emitInternalTarget(uint32_t target, uint32_t sourcePc, std::string_view indent)
     {
-        m_ss << fmt::format("{}ctx->pc = 0x{:X}u;\n", indent, target);
-        if (target <= sourcePc && !isCallLikeEdge())
+        // GOW-Port: only a backward edge needs the target in ctx->pc (its checkpoint may return to the dispatcher,
+        // which resumes there); the code after a forward edge stores its own PC wherever the runtime can read it.
+        const bool backward = target <= sourcePc && !isCallLikeEdge();
+        if (backward || isCallLikeEdge())
+        {
+            m_ss << fmt::format("{}ctx->pc = 0x{:X}u;\n", indent, target);
+        }
+        if (backward)
         {
             // GOW-Port: a backward edge charges the loop body's straight-line length (target through the branch and
             // its delay slot, about one cycle per instruction), at most the former flat 32 cycles. A flat 32 charged
@@ -553,14 +571,30 @@ namespace ps2recomp
 
     void ControlFlowEmitter::emitFinalFallthrough()
     {
+        // GOW-Port: a conditional branch that falls through to code inside the function needs no PC store (see
+        // emitInternalTarget); jumps, calls and a fall-through out of the function keep it.
+        if (conditionalBranch() && fallthroughPc() < m_function.end)
+        {
+            return;
+        }
         m_ss << fmt::format("    ctx->pc = 0x{:X}u;\n", fallthroughPc());
+    }
+
+    bool ControlFlowEmitter::conditionalBranch() const
+    {
+        return m_branchInst.isBranch && m_branchInst.opcode != OPCODE_J && m_branchInst.opcode != OPCODE_JAL &&
+               !(m_branchInst.opcode == OPCODE_SPECIAL &&
+                 (m_branchInst.function == SPECIAL_JR || m_branchInst.function == SPECIAL_JALR));
     }
 
     std::string ControlFlowEmitter::emit()
     {
         (void)m_function;
         emitResumeFromDelaySlotEntry();
-        m_ss << fmt::format("    ctx->pc = 0x{:X}u;\n", branchPc());
+        if (!conditionalBranch())
+        {
+            m_ss << fmt::format("    ctx->pc = 0x{:X}u;\n", branchPc());
+        }
 
         if (m_branchInst.opcode == OPCODE_J || m_branchInst.opcode == OPCODE_JAL)
         {
