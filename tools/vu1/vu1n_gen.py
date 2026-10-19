@@ -15,7 +15,9 @@ that branches back to its own start repeats inside its function (VU1NativeAccess
 (gen_region; off by default, measured slower, see REGIONS).
 --no-direct: no direct chaining (see DIRECT): every block returns to runNative (the output before 2026-10-19 evening);
 also no traces. --no-traces: no traces (see TRACES); --no-trace-entry: traces only from blocks that do not read entry
-flags. --profile <file> / --no-profile: the edge profile the traces follow (see PROFILE).
+flags. --profile <file> / --no-profile: the edge profile the traces follow (see PROFILE). --jr: JR / JALR exits chain
+to their predicted targets, then to any block (see JR; off by default: measured no gain); --jr-traces: traces also go
+on through JR / JALR targets; --jr-max N, --no-jr-any: see JR.
 """
 import os
 import re
@@ -55,6 +57,25 @@ TRACE_MAX_PAIRS = 48
 # with GOW_VU1N_DIRECT=0 GOW_VU1N_TRACES=0, port/vu1disp/prof.sh): --profile <file>, default vu1n_profile.txt next to the
 # heads file; --no-profile: the static guess only
 PROFILE = {}
+# JR / JALR targets (needs DIRECT; --jr: on, off by default): a JR has no static successor, so its block returns to
+# runNative. Measured (docs/vu1-hle.md "JR / JALR exits"): qemu +0.2 % (ship and PC zone), x86 replay within the noise, so
+# the default output stays the one of 3254106; the runtime keeps chainJr for A/B (env GOW_VU1N_JR=0 on a --jr build).
+# The profile's "j <JR pc> <target> <count>" lines (GOW_VU1N_BLOCKPROF, tools/vu1_harness/edgeprof.sh) give each site's
+# targets: the block function goes on to the JR_MAX most frequent ones (each at least JR_MIN_SHARE of the site's count)
+# through the same guarded chainDirect as a static successor (the next pc must equal the predicted one and the slot must
+# hold the predicted block key, else the block returns to runNative as before). Traces continue through a JR when the
+# target is known: a return to the link a BAL / JALR earlier in the same trace set (call/return pair), else the
+# profile's target when it takes at least JR_TRACE_SHARE of the site (JR_TRACES, --jr-traces: measured +0.25 % on top);
+# the trace's part exit check (the next pc differs from the part after it -> the prefix finishes) guards it like any
+# other branch.
+JR = False
+JRPROF = {}        # JR pc -> {target pc: count}
+JR_MAX = 2
+JR_MIN_SHARE = 0.1
+JR_TRACE_SHARE = 0.6
+JR_TRACES = False  # traces go on through a JR with a known target (--jr-traces); else they end at a JR
+JR_USED = False    # some exit uses the JR macros (JR_PREAMBLE)
+JR_ANY = True      # after the predicted targets, any target the slot holds a block for (chainJr with key 0); --no-jr-any
 REGION_MAX_BLOCKS = 10
 REGION_MAX_PAIRS = 64
 
@@ -1332,6 +1353,48 @@ def static_succs(pc, pairs):
     return [end_pc]
 
 
+def jr_site(pc, pairs):
+    """(pc of the JR / JALR, its fs register) when the block ends in one (no E bit), else None"""
+    n = len(pairs)
+    if n < 2 or not is_branch(*pairs[n - 2]) or any((u >> 30) & 1 for (l, u) in pairs):
+        return None
+    l = pairs[n - 2][0]
+    if (l >> 25) not in (0x24, 0x25):
+        return None
+    return (pc + 8 * (n - 2)) & 0x3FFF, lower_fields(l)['fs']
+
+
+def jr_targets(pc, pairs, share=None, count=None):
+    """the profile's targets of the block's JR / JALR, most frequent first (count, default JR_MAX, of them, each >= share
+    of the site's count)"""
+    js = jr_site(pc, pairs) if JR else None
+    if js is None or js[0] not in JRPROF:
+        return []
+    d = JRPROF[js[0]]
+    tot = sum(d.values())
+    share = JR_MIN_SHARE if share is None else share
+    ts = sorted(d, key=lambda t: (-d[t], t))
+    return [t for t in ts[:JR_MAX if count is None else count] if d[t] >= share * tot]
+
+
+def vi_links(pc, pairs, links, upto=None):
+    """call/return tracking for traces: links (vi -> return pc set by a BAL / JALR) after the block's pairs [0, upto);
+    any lower instruction that may write the register (its ft, fs or vid field names it; vi1 for the clip flag ops)
+    drops it (conservative: a wrong guess only costs the trace's exit check)"""
+    links = dict(links)
+    for i, (l, u) in enumerate(pairs[:upto]):
+        if (u >> 31) or l == 0:
+            continue
+        op = l >> 25
+        f = lower_fields(l)
+        for r in list(links):
+            if r in (f['ft'], f['fs'], f['vid']) or (r == 1 and op in (0x10, 0x11, 0x12, 0x13)):
+                del links[r]
+        if op in (0x21, 0x25) and f['ft']:
+            links[f['ft']] = (pc + 8 * i + 16) & 0x3FFF
+    return links
+
+
 _LOCAL_OK = {}      # loop_regions: block key -> the block can run with its registers in locals (gen_block pieces)
 _REGION_MEMO = {}   # loop_regions: a component's graph (blocks, edges, entries) -> its loops; images share most code
 
@@ -1489,14 +1552,43 @@ DIRECT_PREAMBLE = r"""// direct chaining (vu1n_gen.py DIRECT): go on to the succ
 #endif
 """
 
+JR_PREAMBLE = r"""// JR / JALR exits (vu1n_gen.py JR): predicted targets by block key, then whatever block the target's slot holds
+#if defined(VU1N_HAS_CHAIN_JR)
+#define VU1N_GOJ(cx, pc, key) \
+    if ((cx) == (pc)) \
+    { \
+        const uint32_t go_ = VU1NativeAccess::chainJr(n, (pc), (key)); \
+        if (go_ == 1u) \
+            VU1N_TAILCALL return VU1NativeAccess::slotFn(n)(n); \
+        return (cx) | (go_ ? kVu1nFinished : 0u); \
+    }
+#define VU1N_GOJANY(cx) \
+    { \
+        const uint32_t go_ = VU1NativeAccess::chainJr(n, (cx), 0ull); \
+        if (go_ == 1u) \
+            VU1N_TAILCALL return VU1NativeAccess::slotFn(n)(n); \
+        return (cx) | (go_ ? kVu1nFinished : 0u); \
+    }
+#else
+#define VU1N_GOJ(cx, pc, key) VU1N_GO(cx, pc, key)
+#define VU1N_GOJANY(cx)
+#endif
+"""
+
 _DIRECT_LG_RE = re.compile(r'^(\s*)return nx \| \(lg \? kVu1nFinished : 0u\);$')
 _DIRECT_NX_RE = re.compile(r'^(\s*)return (taken\d* \? target\d* : \d+u|\d+u);$')
 
 
-def direct_exits(lines, cands):
+_JR_TARGET_RE = re.compile(r'^\s*uint32_t (target\d*) = \(\(\(uint32_t\)\(uint16_t\)')
+
+
+def direct_exits(lines, cands, jrc=()):
     """direct chaining: the function's exits to a next pc (after the register writeback) go on to the candidate
     successors (cands: pc -> block key) through VU1N_GO; a self-loop's or cycle's exit only when its chainTo
-    did nothing (lg == 0)"""
+    did nothing (lg == 0). An exit through a JR / JALR target (JR) tries the predicted targets (jrc: pcs, in order)
+    with VU1N_GOJ, then any block (VU1N_GOJANY)."""
+    global JR_USED
+    jr_vars = {m.group(1) for m in (_JR_TARGET_RE.match(ln) for ln in lines) if m} if JR else set()
     out = []
     for ln in lines:
         m = _DIRECT_LG_RE.match(ln)
@@ -1506,6 +1598,15 @@ def direct_exits(lines, cands):
             out += [f"{ind}}}", ln]
             continue
         m = _DIRECT_NX_RE.match(ln)
+        mj = re.fullmatch(r'taken\d* \? (target\d*) : \d+u', m.group(2)) if m and jr_vars else None
+        if mj and mj.group(1) in jr_vars:
+            ind, expr = m.group(1), m.group(2)
+            JR_USED = True
+            out += [f"{ind}{{", f"{ind}    const uint32_t cx = {expr};"]
+            out += [f"{ind}    VU1N_GOJ(cx, {t}u, {cands[t]})" for t in jrc if t in cands]
+            out += [f"{ind}    VU1N_GOJANY(cx)"] if JR_ANY else []
+            out += [f"{ind}    return cx;", f"{ind}}}"]
+            continue
         if m:
             ind, expr = m.group(1), m.group(2)
             ts = sorted(cands.items())
@@ -1842,6 +1943,22 @@ def main():
         elif args[i] == '--no-profile':
             prof_file = ''
             i += 1
+        elif args[i] == '--jr':
+            global JR
+            JR = True
+            i += 1
+        elif args[i] == '--jr-traces':
+            global JR_TRACES
+            JR_TRACES = True
+            i += 1
+        elif args[i] == '--no-jr-any':
+            global JR_ANY
+            JR_ANY = False
+            i += 1
+        elif args[i] == '--jr-max':
+            global JR_MAX
+            JR_MAX = int(args[i + 1])
+            i += 2
         elif args[i] == '--no-traces':
             global TRACES
             TRACES = False
@@ -1879,6 +1996,12 @@ def main():
             f_ = line.split()
             if len(f_) == 4 and f_[0] == 'e':
                 PROFILE[(int(f_[1], 16), int(f_[2], 16))] = PROFILE.get((int(f_[1], 16), int(f_[2], 16)), 0) + int(f_[3])
+            elif len(f_) == 4 and f_[0] == 'j':
+                d_ = JRPROF.setdefault(int(f_[1], 16), {})
+                d_[int(f_[2], 16)] = d_.get(int(f_[2], 16), 0) + int(f_[3])
+    if not (JR and DIRECT and LOCALS):
+        JRPROF.clear()
+        JR = False
     blocks = {}
     unsupported = 0
     fused = {}            # A's key -> the other functions its function chains to (gen_cycle: B, gen_region: the loop)
@@ -1887,6 +2010,8 @@ def main():
     nregions = 0
     region_of = {}        # key -> the body of its loop-region function (gen_region)
     succ_keys = {}        # direct chaining: key -> {successor pc: {successor block key: images}}
+    jr_of = {}            # JR: key -> the predicted targets of its JR / JALR (most frequent first)
+    jr_blk = set()        # JR: keys of the blocks that end in a JR / JALR (their exit goes through VU1N_GOJ / GOJANY)
     for f in inputs:
         code = open(f, 'rb').read()
         if len(code) != CODE_SIZE:
@@ -1899,7 +2024,12 @@ def main():
             key = fnv_block(pc, words)
             if DIRECT and LOCALS:
                 sk = succ_keys.setdefault(key, {})
-                for t in static_succs(pc, pairs) or []:
+                jt = jr_targets(pc, pairs)
+                if jt:
+                    jr_of[key] = jt
+                if JR and jr_site(pc, pairs) is not None:
+                    jr_blk.add(key)
+                for t in (static_succs(pc, pairs) or []) + jt:
                     pt = extent(code, t)
                     if pt:
                         kt = fnv_block(t, [w for pr in pt for w in pr])
@@ -1968,8 +2098,16 @@ def main():
                 local_ok[key] = gen_trace([(pc, pairs)], "probe", False) is not None
             return local_ok[key]
 
-        def likely(pc, pairs, h=None):
+        def likely(pc, pairs, h=None, links=None):
             ss = static_succs(pc, pairs)
+            if ss is None and JRPROF and JR_TRACES:
+                js = jr_site(pc, pairs)
+                if js is not None:
+                    lk = vi_links(pc, pairs, links or {}, len(pairs) - 2)
+                    if js[1] in lk:
+                        return lk[js[1]]      # the return of a call earlier in the trace
+                    ts = jr_targets(pc, pairs, JR_TRACE_SHARE, 1)
+                    return ts[0] if ts else None
             if not ss:
                 return None
             if len(ss) == 1:
@@ -2018,8 +2156,10 @@ def main():
                     continue
                 path, total, loop = [(h, key, pairs)], len(pairs), False
                 cur, cp = h, pairs
+                links = {}
                 while True:
-                    nx = likely(cur, cp, h)
+                    nx = likely(cur, cp, h, links)
+                    links = vi_links(cur, cp, links)
                     if nx is None:
                         break
                     if nx == h:
@@ -2098,11 +2238,12 @@ def main():
             if blocks[key][2] is None or key in region_of:
                 continue
             cands = cands_of([key] + [name_key[o] for o in fused.get(key, []) if o in name_key])
-            if cands:
+            if cands or key in jr_blk:
                 direct[key] = cands
         for tkey, tr in traces.items():
             cands = cands_of([k for _, k, _ in tr[0]])
-            traces[tkey] = tr[:2] + (direct_exits(tr[2], cands),) + tr[3:] + (cands,)
+            jrc = list(dict.fromkeys(t for _, k, _ in tr[0] for t in jr_of.get(k, [])))
+            traces[tkey] = tr[:2] + (direct_exits(tr[2], cands, jrc),) + tr[3:] + (cands,)
     os.makedirs(out, exist_ok=True)
     texts = [[] for _ in range(parts)]
     regs = [[] for _ in range(parts)]
@@ -2121,9 +2262,10 @@ def main():
             t.append(f"static const VU1TailDesc {name}_tail = {{{len(tail[0])}, {len(tail[2])}, {{{mp[0]}, {mp[1]}, {mp[2]}}}, "
                      f"{{{mm[0]}, {mm[1]}, {mm[2]}}}, {{{cp[0]}, {cp[1]}, {cp[2]}}}}};")
         if key in direct:
-            body = direct_exits(body, direct[key])
+            jrc = jr_of.get(key, [])
+            body = direct_exits(body, direct[key], jrc)
             if key in fast:
-                fast[key] = (direct_exits(fast[key][0], direct[key]),) + tuple(fast[key][1:])
+                fast[key] = (direct_exits(fast[key][0], direct[key], jrc),) + tuple(fast[key][1:])
         if key in region_of:
             # the region function's first scope is the block's own (fast) body: its exact twin <name>_x stays
             t.append(f"{'' if name in extern_names else 'static '}uint32_t {name}(VU1NativeCtx &n);")
@@ -2174,7 +2316,7 @@ def main():
               'namespace vu1n\n{\n    template <bool Sub>\n'
               '    inline __m128 maddc(__m128 acc, __m128 a, __m128 b, __m128 &raw)\n    {\n'
               '        raw = madd<Sub>(acc, a, b);\n        return clampv(raw);\n    }\n}\n#endif\n\n' + (REGION_PREAMBLE if REGIONS else '') + FAST_PREAMBLE
-              + (DIRECT_PREAMBLE if direct else ''))
+              + (DIRECT_PREAMBLE if direct else '') + (JR_PREAMBLE if JR_USED else ''))
     footer = '\n#if defined(_MSC_VER)\n#pragma float_control(pop)\n#endif\n'
     for k in range(parts):
         body = header + "\n".join(texts[k]) + "\nnamespace\n{\n    const bool g_registered = []\n    {\n" + "\n".join(regs[k]) + "\n        return true;\n    }();\n}\n" + footer
