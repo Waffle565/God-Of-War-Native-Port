@@ -148,9 +148,12 @@ struct VU1Interpreter::NativeState
         // Entry timing by predecessor (blocks that read entry flags): when the block before ran for maxLat cycles or more
         // and nothing from the exact engine is still in flight, that block and its timing table alone decide the entry
         // state; the timing found for it is reused.
+        // Blocks that read FDIV/EFU state at entry (not `memoable`) also key the memo by that state (memoScalar, see
+        // VU1NativeAccess::scalarKey) unless GOW_VU1N_CHAIN_FLAGS=0.
         alignas(64) const BlockTiming *memoPred = nullptr;
         const uint8_t *memoCyc = nullptr;
         uint32_t memoPredId = 0, memoId = 0;
+        uint32_t memoScalar = 0;
     };
     static_assert(sizeof(Slot) == 128);
     static constexpr uint8_t kScalarMany = 0xFF;
@@ -173,6 +176,10 @@ struct VU1Interpreter::NativeState
     FlagRing macRing, clipRing;
     bool flagsInRings = false; // the rings hold the flag state (set at native entry, cleared when the exact engine continues)
     bool enabled = std::getenv("GOW_VU1_NATIVE_OFF") == nullptr;
+    // chainTo also enters blocks that read entry flags (their entry timing through the memo or blockTiming), and the
+    // memo also serves blocks that read FDIV/EFU state; GOW_VU1N_CHAIN_FLAGS=0: the former behavior (runNative
+    // dispatches every such block; same results, docs/vu1-hle.md)
+    bool chainFlags = !(std::getenv("GOW_VU1N_CHAIN_FLAGS") && std::atoi(std::getenv("GOW_VU1N_CHAIN_FLAGS")) == 0);
     unsigned verifyLeft = std::getenv("GOW_VU1N_VERIFY") ? static_cast<unsigned>(std::atoi(std::getenv("GOW_VU1N_VERIFY"))) : 0u;
     bool diag = std::getenv("GOW_VU1N_DIAG") != nullptr;
     unsigned long long nativePairs = 0, nativeBlocks = 0, missBlocks = 0, nativeRuns = 0, codeChanges = 0, slotSetups = 0;
@@ -205,6 +212,10 @@ struct VU1NativeAccess
     static void prepareBlockTiming(VU1Interpreter &vu, VU1Interpreter::NativeState::BlockTiming &bt, const uint8_t *code,
                                    uint32_t pc, uint32_t count, const uint8_t *idle);
     static const uint8_t *blockTiming(VU1Interpreter &vu, VU1Interpreter::NativeState::Slot &sl, uint32_t &cycId);
+    // entry timing of a block that reads entry flags: the memo by predecessor (inline), else blockTiming
+    static const uint8_t *entryTiming(VU1Interpreter &vu, VU1Interpreter::NativeState::Slot &sl, uint32_t &cycId);
+    // the FDIV/EFU part of blockTiming's in-flight signature as one word (slack per unit read at entry, 0: not busy)
+    static uint32_t scalarKey(const VU1Interpreter &vu, const VU1Interpreter::NativeState::BlockTiming &bt, uint64_t start);
     static void scalarStart(VU1Interpreter &vu, uint64_t issue, uint32_t latency, bool fdiv);
     static void commitDue(VU1Interpreter &vu); // commitReadyPipelines after a native block (FDIV/EFU-only fast path)
     static VU1Interpreter::NativeState::Slot &slotFor(VU1Interpreter &vu, const uint8_t *code, uint32_t codeSize, uint32_t pc);
@@ -412,12 +423,54 @@ VU1N_INLINE void VU1NativeAccess::finishBlockTiming(VU1Interpreter &vu, const VU
 }
 
 
+// The FDIV/EFU entries of blockTiming's signature (sig: (200 + k) << 8 | slack, in k order) packed into one word: slack
+// k (1-255) in byte k, 0 when unit k is not read at entry or ready by then. Equal keys <=> equal scalar signature parts.
+VU1N_INLINE uint32_t VU1NativeAccess::scalarKey(const VU1Interpreter &vu, const VU1Interpreter::NativeState::BlockTiming &bt, uint64_t start)
+{
+    if (bt.scalarRead == 0u)
+        return 0u;
+    uint64_t efuReady = 0u;
+    for (const VU1Interpreter::ScalarPipelineEntry &e : vu.m_efu)
+        if (e.valid)
+            efuReady = std::max(efuReady, e.readyCycle);
+    const uint64_t ready[3] = {vu.m_fdiv.valid ? vu.m_fdiv.readyCycle : 0u, vu.m_efuResourceReady, efuReady};
+    uint32_t key = 0u;
+    for (uint32_t k = 0; k < 3u; ++k)
+        if ((bt.scalarRead & (1u << k)) && ready[k] > start + bt.scalarAt[k])
+            key |= static_cast<uint32_t>(std::min<uint64_t>(ready[k] - start - bt.scalarAt[k], 255u)) << (8u * k);
+    return key;
+}
+
+// Entry timing by predecessor (memo, see Slot): when the block before ran for maxLat cycles or more, ended where this one
+// starts, and nothing from the exact engine is in flight, that block's timing table (and the FDIV/EFU state) decide
+// blockTiming's signature, so the timing found for them last time is the one blockTiming would return.
+VU1N_INLINE const uint8_t *VU1NativeAccess::entryTiming(VU1Interpreter &vu, VU1Interpreter::NativeState::Slot &sl, uint32_t &cycId)
+{
+    using NS = VU1Interpreter::NativeState;
+    NS &ns = *vu.m_native;
+    const uint64_t start = vu.m_cycle;
+    if (ns.histCount != 0u && sl.memoCyc)
+    {
+        const NS::Hist &pred = ns.hist[(ns.histNext + NS::kHist - 1u) % NS::kHist];
+        if (pred.bt == sl.memoPred && pred.cycId == sl.memoPredId && pred.end == start && pred.end - pred.start >= ns.maxLat &&
+            ns.arraysReadyBy <= start && (sl.memoable || (ns.chainFlags && scalarKey(vu, *sl.bt, start) == sl.memoScalar)))
+        {
+            cycId = sl.memoId;
+            return sl.memoCyc;
+        }
+    }
+    return blockTiming(vu, sl, cycId);
+}
+
 // Chained blocks: the generated code puts the blocks of a microprogram that branch to each other into one function
 // (vu1n_gen.py regions), with the registers kept in locals, and goes from a block straight on to its successor when
 // that successor's slot holds the expected function (the words at its pc are the ones it was generated from). Between the
 // two blocks chainTo does what runNative does between two blocks: the finished block's timing and history entry, the
-// due FDIV/EFU retirement, the stop / budget check, and the successor's start cycle, timing table and tail record. Only
-// successors with an idle-pipeline timing table are entered (no entry-flag reads), and only while nothing from the exact
+// due FDIV/EFU retirement, the stop / budget check, and the successor's start cycle, timing table and tail record. A
+// successor that reads entry flags gets its entry timing exactly as runNative would give it (entryTiming: the memo, else
+// blockTiming), so loops whose body reads flags of the previous pass (the vertex loops' B halves and self-loops, the
+// shadow culling loop) stay in their function; GOW_VU1N_CHAIN_FLAGS=0 enters only successors with an idle-pipeline
+// timing table (the former behavior: runNative dispatched every pass of such a loop). Only while nothing from the exact
 // engine is pending (else commitDue would run commitReadyPipelines, which writes registers the block holds in locals).
 // Returns 0: nothing done (runNative finishes the block), 1: successor set up, 2: block finished, runNative dispatches
 // the successor (the block returns with kVu1nFinished).
@@ -432,20 +485,23 @@ VU1N_INLINE uint32_t VU1NativeAccess::chainTo(VU1NativeCtx &n, uint32_t pc, VU1N
     finishBlockTiming(vu, sl, n.cyc, n.cycId, n.start);
     if (vu.m_cycle >= vu.m_nextCommitCycle)
         commitDue(vu);
-    const NS::Slot &next = ns.slots[(pc & 0x3FF8u) >> 3];
-    if (vu.m_stopRequested || vu.m_cycle >= n.budgetEnd || next.fn != expected || !next.known || next.readsEntryFlags)
+    NS::Slot &next = ns.slots[(pc & 0x3FF8u) >> 3];
+    if (vu.m_stopRequested || vu.m_cycle >= n.budgetEnd || next.fn != expected || !next.known ||
+        (next.readsEntryFlags && !ns.chainFlags))
         return 2u;
     ++ns.nativeBlocks; // runNative counts the block the function returns from
     ns.nativePairs += sl.pairs;
     n.slot = &next;
     n.start = vu.m_cycle;
-    n.cyc = next.idle;
-    n.cycId = 0u;
+    uint32_t cycId = 0u;
+    const uint8_t *cyc = next.readsEntryFlags ? entryTiming(vu, next, cycId) : next.idle;
+    n.cyc = cyc;
+    n.cycId = cycId;
     if (next.tail)
     {
         VU1FlagTail &t = ns.hist[ns.histNext].tail;
         t.desc = next.tail;
-        t.cyc = next.idle;
+        t.cyc = cyc;
         t.start = n.start;
         n.tail = &t;
     }

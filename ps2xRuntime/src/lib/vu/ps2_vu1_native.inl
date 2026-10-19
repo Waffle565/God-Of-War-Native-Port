@@ -488,18 +488,15 @@ const uint8_t *VU1NativeAccess::blockTiming(VU1Interpreter &vu, VU1Interpreter::
     NS::BlockTiming &bt = *sl.bt;
     const uint64_t start = vu.m_cycle;
     const NS::Hist *pred = ns.histCount ? &ns.hist[(ns.histNext + NS::kHist - 1u) % NS::kHist] : nullptr;
-    const bool memoOk = pred && sl.memoable && pred->end == start && pred->end - pred->start >= ns.maxLat &&
+    // (a memo hit is taken by entryTiming before this is called)
+    const bool memoOk = pred && (sl.memoable || ns.chainFlags) && pred->end == start && pred->end - pred->start >= ns.maxLat &&
                         ns.arraysReadyBy <= start;
-    if (memoOk && sl.memoPred == pred->bt && sl.memoPredId == pred->cycId && sl.memoCyc)
-    {
-        cycId = sl.memoId;
-        return sl.memoCyc;
-    }
     const NS::BlockTiming *predBt = memoOk ? pred->bt : nullptr;
     const uint32_t predId = memoOk ? pred->cycId : 0u;
+    const uint32_t scalar = memoOk && !sl.memoable ? scalarKey(vu, bt, start) : 0u;
     const auto remember = [&](const uint8_t *cyc, uint32_t id) {
         if (predBt)
-            sl.memoPred = predBt, sl.memoPredId = predId, sl.memoCyc = cyc, sl.memoId = id;
+            sl.memoPred = predBt, sl.memoPredId = predId, sl.memoCyc = cyc, sl.memoId = id, sl.memoScalar = scalar;
         cycId = id;
         return cyc;
     };
@@ -792,7 +789,7 @@ bool VU1Interpreter::runNative(StepContext &context)
         // issue cycles from the pipeline state at entry (the stalls decide which of those flags it sees); the others use
         // their idle-pipeline table and only hand their results and flags in flight on.
         uint32_t cycId = 0u;
-        const uint8_t *cyc = sl.readsEntryFlags ? VU1NativeAccess::blockTiming(*this, sl, cycId) : sl.idle;
+        const uint8_t *cyc = sl.readsEntryFlags ? VU1NativeAccess::entryTiming(*this, sl, cycId) : sl.idle;
         ctx.cyc = cyc;
         ctx.start = start;
         ctx.slot = &sl;
@@ -954,6 +951,8 @@ void VU1NativeAccess::recordReplay(VU1Interpreter &vu, void *contextPtr, uint32_
         auto rec = std::make_unique<Vu1nRecord>();
         VU1Interpreter saved(vu);
         unsigned total = 0, differ = 0;
+        unsigned warmDiffer = 0; // warm passes (block cache, entry-timing memos warm): hash or VU cycles unlike the cold pass
+        uint64_t coldCycles = 0;
         static const unsigned reps = std::getenv("GOW_VU1N_REPLAY_REPS") ? static_cast<unsigned>(std::atoi(std::getenv("GOW_VU1N_REPLAY_REPS"))) : 1u;
         auto scratch = std::make_unique<Vu1nRecord>();
         uint64_t timedNs = 0;
@@ -1036,6 +1035,10 @@ void VU1NativeAccess::recordReplay(VU1Interpreter &vu, void *contextPtr, uint32_
                 g_vu1nReplayNs = 0;
                 const uint64_t cycleStart = vu.m_cycle;
                 const uint64_t h = silentNativeHash(vu, &c);
+                if (rep == 0u)
+                    coldCycles = vu.m_cycle - cycleStart;
+                else if (h != rec->hash || vu.m_cycle - cycleStart != coldCycles)
+                    ++warmDiffer;
                 if (rep != 0u)
                 {
                     timedNs += g_vu1nReplayNs; // warm block cache only
@@ -1179,7 +1182,7 @@ void VU1NativeAccess::recordReplay(VU1Interpreter &vu, void *contextPtr, uint32_
         std::fclose(f);
         vu = saved;
         vu.m_native->generation = ~0ull - 1u;
-        std::fprintf(stderr, "[vu1n-replay] %u records, %u differ\n", total, differ);
+        std::fprintf(stderr, "[vu1n-replay] %u records, %u differ (warm passes: %u differ)\n", total, differ, warmDiffer);
         return;
     }
     static const unsigned limit = std::getenv("GOW_VU1N_RECORD_N") ? static_cast<unsigned>(std::atoi(std::getenv("GOW_VU1N_RECORD_N"))) : 4000u;
