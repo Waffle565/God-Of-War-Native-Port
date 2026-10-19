@@ -7,7 +7,11 @@ needs it ~2.4x faster. This page records what the VU1 time is spent on and what 
 **Handoff (where this stopped).** Branch `agent/sw-vu1-par` (worktree ext/PS2Recomp-kl-vu1par, own build dirs
 `out/build-pc`, WSL `/root/gow-switch-par`, VU1 blocks `out/vu1pregen` = sw-vu1-hle's; agent/sw-ee5 merged, Switch
 default `GOW_SOUND_BATCH=32`, docs/sound.md). Installed on the console: `port/switch/nsp/out/update_par4` (ext
-31a482d, no env.txt): title 34.4-36.2 fps, fight 16.2-29.8, after the fight 26-29 (VU1 worker 4.1-4.4 s busy per 5 s). Plan steps 1 and 2 are done and measured, step 3 was
+31a482d, no env.txt): title 34.4-36.2 fps, fight 16.2-29.8, after the fight 26-29 (VU1 worker 4.1-4.4 s busy per 5 s).
+Checks of 31a482d's runtime (PC build `out/build-pc`): zone gate port/swvu1par/gate/20261019_130004 5/5 ok (60 fps,
+speed 1.00-1.01, no capture flagged against port/swvu1hle/gate/20261019_090208), savetest 129 pages, card directory
+intact; VU1 replay (x86 harness) ship 2000 / consecutive 3000 / PC zone 1832 records, 0 differ. `PS2X_VU1_ASYNC` and
+`PS2X_GS_SYNCPATH_DEPTH` (off) were only run on the console. Plan steps 1 and 2 are done and measured, step 3 was
 assessed and not started (below). Next lever: none on the VU1 thread alone; see "What limits gameplay now".
 A new PC build folder needs `-DPS2X_VU1_GENERATOR_SOURCE=<root>/ref/other-recomp-new/god-of-war-recomp-main/tools/vu1/generar_vu1.cpp
 -DPS2X_VU1_MICROCODE_DIR=<root>/port/vu1_micro` (else VU1 runs interpreted: zone gate at 4-9 fps) and
