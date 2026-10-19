@@ -318,6 +318,7 @@ struct VU1Split
     uint64_t Tk = 0, budgetEnd = 0, chunk = 0;
     uint32_t maxBlocks = 0, maxLat = 0, dataSize = 0;
     bool chainFlags = true;
+    uint32_t chainMax = 0;
     const uint8_t *srcData = nullptr;
     // qword ranges of data memory the helper copies (around the loop's pointer registers; everything when unsure).
     // Whatever it reads elsewhere is stale: a warm-up read shows in the state check, a later one in the read log.
@@ -333,7 +334,8 @@ struct VU1Split
 
     // worker side
     int phase = 0;
-    NS::Slot *probeSlot = nullptr;
+    NS *probeNs = nullptr;
+    uint32_t probeIdx = 0; // slot index of the probed dispatch (NS::splitLast / splitSkip)
     uint64_t probeStart = 0;
     uint32_t nb = 0;
     struct Bound { uint32_t pc; int32_t vi[16]; uint64_t cycle; } b[kProbeMax];
@@ -384,11 +386,13 @@ struct VU1Split
             return std::min(budget, Tk);
         if (phase == 1)
             return std::min(budget, vu.m_cycle + 1u);
-        if (sl.splitLast < minCyc)
+        NS &lns = *vu.m_native;
+        const uint32_t idx = static_cast<uint32_t>(&sl - lns.slots) & 2047u;
+        if (lns.splitLast[idx] < minCyc)
             return budget;
-        if (sl.splitSkip != 0u)
+        if (lns.splitSkip[idx] != 0u)
         {
-            --sl.splitSkip; // cool-down after a probe that found no loop
+            --lns.splitSkip[idx]; // cool-down after a probe that found no loop
             return budget;
         }
         const uint32_t s = state.load(std::memory_order_acquire);
@@ -404,7 +408,8 @@ struct VU1Split
             vu.m_flagCount != 0u || vu.m_xgkick.active || !ns.flagsInRings)
             return budget;
         phase = 1;
-        probeSlot = &sl;
+        probeNs = &lns;
+        probeIdx = idx;
         probeStart = vu.m_cycle;
         nb = 0;
         ++sProbe;
@@ -414,15 +419,16 @@ struct VU1Split
     void giveUp(uint64_t learned)
     {
         phase = 0;
-        if (probeSlot)
-            probeSlot->splitLast = static_cast<uint16_t>(std::min<uint64_t>(learned, 65535u));
+        if (probeNs)
+            probeNs->splitLast[probeIdx] = static_cast<uint16_t>(std::min<uint64_t>(learned, 65535u));
     }
 
     void after(VU1Interpreter &vu, NS::Slot &sl, uint64_t start, VU1Interpreter::StepContext &c)
     {
         if (phase == 0)
         {
-            sl.splitLast = static_cast<uint16_t>(std::min<uint64_t>(vu.m_cycle - start, 65535u));
+            vu.m_native->splitLast[static_cast<uint32_t>(&sl - vu.m_native->slots) & 2047u] =
+                static_cast<uint16_t>(std::min<uint64_t>(vu.m_cycle - start, 65535u));
             report();
             return;
         }
@@ -454,7 +460,7 @@ struct VU1Split
         {
             ++sNoPeriod;
             giveUp(0u);
-            probeSlot->splitSkip = 64u; // not a loop head: probed again after 64 long dispatches
+            probeNs->splitSkip[probeIdx] = 64u; // not a loop head: probed again after 64 long dispatches
         }
     }
 
@@ -512,6 +518,7 @@ struct VU1Split
         maxBlocks = static_cast<uint32_t>((R - m + 4u) * P + 8u);
         maxLat = ns.maxLat;
         chainFlags = ns.chainFlags;
+        chainMax = ns.chainMax;
         srcData = c.vuData;
         dataSize = c.dataSize;
         {
@@ -739,6 +746,7 @@ struct VU1Split
                 ctx.slot = &sl;
                 ctx.cycId = cycId;
                 ctx.budgetEnd = chunkStop;
+                ctx.chainLeft = ns.chainMax;
                 if (sl.tail)
                 {
                     VU1FlagTail &t = ns.hist[ns.histNext].tail;
@@ -793,6 +801,7 @@ struct VU1Split
         ns.arraysReadyBy = 0u;
         ns.maxLat = maxLat;
         ns.chainFlags = chainFlags;
+        ns.chainMax = chainMax;
         for (uint32_t q = 0; q < loopN; ++q)
             ns.slots[loopPc[q] >> 3] = loopSlot[q];
         VU1NativeCtx ctx;

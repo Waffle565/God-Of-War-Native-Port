@@ -10,6 +10,10 @@
 // passes, written at the end of the replay ("pc runs cycles"); finds the hot paths of the microprograms (docs/vu1-hle.md)
 static std::unordered_map<uint32_t, std::pair<uint64_t, uint64_t>> *g_vu1nBlockProf = nullptr;
 static bool g_vu1nTraceThis = false;
+// with GOW_VU1N_BLOCKPROF: dispatches from block pc a to block pc b ("e a b count" lines; run with GOW_VU1N_DIRECT=0
+// GOW_VU1N_TRACES=0 so that every edge outside the generated loops is a dispatch): vu1n_gen.py --profile picks the
+// traces' likely successors from them
+static std::unordered_map<uint32_t, uint64_t> *g_vu1nEdgeProf = nullptr;
 
 namespace
 {
@@ -78,6 +82,51 @@ namespace
 void vu1nRegisterBlock(uint64_t key, VU1NativeFn fn, uint32_t pairs, const VU1TailDesc *tail)
 {
     nativeRegistry()[key] = {fn, pairs & 0xFFFFu, tail, (pairs & 0x10000u) != 0u, {}};
+}
+
+struct VU1TraceEntry
+{
+    uint64_t key;
+    VU1NativeFn fn;
+    bool readsEntryFlags;
+    uint32_t parts;
+    const uint16_t *pcs, *counts;
+    const uint64_t *keys;
+    const VU1TailDesc *tail;
+    std::vector<uint8_t> idle;     // the parts' idle tables one after the other (filled on first use)
+    std::vector<uint16_t> pairPcs; // pc of every pair
+    bool tooLong = false;          // the idle tables exceed kTraceMaxCycles: not used
+};
+namespace
+{
+    // Traces end within this many cycles on idle tables, so that with part 0's entry stalls (below the latencies, < 128)
+    // every issue cycle still fits the uint8_t timing tables.
+    constexpr uint32_t kTraceMaxCycles = 120u;
+    std::unordered_map<uint64_t, std::vector<std::unique_ptr<VU1TraceEntry>>> &traceRegistry() // by part 0's block key
+    {
+        static std::unordered_map<uint64_t, std::vector<std::unique_ptr<VU1TraceEntry>>> registry;
+        return registry;
+    }
+    const bool g_vu1nTracesOff = std::getenv("GOW_VU1N_TRACES") && std::atoi(std::getenv("GOW_VU1N_TRACES")) == 0;
+    // GOW_VU1N_TRACE_PC=<hex pc>: only the traces starting there (diagnostics: finding a trace that changes results);
+    // GOW_VU1N_TRACE_ENTRY=0: no traces whose part 0 reads entry flags
+    const long g_vu1nTracePc = std::getenv("GOW_VU1N_TRACE_PC") ? std::strtol(std::getenv("GOW_VU1N_TRACE_PC"), nullptr, 16) : -1;
+    const bool g_vu1nTraceEntryOff = std::getenv("GOW_VU1N_TRACE_ENTRY") && std::atoi(std::getenv("GOW_VU1N_TRACE_ENTRY")) == 0;
+}
+
+void vu1nRegisterTrace(uint64_t key, VU1NativeFn fn, uint32_t flags, uint32_t parts, const uint16_t *pcs, const uint16_t *counts,
+                       const uint64_t *keys, const VU1TailDesc *tail)
+{
+    auto te = std::make_unique<VU1TraceEntry>();
+    te->key = key;
+    te->fn = fn;
+    te->readsEntryFlags = (flags & 0x10000u) != 0u;
+    te->parts = parts;
+    te->pcs = pcs;
+    te->counts = counts;
+    te->keys = keys;
+    te->tail = tail;
+    traceRegistry()[keys[0]].push_back(std::move(te));
 }
 
 // Issue cycles of the pairs of a block as the exact engine would see them (operand/pipeline stalls included), assuming
@@ -332,7 +381,7 @@ void VU1NativeAccess::commitValuesKeepTiming(VU1Interpreter &vu)
 // First use of a block: decoded pairs, the lanes it reads before writing them (with the idle-schedule cycle of that
 // first read) and the last write of every lane it writes.
 void VU1NativeAccess::prepareBlockTiming(VU1Interpreter &vu, VU1Interpreter::NativeState::BlockTiming &bt, const uint8_t *code, uint32_t pc, uint32_t count,
-                                        const uint8_t *idle)
+                                        const uint8_t *idle, const uint16_t *pairPcs, uint32_t readPairs)
 {
     using NS = VU1Interpreter::NativeState;
     bt.idle = idle;
@@ -363,11 +412,14 @@ void VU1NativeAccess::prepareBlockTiming(VU1Interpreter &vu, VU1Interpreter::Nat
     };
     for (uint32_t i = 0; i < count; ++i)
     {
-        const VU1Interpreter::DecodedInstructionPair d = vu.decodeInstructionPair(code, pc + i * 8u);
+        const VU1Interpreter::DecodedInstructionPair d = vu.decodeInstructionPair(code, pairPcs ? pairPcs[i] : pc + i * 8u);
         bt.dec.push_back(d);
         const uint8_t at = idle[i];
+        // traces: only part 0's reads (the other parts run on their idle tables, see BlockTiming::simCount)
         for (const VU1Interpreter::InstructionUsage *u : {&d.upperUsage, &d.lowerUsage})
         {
+            if (i >= readPairs)
+                break;
             for (uint32_t k = 0; k < u->vfReadCount; ++k)
                 for (uint32_t c = 0; c < 4u; ++c)
                     if (u->vfRead[k].lanes & (1u << (3u - c)))
@@ -379,11 +431,11 @@ void VU1NativeAccess::prepareBlockTiming(VU1Interpreter &vu, VU1Interpreter::Nat
                 if (u->accRead & (1u << (3u - c)))
                     onRead(144u + c, at);
         }
-        if (d.lowerUsage.pipeline == VU1Interpreter::PipelineFdiv || d.lowerUsage.waitQ)
+        if (i < readPairs && (d.lowerUsage.pipeline == VU1Interpreter::PipelineFdiv || d.lowerUsage.waitQ))
             onScalarRead(0, at);
-        if (d.lowerUsage.pipeline == VU1Interpreter::PipelineEfu)
+        if (i < readPairs && d.lowerUsage.pipeline == VU1Interpreter::PipelineEfu)
             onScalarRead(1, at);
-        if (d.lowerUsage.waitP)
+        if (i < readPairs && d.lowerUsage.waitP)
             onScalarRead(2, at);
         // writes, in markPairWrites' order (lower VF, upper VF, VI, ACC)
         const auto vfWrite = [&](const VU1Interpreter::InstructionUsage &u, bool lower) {
@@ -511,7 +563,11 @@ const uint8_t *VU1NativeAccess::blockTiming(VU1Interpreter &vu, VU1Interpreter::
     const uint32_t scalar = memoOk && !sl.memoable ? scalarKey(vu, bt, start) : 0u;
     const auto remember = [&](const uint8_t *cyc, uint32_t id) {
         if (predBt)
-            sl.memoPred = predBt, sl.memoPredId = predId, sl.memoCyc = cyc, sl.memoId = id, sl.memoScalar = scalar;
+        {
+            sl.memoPred[1] = sl.memoPred[0], sl.memoPredId[1] = sl.memoPredId[0], sl.memoCyc[1] = sl.memoCyc[0];
+            sl.memoId[1] = sl.memoId[0], sl.memoScalar[1] = sl.memoScalar[0];
+            sl.memoPred[0] = predBt, sl.memoPredId[0] = predId, sl.memoCyc[0] = cyc, sl.memoId[0] = id, sl.memoScalar[0] = scalar;
+        }
         cycId = id;
         return cyc;
     };
@@ -569,7 +625,8 @@ const uint8_t *VU1NativeAccess::blockTiming(VU1Interpreter &vu, VU1Interpreter::
     const bool xgkick = vu.m_xgkick.active;
     vu.m_xgkick.active = false;
     std::vector<uint8_t> cyc(bt.dec.size());
-    for (size_t i = 0; i < bt.dec.size(); ++i)
+    const size_t simN = bt.simCount ? bt.simCount : bt.dec.size();
+    for (size_t i = 0; i < simN; ++i)
     {
         const VU1Interpreter::DecodedInstructionPair &d = bt.dec[i];
         const uint64_t ready = vu.calculatePairReadyCycle(d);
@@ -590,6 +647,8 @@ const uint8_t *VU1NativeAccess::blockTiming(VU1Interpreter &vu, VU1Interpreter::
         }
         ++vu.m_cycle;
     }
+    for (size_t i = simN; i < cyc.size(); ++i) // a trace's later parts: their idle tables after part 0
+        cyc[i] = static_cast<uint8_t>(std::min<uint32_t>(cyc[simN - 1u] + 1u + bt.rest[i - simN], 255u));
     vu.m_cycle = keepCycle;
     vu.m_vfReady = vfReady;
     vu.m_viReady = viReady;
@@ -604,7 +663,7 @@ const uint8_t *VU1NativeAccess::blockTiming(VU1Interpreter &vu, VU1Interpreter::
     slot.id = ns.nextCycId++;
     for (NS::Slot &other : ns.slots) // may point into the cache slot replaced here
         if (other.bt == &bt)
-            other.memoCyc = nullptr;
+            other.memoCyc[0] = other.memoCyc[1] = nullptr;
     return remember(slot.cyc.data(), slot.id);
 }
 
@@ -624,7 +683,7 @@ void VU1NativeAccess::codeChanged(VU1Interpreter::NativeState &ns, const uint8_t
     if (!ns.codeValid)
     {
         for (NS::Slot &sl : ns.slots)
-            sl.known = false;
+            sl.known = false, sl.fn = nullptr, sl.key = 0u;
         std::memcpy(ns.code, code, sizeof(ns.code));
         ns.codeValid = true;
         return;
@@ -645,9 +704,20 @@ void VU1NativeAccess::codeChanged(VU1Interpreter::NativeState &ns, const uint8_t
         NS::Slot &sl = ns.slots[i];
         if (!sl.known)
             continue;
-        const uint32_t end = std::min<uint32_t>(kPairs, i + sl.pairs + 1u); // the pair after the block ends the scan
-        if (changedBefore[end] != changedBefore[i])
-            sl.known = false;
+        bool hit = false;
+        if (sl.trace)
+            for (uint32_t k = 0; k < sl.trace->parts && !hit; ++k)
+            {
+                const uint32_t b = sl.trace->pcs[k] >> 3, e = std::min<uint32_t>(kPairs, b + sl.trace->counts[k] + 1u);
+                hit = changedBefore[e] != changedBefore[b];
+            }
+        else
+        {
+            const uint32_t end = std::min<uint32_t>(kPairs, i + sl.pairs + 1u); // the pair after the block ends the scan
+            hit = changedBefore[end] != changedBefore[i];
+        }
+        if (hit)
+            sl.known = false, sl.fn = nullptr, sl.key = 0u; // chainDirect compares only the key
     }
     std::memcpy(ns.code, code, sizeof(ns.code));
 }
@@ -678,6 +748,7 @@ VU1Interpreter::NativeState::Slot &VU1NativeAccess::slotFor(VU1Interpreter &vu, 
                     prepareBlockTiming(vu, bt, code, pc, count, it->second.cyc.data());
                 bt.readsEntryFlags = it->second.readsEntryFlags;
                 sl.fn = it->second.fn;
+                sl.key = it->first;
                 sl.idle = it->second.cyc.data();
                 sl.idleEnd = static_cast<uint16_t>(sl.idle[count - 1u] + 1u);
                 sl.bt = &bt;
@@ -690,12 +761,118 @@ VU1Interpreter::NativeState::Slot &VU1NativeAccess::slotFor(VU1Interpreter &vu, 
                     for (const uint8_t i : bt.scalarPairs)
                         sl.scalar[sl.scalarCount++] = {i, static_cast<uint8_t>(bt.dec[i].lowerUsage.latency),
                                                        bt.dec[i].lowerUsage.pipeline == VU1Interpreter::PipelineFdiv};
+                // a trace starting with this block whose other parts are in place replaces it
+                const auto tr = traceRegistry().find(it->first);
+                if (tr != traceRegistry().end() && !g_vu1nTracesOff)
+                    for (const auto &te : tr->second)
+                        if (setupTrace(vu, sl, code, codeSize, *te))
+                            break;
             }
             else if (ns.diag)
                 ++ns.missPcs[pc];
         }
     }
     return sl;
+}
+
+// The scalar (FDIV / EFU) starts of a slot from its timing data.
+void VU1NativeAccess::slotScalars(VU1Interpreter::NativeState::Slot &sl, const VU1Interpreter::NativeState::BlockTiming &bt)
+{
+    sl.scalarCount = 0u;
+    if (bt.scalarPairs.size() > std::size(sl.scalar))
+        sl.scalarCount = VU1Interpreter::NativeState::kScalarMany;
+    else
+        for (const uint8_t i : bt.scalarPairs)
+            sl.scalar[sl.scalarCount++] = {i, static_cast<uint8_t>(bt.dec[i].lowerUsage.latency),
+                                           bt.dec[i].lowerUsage.pipeline == VU1Interpreter::PipelineFdiv};
+}
+
+// A trace at sl (its part 0 set up there already): when every other part holds the block it was generated from, the slot
+// runs the trace function with the parts' idle tables one after the other, and its prefix blocks (parts 0..k, the side
+// exits) get their own timing data. Same history, flags and cycles as the parts run one by one (docs/vu1-hle.md).
+bool VU1NativeAccess::setupTrace(VU1Interpreter &vu, VU1Interpreter::NativeState::Slot &sl, const uint8_t *code, uint32_t codeSize,
+                                 const VU1TraceEntry &cte)
+{
+    using NS = VU1Interpreter::NativeState;
+    NS &ns = *vu.m_native;
+    VU1TraceEntry &te = const_cast<VU1TraceEntry &>(cte);
+    if (te.tooLong || (g_vu1nTracePc >= 0 && te.pcs[0] != g_vu1nTracePc) || (g_vu1nTraceEntryOff && te.readsEntryFlags))
+        return false;
+    for (uint32_t k = 1; k < te.parts; ++k)
+    {
+        uint32_t words[128];
+        const uint32_t count = nativeExtent(code, codeSize, te.pcs[k], words);
+        if (count != te.counts[k] || vu1n::blockKey(te.pcs[k], words, count * 2u) != te.keys[k])
+            return false;
+        if (nativeRegistry().find(te.keys[k]) == nativeRegistry().end())
+            return false;
+    }
+    if (te.idle.empty())
+    {
+        uint32_t base = 0u;
+        for (uint32_t k = 0; k < te.parts; ++k)
+        {
+            NativeEntry &pe = nativeRegistry().find(te.keys[k])->second;
+            if (pe.cyc.empty())
+                vu.nativeTiming(code, te.pcs[k], te.counts[k], pe.cyc);
+            for (uint32_t j = 0; j < te.counts[k]; ++j)
+            {
+                te.idle.push_back(static_cast<uint8_t>(std::min<uint32_t>(base + pe.cyc[j], 255u)));
+                te.pairPcs.push_back(static_cast<uint16_t>(te.pcs[k] + 8u * j));
+            }
+            base += pe.cyc[te.counts[k] - 1u] + 1u;
+        }
+        if (base > kTraceMaxCycles)
+        {
+            te.tooLong = true;
+            return false;
+        }
+    }
+    const uint32_t n0 = te.counts[0], total = static_cast<uint32_t>(te.idle.size());
+    const auto prep = [&](uint64_t key, uint32_t count) -> NS::BlockTiming & {
+        NS::BlockTiming &bt = ns.timings[key];
+        if (bt.dec.empty())
+        {
+            prepareBlockTiming(vu, bt, code, te.pcs[0], count, te.idle.data(), te.pairPcs.data(), n0);
+            bt.simCount = n0;
+            bt.rest.clear();
+            for (uint32_t i = n0; i < count; ++i)
+                bt.rest.push_back(static_cast<uint8_t>(te.idle[i] - (te.idle[n0 - 1u] + 1u)));
+            bt.readsEntryFlags = te.readsEntryFlags;
+        }
+        return bt;
+    };
+    NS::BlockTiming &bt = prep(te.key, total);
+    std::vector<NS::Slot> &parts = ns.traceParts[te.key];
+    if (parts.empty())
+    {
+        parts.resize(te.parts - 1u);
+        uint32_t c = 0u;
+        for (uint32_t k = 0; k + 1u < te.parts; ++k)
+        {
+            c += te.counts[k];
+            NS::BlockTiming &pbt = prep(te.key ^ (0x9E3779B97F4A7C15ull * (k + 1u)), c);
+            NS::Slot &p = parts[k];
+            p.known = true;
+            p.pairs = static_cast<uint16_t>(c);
+            p.idle = te.idle.data();
+            p.idleEnd = static_cast<uint16_t>(te.idle[c - 1u] + 1u);
+            p.bt = &pbt;
+            slotScalars(p, pbt);
+        }
+    }
+    sl.fn = te.fn;
+    sl.idle = te.idle.data();
+    sl.idleEnd = static_cast<uint16_t>(te.idle[total - 1u] + 1u);
+    sl.bt = &bt;
+    sl.pairs = static_cast<uint16_t>(total);
+    sl.readsEntryFlags = te.readsEntryFlags;
+    sl.memoable = bt.scalarRead == 0u;
+    sl.tail = te.tail;
+    slotScalars(sl, bt);
+    sl.trace = &te;
+    sl.parts = parts.data();
+    return true;
 }
 
 void VU1Interpreter::commitEverythingNow()
@@ -748,6 +925,7 @@ bool VU1Interpreter::runNative(StepContext &context)
     const bool bisecting = ns.limit != ~0u;
     const bool diag = ns.diag; // the pair count is only printed by GOW_VU1N_DIAG
     uint64_t blocks = 0u, pairs = 0u;
+    uint32_t edgeFrom = 0u; // GOW_VU1N_BLOCKPROF: the block dispatched before
     for (;;)
     {
         if (m_stopRequested || m_cycle >= context.budgetEnd)
@@ -815,6 +993,7 @@ bool VU1Interpreter::runNative(StepContext &context)
         ctx.start = start;
         ctx.slot = &sl;
         ctx.cycId = cycId;
+        ctx.chainLeft = bisecting ? 0u : ns.chainMax;
         if (sl.tail)
         {
             VU1FlagTail &t = ns.hist[ns.histNext].tail;
@@ -829,6 +1008,9 @@ bool VU1Interpreter::runNative(StepContext &context)
             auto &e = (*g_vu1nBlockProf)[pc];
             ++e.first;
             e.second += m_cycle - start;
+            if (g_vu1nEdgeProf && blocks != 0u)
+                ++(*g_vu1nEdgeProf)[(edgeFrom << 16) | pc];
+            edgeFrom = pc;
             if (g_vu1nTraceThis) // GOW_VU1N_TRACEREC=<record>: the dispatch sequence of that record
                 std::fprintf(stderr, "[vu1n-trace] %x +%llu -> %x\n", pc, static_cast<unsigned long long>(m_cycle - start), result & 0x3FFFu);
         }
@@ -1046,7 +1228,8 @@ void VU1NativeAccess::recordReplay(VU1Interpreter &vu, void *contextPtr, uint32_
                 if (rep == 0u)
                     vu.m_native->generation = ~0ull - 1u; // micro memory is not the game's: forget the block cache
                 if (rep == 1u && !g_vu1nBlockProf && std::getenv("GOW_VU1N_BLOCKPROF"))
-                    g_vu1nBlockProf = new std::unordered_map<uint32_t, std::pair<uint64_t, uint64_t>>();
+                    g_vu1nBlockProf = new std::unordered_map<uint32_t, std::pair<uint64_t, uint64_t>>(),
+                    g_vu1nEdgeProf = new std::unordered_map<uint32_t, uint64_t>();
                 g_vu1nTraceThis = rep == 1u && std::getenv("GOW_VU1N_TRACEREC") &&
                                   total == static_cast<unsigned>(std::atoi(std::getenv("GOW_VU1N_TRACEREC")));
                 std::memcpy(scratch->data, rec->data, sizeof(rec->data));
@@ -1199,10 +1382,14 @@ void VU1NativeAccess::recordReplay(VU1Interpreter &vu, void *contextPtr, uint32_
                 for (const auto &kv : *g_vu1nBlockProf)
                     std::fprintf(bp, "%x %llu %llu\n", kv.first, static_cast<unsigned long long>(kv.second.first),
                                  static_cast<unsigned long long>(kv.second.second));
+                for (const auto &kv : *g_vu1nEdgeProf)
+                    std::fprintf(bp, "e %x %x %llu\n", kv.first >> 16, kv.first & 0xFFFFu, static_cast<unsigned long long>(kv.second));
                 std::fclose(bp);
             }
             delete g_vu1nBlockProf;
             g_vu1nBlockProf = nullptr;
+            delete g_vu1nEdgeProf;
+            g_vu1nEdgeProf = nullptr;
         }
         std::fclose(f);
         if (vu.m_native->split)
