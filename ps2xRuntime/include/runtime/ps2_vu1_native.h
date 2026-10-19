@@ -608,6 +608,7 @@ namespace vu1n
     // madd + clampv in one: raw receives the unclamped result (MAC flags), the return value is the clamped one. On the fast
     // path (product and sum both below FLT_MAX in magnitude, which also excludes NaN) clampv is the identity, so only the
     // wide path clamps: two instructions less per FMAC in the generated blocks, same bits (docs/vu1-hle.md)
+#define VU1N_HAS_MADDC 1 // generated blocks of older runtimes define a plain fallback (tools/vu1/vu1n_gen.py)
     template <bool Sub>
     VU1N_INLINE __m128 maddc(__m128 acc, __m128 a, __m128 b, __m128 &raw)
     {
