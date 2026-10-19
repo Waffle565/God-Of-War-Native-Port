@@ -101,9 +101,17 @@ IOP entry point), `ps2_iop_host.cpp` (deferred EE effects), `Kernel/EeScheduler.
   presentation): watch the deko3d draw throughput in fights; if core 0 is full, try `GOW_CORE_IopRun=2` (VU1 core)
   and `GOW_IOP_SPIN=0` (no spinning before sleeping: fewer cycles burnt on a shared core, more wakes).
 
+## Console (ext agent/sw-core1, 2026-10-19)
+- The Switch default is inline (`GOW_IOP_THREAD=0`, ps2_switch_runtime.cpp). Measured variants and fps:
+  docs/switch-deko3d.md "Core 1: GS stage fast path and the IOP thread's priority". In short: `IopRun` on core 0 at
+  the default priority waited behind the deko3d thread (Horizon does not time-slice equal priorities), so it now
+  runs one step above it (ThreadNaming.h; `GOW_PRIO_IopRun=<0-9>` changes it); with `GOW_IOP_SPIN=0` and
+  `GOW_IOP_LEAD=4194304` (the ring has 16384 entries, so the lead clamp is ~8.4 M cycles) the EE's lead waits fall
+  to ~0 and its IOP time to 0.1-0.25 s per 5 s, but the frame rate is 1-3 fps below inline: core 1 is not the
+  limit any more (the EE waits for VU1) and the deko3d thread slows with `IopRun` beside it. Core 2 is worse.
+- tools/switch_log_summary.py prints the `[IOP:thread]` line (thread_ms, sleeps, held/takeback, lead waits).
+
 ## Open (handoff)
-- Console A/B (`GOW_IOP_THREAD=0` vs default) in the bot fight: core-1 time, fps, core-0 load (deko3d), and
-  `GOW_CORE_IopRun` / `GOW_IOP_SPIN=0` variants. Teach tools/switch_log_summary.py the `[IOP:thread]` line.
 - The RPC calls (~120 a second in gameplay, ~2100 on the save/load menus) still run their IOP server code on the EE
   thread; an asynchronous RPC (`sceSifCallRpc` with the nowait flag) could go to the thread, a synchronous one
   cannot without the EE waiting anyway.

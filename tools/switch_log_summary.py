@@ -1,7 +1,7 @@
 """Summary of a Switch console log (log switch/*.txt): speed, GL thread, GPU per draw path, GPU bisect phases.
 
 usage: python -I tools/switch_log_summary.py "log switch/log (3).txt"
-Reads the [gow-perf], [gs-gl], [gs-gpu] and [gpu-bisect] lines (docs/switch.md "Console logs").
+Reads the [gow-perf], [gsw-split], [gs-stage-run], [IOP:thread], [gs-gl], [gs-gpu] and [gpu-bisect] lines (docs/switch.md "Console logs").
 """
 import re
 import sys
@@ -22,9 +22,9 @@ def main(path):
     perf = [fields(l) for l in text if l.startswith('[gow-perf]')]
     if perf:
         print('\n## [gow-perf] (per window)')
-        print('t | guest_fps | host_hz | ee_ms | vu_ms | gs_ms | guest_wait_ms | gsq_wait_ms')
+        print('t | guest_fps | host_hz | ee_ms | iop_ms | vu_ms | gs_ms | guest_wait_ms | gsq_wait_ms')
         for f in perf:
-            print(' | '.join(f.get(k, '-') for k in ('t', 'guest_flip_hz', 'host_hz', 'ee_ms', 'vu_ms', 'gs_ms',
+            print(' | '.join(f.get(k, '-') for k in ('t', 'guest_flip_hz', 'host_hz', 'ee_ms', 'iop_ms', 'vu_ms', 'gs_ms',
                                                     'guest_wait_ms', 'gsq_wait_ms')))
 
     split = [fields(l) for l in text if l.startswith('[gsw-split]')]
@@ -35,8 +35,32 @@ def main(path):
             print(' | '.join(f.get(k, '-') for k in ('job_ms', 'vu_ms', 'kick_ms', 'vif_ms', 'runs', 'kicks', 'jobs',
                                                     'async_wait_ms')))
 
+    run = [fields(l) for l in text if l.startswith('[gs-stage-run]')]
+    if any(int(f.get('kicks', 0)) for f in run):
+        print('\n## [gs-stage-run] GS frontend runs (per window; fast = kicks of the PACKED fast path, GOW_GS_FASTPACK)')
+        print('runs | prims | kicks | queue_ms | fast | check | diffs')
+        for f in run:
+            if int(f.get('kicks', 0)) or int(f.get('prims', 0)) > 1000:
+                print(' | '.join(f.get(k, '-') for k in ('runs', 'prims', 'kicks', 'queue_ms', 'fast', 'check', 'diffs')))
+
+    iop = [l for l in text if l.startswith('[IOP:thread] window')]
+    if iop:
+        print('\n## [IOP:thread] IOP host thread (per window; thread_ms = IopRun busy, held/takeback = cost on the EE,')
+        print('## lead_waits = EE waits for the thread (ms in guest_wait_ms))')
+        print('thread_ms | sleeps | held_ms | lock_wait_ms | takeback_ms | syncs | lead_waits | lead_wait_ms | wakes | effects')
+        for l in iop:
+            f = fields(l)
+            sleeps = re.search(r'(\d+) sleeps', l)
+            lw = re.search(r'lead_waits=(\d+) \(([\d.]+) ms\)', l)
+            print(' | '.join([f.get('thread_ms', '-'), sleeps.group(1) if sleeps else '-', f.get('held_ms', '-'),
+                              f.get('lock_wait_ms', '-'), f.get('takeback_ms', '-'), f.get('syncs', '-'),
+                              lw.group(1) if lw else '-', lw.group(2) if lw else '-', f.get('wakes', '-'),
+                              f.get('effects', '-')]))
+
     gl = [l for l in text if l.startswith('[gs-gl] window')]
     if gl:
+        print('\n## [gs-gl] GL/deko3d thread busy_ms per window: ' +
+              ' '.join(fields(l).get('busy_ms', '-') for l in gl))
         print('\n## [gs-gl] GL thread, ms per op kind summed over the log')
         busy = 0.0
         ops = defaultdict(float)

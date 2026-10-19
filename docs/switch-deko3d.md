@@ -208,3 +208,58 @@ IOP 1.2 s -> 0.8-1.2 s, GS stage 1.4 s -> 1.3-1.57 s, EE waiting (`guest_wait_ms
   compiling from /mnt/c (9p) kept losing the WSL session. Keep exactly one wsl.exe session attached while it builds
   (the distro stops when none is) and poll it rarely. The console's address changes (DHCP): when switch_bot.py times
   out, `switch_bot.py find`. Installed: `update_dkd5`, no env.txt.
+
+## Core 1: GS stage fast path and the IOP thread's priority (ext agent/sw-core1, 2026-10-19)
+Base 9996088 (`update_dkd5`). Bot fight (`PLAY=1`, ship; logs `port/switch/logs/20261019_core1_*`), same windows as
+above (title 25-40 s, heavy fight = the worst windows at 115-135 s, later 140-200 s).
+
+- **PACKED fast path** (gs_frontend.cpp `processGIFPacket`, `GOW_GS_FASTPACK`, default 1): a tag's PACKED registers
+  are decoded in one loop with RGBAQ/ST/UV/NOP inline, and an XYZ2/XYZF2 kick of a strip/fan in the middle of an
+  open vertex-kick run (`GOW_GS_KICKS`, window full, debug history paused) is appended straight to the run: the
+  vertex is built once, pushed, and the GS window updated as `vertexKick` leaves it. Everything else (the run's
+  first draw and seed vertices, other primitives, A+D and other registers, XYZ3) still goes through
+  `writeRegisterPacked`/`vertexKick`. It takes 88-90 % of the kicks in fights. `GOW_GS_FASTPACK=0` turns it off;
+  `=2` is a check mode: the generic path runs and every kick the fast path would have taken is compared field by
+  field (kick list entry, window, counters): 0 differences over ~200 M kicks on the console and ~12 M per 5 s in PC
+  zone slot 2 (`[gs-stage-run] ... fast= check= diffs=`). The fast path is off by itself with `GOW_GS_KICKS=0`,
+  `PS2X_GS_TRACE_TBP` or `PS2X_GS_FOG_DIAG`.
+  GS stage (`gs_ms`) per 5 s, same build: fast path off 1.28-1.58 s in fights, on 0.80-1.17 s (about -0.4 s; the
+  ~0.5 s of queue time to the deko3d thread is unchanged). The EE thread's own time drops by the same amount (the
+  stage preempts it on core 1, so `ee_ms` contains the stage's time): 3.6-3.8 -> 3.1-3.4 s.
+- **The frame rate does not move**: the EE's wait for VU1 (`guest_wait_ms`) grows by what was freed (0.3-0.4 ->
+  0.6-0.9 s per 5 s in the later fight). The VU1 worker (core 2) is busy 3.8-4.1 s per 5 s and the EE waits for it
+  in `sceGsSyncPath`; the frame is the EE -> VU1 chain, not core 1's sum. Core 1 now has ~0.6-0.9 s per 5 s spare.
+- **IOP thread variants** (`GOW_IOP_THREAD=1`; `IopRun` now one priority step above `GSThread` by default,
+  ThreadNaming.h, because Horizon does not time-slice equal priorities: before, `IopRun` ran only when the deko3d
+  thread blocked; `GOW_PRIO_<thread>=<0-9>` sets any thread's step for tests):
+  - core 0, boost 1, `GOW_IOP_SPIN=0`: EE-side `iop_ms` 1.0 -> 0.1-0.25 s, `IopRun` busy 0.6-0.8 s on core 0, lead
+    waits 0.9-1.0 -> 0.4-0.6 s per 5 s, the deko3d thread busy 2.2-2.3 -> 2.5-2.7 s; the EE waits 1.4-1.5 s.
+  - same with `GOW_IOP_LEAD=4194304` (ring now 16384 entries, lead clamp ~8.4 M cycles): lead waits ~0-30 ms, the
+    thread lags up to the whole lead (`max_lead` 4.2 M); the EE still waits 1.3-1.5 s for VU1.
+  - core 2 (`GOW_CORE_IopRun=2 GOW_PRIO_IopRun=0 GOW_IOP_SPIN=0`): lead waits 1.3-2.5 s per 5 s next to the VU1
+    worker: worst.
+  None beats inline: the thread moves ~0.9 s off core 1 but core 1 is no longer the limit, and every thread
+  variant was 1-3 fps lower in the later fight (deko3d slower with `IopRun` beside it). **Inline stays the Switch
+  default**; with the thread on, boost 1 + `GOW_IOP_SPIN=0` + a large `GOW_IOP_LEAD` is the best setting (spinning
+  at a higher priority would hold the deko3d thread off core 0).
+
+| build / env (package in port/switch/nsp/out) | title | heavy fight | later |
+|---|---|---|---|
+| before: 9996088 (`update_dkd5`, docs above) | 39.0-40.2 | 18.6-26.4 | 25.4-28.4 |
+| sw-core1 (`update_core1b`), `GOW_GS_FASTPACK=0` | 38.6-40.8 | 19.2-23.0 | 24.4-27.0 |
+| **sw-core1, defaults (fast path on, IOP inline), run a (`update_core1a`)** | **38.2-41.2** | **18.8-21.4** | **24.8-28.2** |
+| **same, run b (`update_core1b`, installed, no env.txt)** | **38.2-39.6** | **19.0-21.8** | **25.6-32.4** |
+| IOP thread core 0 boost 1 spin 0 | 36.0-38.8 | 17.0-21.0 | 24.4-27.9 |
+| same + `GOW_IOP_LEAD=4194304`, run a / b | 37.0-41.0 / 36.4-40.2 | 17.4-20.4 / 17.2-20.6 | 24.0-26.4 / 23.4-27.0 |
+| IOP thread on core 2 | 33.4-39.2 | 17.0-22.0 | 21.4-27.0 |
+
+Per-core busy per 5 s, later fight, before (fast path off) -> after (defaults): core 1 EE `ee_ms` 3.6-3.8 -> 3.1-3.4
+s (includes the GS stage, which preempts it), IOP inline 0.8-1.1 s (same), GS stage 1.28-1.58 -> 0.80-1.17 s, EE
+waiting 0.3-0.4 -> 0.6-0.9 s; core 0 deko3d thread 2.1-2.4 s (same); core 2 VU1 worker 3.8-4.1 s (same).
+Checks: PC zone gate `port/core1/gate/20261019_180634` 5/5 ok at 60 fps, speed 1.01, against
+port/dkdraw/gate/20261019_165610; savetest (`port/core1/savetest`) 129 pages, card directory intact; check mode
+`port/core1/gate-check/20261019_182616` (slot 2, `GOW_GS_FASTPACK=2`) 0 diffs; console fight screenshots
+(scratchpad `core1/run_fp1a/fight_5.jpg`) look right (HUD, shadows, enemies).
+Next lever: VU1 (core 2) and the EE -> VU1 dependency. The GS stage and the IOP are no longer on the critical path.
+Handoff: worktree ext/PS2Recomp-kl-core1 (branch agent/sw-core1), PC build `out/build-pc` (VU1 blocks
+`out/vu1pregen` = sw-vu1cyc's), WSL copy `/root/src-core1`, `/root/core1build.sh` -> `/root/gow-switch-core1`.

@@ -28,8 +28,8 @@ The user wants the game **totally playable**; work continues until then. Game da
 | [runtime-changes.md](runtime-changes.md) | Every change made to the EE runtime (ps2xRuntime) and recompiler, and why. |
 | [iop-changes.md](iop-changes.md) | Every change made to the IOP emulator (ps2xIOP), and why. |
 | [native-port.md](native-port.md) | Inventory of every emulated layer, its native replacement, measured cost and the order of work. |
-| [vu1-native-flags.md](vu1-native-flags.md) | VU1 native blocks: MAC/clip flag latency across blocks, the character-shadow cull bug, the opt-in exact mode and its cost; VU1 speed on the Switch (console replay benchmark, what was measured, why parallel VU1 runs do not pay). |
-| [vu1-hle.md](vu1-hle.md) | What the VU1 time is spent on (one microprogram, one vertex loop at seven addresses), the replay profiles (`GOW_VU1N_REPLAY_PROFILE`, `GOW_VU1N_BLOCKPROF`), the generator's two-block cycles / maddc / invariant operand views, console results (-10 % VU1, gameplay ~+15 %); fast variants without the exact float handling (range analysis + entry check, bit-exact); loops that read entry flags chained in their function (entry-timing memo with FDIV/EFU state), opt-in loop regions (measured slower). |
+| [vu1-native-flags.md](vu1-native-flags.md) | VU1 native blocks: MAC/clip flag latency across blocks, the character-shadow cull bug, the opt-in exact mode and its cost; dispatch, direct chaining and traces (why the merged block is the same state); VU1 speed on the Switch (console replay benchmark, what was measured, why parallel VU1 runs do not pay). |
+| [vu1-hle.md](vu1-hle.md) | What the VU1 time is spent on (one microprogram, one vertex loop at seven addresses), the replay profiles (`GOW_VU1N_REPLAY_PROFILE`, `GOW_VU1N_BLOCKPROF`), the generator's two-block cycles / maddc / invariant operand views, console results (-10 % VU1, gameplay ~+15 %); fast variants without the exact float handling (range analysis + entry check, bit-exact); loops that read entry flags chained in their function (entry-timing memo with FDIV/EFU state), opt-in loop regions (measured slower); dispatch: direct chaining between block functions and traces (likely paths as one native block, edge profile `port/vu1n_profile.txt`). |
 | [visual-audit.md](visual-audit.md) | Suspected rendering defects found in the zone captures (vs PCSX2), with the likely GS cause. |
 | [fmv.md](fmv.md) | Movies: libmpeg2 decoder, how the game plays a movie, what is still open. |
 | [sound.md](sound.md) | Native sound engine: the LIBSD API boundary, SoundEngine, what is mixed. |
@@ -38,7 +38,7 @@ The user wants the game **totally playable**; work continues until then. Game da
 | [settings.md](settings.md) | Player settings: text/voice language from the European disc via disc overlays, the save wording (menu text format), no subtitles in the game data. |
 | [status-map/](status-map/detail.md) | Status map shown on the GitHub page: edit `data.toml`, run `python tools/status_map.py`. Keep it in step with status.md. |
 | [switch.md](switch.md) | Switch toolchain (WSL + devkitPro), Switch build changes, open Switch issues. |
-| [switch-deko3d.md](switch-deko3d.md) | Switch GS renderer on deko3d: GL table over deko3d, uam-prebuilt shaders, GPU present, console results. |
+| [switch-deko3d.md](switch-deko3d.md) | Switch GS renderer on deko3d: GL table over deko3d, uam-prebuilt shaders, GPU present, console results; draw count, GS stage PACKED fast path (`GOW_GS_FASTPACK`), per-core budget and IOP thread variants on the console. |
 | [gemini-helper.md](gemini-helper.md) | Read-only helper agent (`agy`/Gemini) to offload log/dump analysis: when and how to call it. |
 
 ## Project layout
