@@ -1026,7 +1026,7 @@ bool VU1Interpreter::runNative(StepContext &context)
             {
                 const uint32_t k = (kv >> 1) - 1u, e = kv & 1u;
                 const vu1hle::Kernel &kn = vu1hle::kKernels[k];
-                vu1hle::Ctx hc{m_state, context.vuData, m_cycle, context.budgetEnd, pc - kn.entryOff[e]};
+                vu1hle::Ctx hc{m_state, context.vuData, m_cycle, context.budgetEnd, pc - kn.entryOff[e], &ns.macRing};
                 const uint64_t c0 = m_cycle;
                 const uint32_t r = kn.fn(hc, e);
                 if (r != vu1hle::kDecline)
@@ -1036,6 +1036,7 @@ bool VU1Interpreter::runNative(StepContext &context)
                     // the passes ran without the cycle model: nothing is in flight any more at the kernel's end
                     ns.histCount = 0u;
                     ns.arraysReadyBy = 0u;
+                    m_fdiv.valid = false; // Q is the kernel's last DIV (an FDIV entry from before would commit an old Q)
                     m_state.pc = r & 0x3FFFu;
                     ++blocks;
                     continue;
