@@ -5,15 +5,17 @@ USA disc stays untouched.
 - Wording (always): the menus and in-game screens name the save file instead of the PS2 memory card
   (tools/gow_wording.py rewrites the text inside R_SHELL.WAD and R_PERM.WAD).
 - Languages (with the European disc, SCES-53133, God of War (Europe, Australia) (En,Fr,De,Es,It)): the USA disc is
-  English only; the European one has the in-game text (the R_PERM<letter>.WAD message table) in five languages and the
-  voices dubbed in four (X.VA1-4 / X.VP1-4 next to the English X.VAG / X.VPK: VA1 French, VA2 German, VA3 Italian,
-  VA4 Spanish, identified by speech recognition). The message table uses the same ids on both discs, so the USA
-  R_PERM.WAD gets the translated table; the dubbed voice files take the place of the English ones. The menus and HUD
-  screens keep the USA (English) art and text.
+  English only; the European one has the menus (R_SHELL<letter>.WAD), the in-game screens and text (R_PERM<letter>.WAD)
+  in five languages and the voices dubbed in four (X.VA1-4 / X.VP1-4 next to the English X.VAG / X.VPK: VA1 French,
+  VA2 German, VA3 Italian, VA4 Spanish, identified by speech recognition). The European WADs work in the USA game
+  once their objects lose the language letter the European executable adds (R_ShellI -> R_Shell, FLP_HUDI -> FLP_HUD,
+  shelli -> shell, msgsI.txt -> msgs_en.txt, save folder BESCES-53133 -> BASCUS-97399: european_wad()); their
+  message table keeps the USA-only ids in English.
+  The dubbed voice files take the place of the English ones.
 
 Output in <usa disc>/lang/:
-  text_<code>.bin       R_PERM.WAD: wording + message table in <code>
-  shell.bin             R_SHELL.WAD: wording
+  text_<code>.bin       R_PERM.WAD in <code> (USA for en, else the European one): wording + message table
+  shell_<code>.bin      R_SHELL.WAD in <code>: menus + wording
   voice_<code>/<NAME>   the dubbed files of <code> under the USA names (not for en)
   <text>_<voice>.toc    GODOFWAR.TOC with those files at their new places
   <text>_<voice>.layout the overlay: the patched TOC + each replacement file at its disc place. The game addresses
@@ -93,22 +95,46 @@ def parse_messages(table):
     return re.findall(rb'\*(\d+)\*\n(.*?)\n\n', table, re.S)
 
 
-def localized_perm(usa_perm, eu_perm):
-    """USA R_PERM.WAD with each message the European table has replaced by its translation (the ids are shared;
-    USA-only ids keep their English text)."""
-    foreign = {}
-    for pos, tag, size, name, body in wad_records(eu_perm):
-        if name.startswith(b'msgs'):
-            foreign = dict(parse_messages(eu_perm[pos + 32:pos + 32 + size]))
-    out = bytearray()
+def european_wad(wad, letter):
+    """a European language WAD (R_SHELL<letter>/R_PERM<letter>.WAD) under the USA names: the European executable
+    looks its objects up with the language letter appended (R_ShellX, FLP_%s with ShellX/HUDX, msgs%s.txt), the USA
+    one without it, so every name field naming R_Shell<l>, R_Perm<l>, Shell<l>, HUD<l> (any case, followed by NUL,
+    a digit or '_') loses the letter, and msgs<l>.txt becomes msgs_en.txt. Names are NUL-padded fixed fields: the
+    rest of the name moves left and the field keeps its size."""
+    out = bytearray(wad)
+    pattern = re.compile(rb'((?i:r_shell|r_perm|shell|hud))[' + letter.upper().encode() + letter.lower().encode()
+                         + rb'](?=[\x000-9_])')
+    for m in reversed(list(pattern.finditer(out))):
+        end = out.index(b'\0', m.end())
+        name = out[m.start():end]
+        out[m.start():end + 1] = name[:len(m.group(1))] + name[len(m.group(1)) + 1:] + b'\0\0'
+    table = b'msgs' + letter.upper().encode() + b'.txt\0'
+    at = out.find(table)
+    while at >= 0:
+        out[at:at + len(table) + 2] = b'msgs_en.txt\0'
+        at = out.find(table, at + 1)
+    # the save folder (R_PERM): the European game's, BESCES-53133GodOfWar, becomes the USA one, so every language
+    # reads and writes the same saves
+    return bytes(out).replace(b'BESCES-53133GodOfWar', b'BASCUS-97399GodOfWar')
+
+
+def with_usa_messages(eu_perm, usa_perm):
+    """a renamed European R_PERM.WAD whose message table also has the USA-only ids (1, 8, 9) in English, in the USA
+    table's order (the other ids are shared)"""
+    usa = {}
     for pos, tag, size, name, body in wad_records(usa_perm):
         if name.startswith(b'msgs'):
-            table = usa_perm[pos + 32:pos + 32 + size]
-            text = b''.join(b'*%s*\n%s\n\n' % (k, foreign.get(k, v)) for k, v in parse_messages(table))
+            usa = parse_messages(usa_perm[pos + 32:pos + 32 + size])
+    out = bytearray()
+    for pos, tag, size, name, body in wad_records(eu_perm):
+        if name.startswith(b'msgs'):
+            table = eu_perm[pos + 32:pos + 32 + size]
+            foreign = dict(parse_messages(table))
+            text = b''.join(b'*%s*\n%s\n\n' % (k, foreign.get(k, v)) for k, v in usa)
             text += table[table.rindex(b'\n\n') + 2:]  # the table's own end (a terminating NUL)
             out += struct.pack('<II', tag, len(text)) + name + text + b'\0' * (-len(text) % 16)
         else:
-            out += usa_perm[pos:pos + 32 + ((body + 15) & ~15)]
+            out += eu_perm[pos:pos + 32 + ((body + 15) & ~15)]
     return bytes(out)
 
 
@@ -229,7 +255,7 @@ def main(usa, eu=None, jpn=None):
         stored.setdefault(key, {})[name] = (path, len(data))
 
     usa_perm = read_file(usa, entries, 'R_PERM.WAD')
-    store('shell', 'R_SHELL.WAD', gow_wording.apply(read_file(usa, entries, 'R_SHELL.WAD')), 'shell.bin')
+    usa_shell = read_file(usa, entries, 'R_SHELL.WAD')
     if eu:
         _, eu_entries = read_toc(eu)
         eu_names = {e[1] for e in eu_entries}
@@ -237,8 +263,14 @@ def main(usa, eu=None, jpn=None):
         _, jpn_entries = read_toc(jpn)
         jpn_names = {e[1] for e in jpn_entries}
     for code in langs:
-        perm = usa_perm if code == 'en' else localized_perm(usa_perm, read_file(eu, eu_entries, f'R_PERM{TEXT_LETTER[code]}.WAD'))
-        store(f'text_{code}', 'R_PERM.WAD', gow_wording.apply(perm), f'text_{code}.bin')
+        if code == 'en':
+            perm, shell = usa_perm, usa_shell
+        else:
+            letter = TEXT_LETTER[code]
+            perm = with_usa_messages(european_wad(read_file(eu, eu_entries, f'R_PERM{letter}.WAD'), letter), usa_perm)
+            shell = european_wad(read_file(eu, eu_entries, f'R_SHELL{letter}.WAD'), letter)
+        store(f'text_{code}', 'R_PERM.WAD', gow_wording.apply(perm, code), f'text_{code}.bin')
+        store(f'shell_{code}', 'R_SHELL.WAD', gow_wording.apply(shell, code), f'shell_{code}.bin')
     usa_names = {e[1] for e in entries}
     for code in voices[1:]:
         total = 0
@@ -270,7 +302,7 @@ def main(usa, eu=None, jpn=None):
 
     for text in langs:
         for voice in voices:
-            members = dict(stored['shell'])
+            members = dict(stored[f'shell_{text}'])
             members.update(stored[f'text_{text}'])
             alias = {}
             if voice != 'en':

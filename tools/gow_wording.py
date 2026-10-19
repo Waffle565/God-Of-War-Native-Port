@@ -66,20 +66,88 @@ LINES = [
     ('Please insert a DualShock 2 Controller.  ', 'Please connect a controller.'),
 ]
 
-TABLE = {'FLP_HUD': LINES, 'FLP_Shell': LINES}
+# Italian (the European disc's R_SHELLI/R_PERMI chunks, lang_pack.py): the memory card becomes the save file
+# ("file di salvataggio") and its slot the save slot ("slot di salvataggio"); the slot number gap follows "CARD".
+LINES_IT = [
+    # controller prompts
+    ('Inserire un controller analogico', 'Collega un controller'),
+    ("(DUALSHOCK  2) nell'ingresso", 'per continuare.'),
+    ('controller 1 per continuare. ', ''),
+    ('Il controller analogico', 'Il controller'),
+    ('(DUALSHOCK  2) è stato rimosso.       ', 'è stato scollegato.'),
+    ('(DUALSHOCK  2) è stato rimosso.    ', 'è stato scollegato.'),
+    ('Inserire un controller', 'Collega un controller.'),
+    ('analogico (DUALSHOCK  2).  ', ''),
+    # card names and slots
+    ('salvataggio sulla memory card (PS2)', 'file di salvataggio.'),
+    ("inserita nell'ingresso MEMORY CARD 1 e 2.", ''),
+    ("La memory card (PS2) nell'ingresso ", ''),
+    ("La memory card (PS2) nell'ingresso", ''),
+    ('MEMORY CARD     contiene tesori', 'Lo slot' + SLOT + 'contiene tesori'),
+    ('MEMORY CARD    non è formattata.', 'Lo slot' + SLOT + 'non è pronto.'),
+    ("inserita nell'ingresso MEMORY CARD   .", 'nello slot di salvataggio' + SLOT + '.'),
+    ("inserita nell'ingresso MEMORY CARD   ?", 'nello slot di salvataggio' + SLOT + '?'),
+    ("dall'ingresso MEMORY CARD   .         ", 'dallo slot di salvataggio' + SLOT + '.'),
+    ("dall'ingresso MEMORY CARD   .", 'dallo slot di salvataggio' + SLOT + '.'),
+    ("nell'ingresso MEMORY CARD   .", 'nello slot di salvataggio' + SLOT + '.'),
+    ("nell'ingresso MEMORY CARD   . ", 'dallo slot di salvataggio' + SLOT + '.'),
+    ("nell'ingresso MEMORY CARD    .", 'nello slot di salvataggio' + SLOT + '.'),
+    ("nell'ingresso MEMORY CARD   ?", 'dallo slot di salvataggio' + SLOT + '?'),
+    ("nell'ingresso MEMORY CARD    ", 'nello slot' + SLOT),
+    ('MEMORY CARD    in corso...', 'nello slot' + SLOT + '...'),
+    ('Ingresso', 'Slot di'),
+    ('MEMORY CARD 1', 'salvataggio 1'),
+    ('MEMORY CARD 2', 'salvataggio 2'),
+    ('sulla memory card (PS2) inserita', ''),
+    ('dalla memory card (PS2) inserita', ''),
+    ('memory card (PS2) inserita', ''),
+    ('della memory card (PS2) inserita', 'del file di salvataggio'),
+    ("inserita nell'ingresso", ''),
+    ('God of War sulla memory card (PS2)', 'God of War'),
+    # first lines of the messages
+    ('Salvataggio sulla memory card (PS2)', 'Salvataggio in corso'),
+    ('Non rimuovere', 'Non chiudere'),
+    ('la memory card (PS2).', 'il gioco.'),
+    ('la memory card (PS2). ', 'il gioco.'),
+    ('Non resettare/spegnere la console!', ''),
+    ('Caricamento del salvataggio dalla', 'Caricamento del salvataggio'),
+    ('Controllo della memory card (PS2)', 'Controllo in corso'),
+    ('Errore durante la formattazione', 'Errore durante la preparazione'),
+    ('Formattazione completata.', 'Salvataggio pronto.'),
+    ('Formattazione della', 'Preparazione...'),
+    ('Formattarla?', 'Prepararlo?'),
+    ('Nessuna memory card (PS2)', 'Nessun salvataggio'),
+    ('Memory card (PS2) trovata', 'Salvataggio trovato'),
+]
+
+# per text language: (table, word the slot number gap follows); the European languages' chunks also bring their
+# accented glyphs (gow_text.EUROPEAN)
+TABLES = {'en': (LINES, 'Slot'), 'it': (LINES_IT, 'CARD')}
 
 
-def apply(wad):
-    """the WAD with the port's wording (R_PERM.WAD and R_SHELL.WAD; other WADs come back unchanged)"""
-    new, _ = gow_text.rewrite_wad(wad, TABLE)
+def apply(wad, language='en'):
+    """the WAD with the port's wording in <language> (R_PERM.WAD and R_SHELL.WAD, the USA ones for en and the renamed
+    European ones otherwise; other WADs come back unchanged). A language without a table keeps the card wording."""
+    if language not in TABLES:
+        return wad
+    lines, anchor = TABLES[language]
+    new, _ = gow_text.rewrite_wad(wad, {'FLP_HUD': lines, 'FLP_Shell': lines}, gow_text.EUROPEAN.get(language),
+                                  anchor)
     return new
 
 
 if __name__ == '__main__':
-    for path in sys.argv[1:]:
-        _, report = gow_text.rewrite_wad(open(path, 'rb').read(), TABLE)
+    # usage: gow_wording.py [--lang it] <WAD>...   reports the lines each table entry changed
+    args = sys.argv[1:]
+    language = 'en'
+    if args[:1] == ['--lang']:
+        language, args = args[1], args[2:]
+    lines, anchor = TABLES[language]
+    for path in args:
+        _, report = gow_text.rewrite_wad(open(path, 'rb').read(), {'FLP_HUD': lines, 'FLP_Shell': lines},
+                                         gow_text.EUROPEAN.get(language), anchor)
         for chunk, done in report.items():
             print(path, chunk, sum(done.values()), 'lines')
-            for old, _ in LINES:
+            for old, _ in lines:
                 if old not in done:
                     print('   not found:', repr(old))

@@ -47,13 +47,14 @@ the two boxes are greyed out and English is used.
 ## How a language reaches the USA game: disc overlays
 `tools/lang_pack.py <usa disc> [<eu disc>] [--ja <jpn disc>]` writes `<usa disc>/lang/` (make_pc_folder.ps1 runs it
 on `data\`, with `disc\` and `disc-jpn\` when extracted):
-- `text_<code>.bin`: the USA `R_PERM.WAD` with its message table replaced. Both discs use the same message ids (USA has
-  396, the European tables 393: ids 1, 8, 9 are USA-only and stay English), so each USA message takes the European
-  translation of the same id. The WAD is a list of records `{u32 tag, u32 size, char name[24], data padded to 16}`
-  (tag 24 = a value record without data); only the `msgs_en.txt` record changes size.
+- `text_<code>.bin`: `R_PERM.WAD` (in-game screens and HUD, message table): the USA one for `en`, else the European
+  `R_PERM<letter>.WAD` renamed (below). Its message table gets the USA order and the USA-only ids (USA has 396, the
+  European tables 393: ids 1, 8, 9 stay English). The WAD is a list of records `{u32 tag, u32 size, char name[24],
+  data padded to 16}` (tag 24 = a value record without data); only the `msgs_en.txt` record changes size.
+- `shell_<code>.bin`: `R_SHELL.WAD` (the menus): the USA one for `en`, else the European `R_SHELL<letter>.WAD`
+  renamed. Both with the save wording (below).
 - `voice_<code>/<NAME>`: the dubbed files, each under the USA name it replaces. For `ja` a movie's `.PSS` also
   reads its Japanese widescreen `.PSW` (the port is always 16:9, so only the `.PSW` is played).
-- `shell.bin`: the USA `R_SHELL.WAD` with the save wording (below).
 - `<text>_<voice>.toc` + `.layout`: GODOFWAR.TOC with the replaced names at their new places (TOC entries: part
   0/1 = PART1/PART2.PAK, sector offset relative to its LSN) and one `file` line per replacement.
 
@@ -85,28 +86,39 @@ language's track (ADPCM decoded) from the start plus its clip where the English 
 (cross-correlation). Its `.PSS` reads the same file. Checked 2026-10-19 with tools/movies.py + speech recognition:
 it_it Italian, de_de German, fr_fr French narration, pictures and sound ok.
 
-Not localized: the menus and the in-game message screens (save, death, pause, upgrade texts) keep the USA art and
-English text: their text lives in the Flash chunks with the USA font (below), and the European versions of those
-chunks expect the European executable (swapping whole European WADs leaves the title menu empty after Start). The
-European menu font numbers A-Z/a-z like the USA one and adds accented glyphs above; translating the menus needs
-those glyphs in the USA chunk and longer text records, i.e. rewriting the chunk's structure.
+Menus and in-game screens (2026-10-19): the European `R_SHELL<l>`/`R_PERM<l>.WAD` hold the menus (Flash chunk
+`FLP_Shell<l>`), the in-game screens and HUD (`FLP_HUD<l>`) with their own font (`GFX_GOWE`, accented glyphs) in
+each language. The European executable looks their objects up with the language letter (strings `R_ShellX`,
+`ShellX`, `HUDX`, `msgs%s.txt`; the USA one has `R_Shell`, `Shell`, `HUD`, `msgs_en.txt`), which is why the whole
+European WAD left the title menu empty under the USA game. `european_wad()` in lang_pack.py renames every name field
+(fixed 24-byte, NUL-padded) of `R_Shell<l>`, `R_Perm<l>`, `Shell<l>`, `HUD<l>` (any case, also the lowercase
+`shell<l>` and `Shell<l>_0`) to the USA name and `msgs<l>.txt` to `msgs_en.txt`; it also turns the European save folder
+`BESCES-53133GodOfWar` (in R_PERM) into the USA `BASCUS-97399GodOfWar`, so every language shares the saves. With
+that the menus, options, load/save screens, pause and HUD are in the chosen language (Italian checked screen by
+screen, French, German, Spanish title and load screens). Not localized: the difficulty and date shown for a save
+written by the USA game stay English (the level name follows the language), Japanese/Korean (above).
 
 ## Save wording
 The port saves to a file (`saves\GodOfWar.sav`), so the PS2 texts about a "MEMORY CARD (8MB)(for PlayStation 2)",
 card slots, formatting and the DUALSHOCK 2 are reworded: `tools/gow_wording.py` (the table) through
-`tools/gow_text.py` (the format), applied by lang_pack.py to every overlay, English included. Example: "Saving Game
+`tools/gow_text.py` (the format), applied by lang_pack.py to every overlay. Example: "Saving Game
 to / MEMORY CARD (8MB)(for PlayStation 2) / in MEMORY CARD Slot 1. / Do not remove / MEMORY CARD (8MB)(for
 PlayStation 2). / Do not turn power off or reset." becomes "Saving game / in save game slot 1. / Do not quit / the
-game while saving.".
+game while saving.". Tables per text language (`TABLES`): English (USA chunks) and Italian (European chunks: "file
+di salvataggio", "slot di salvataggio", "Collega un controller"; the slot number gap follows "CARD"). French,
+German and Spanish have no table yet and keep the European memory card / DUALSHOCK wording.
 
 Text format (FLP_HUD in R_PERM.WAD, FLP_Shell in R_SHELL.WAD; `python -I tools/gow_text.py <wad>` lists it):
 - static text as SWF-style text records: style byte `0x80|flags`, then (flags 0x08) u16 font + u16 height,
   (0x04) RGBA color, (0x01) s16 x, (0x02) s16 y; a glyph count byte; per glyph `{u16 glyph, u16 advance}`.
 - glyphs: letters are linear per font (HUD: 'A' = 26, Shell: 'A' = 25, lowercase right after 'Z', drawn as small
-  caps), 0 = space, punctuation and digits measured (`FONTS` in gow_text.py).
+  caps), 0 = space, punctuation and digits measured (`FONTS` in gow_text.py). The European chunks number letters,
+  digits and punctuation the same and add accented glyphs above 'z', numbered per language and chunk (Italian
+  Shell: à 105, è 109, ì 113; Italian HUD: / 11, à 106, è 110, ì 114, ò 119, ù 123; the French HUD has è at 111):
+  `EUROPEAN[language][chunk]`, named from each chunk's own words. Only named glyphs can be written.
 - lines are centered through their x; advances depend on the height (measured per height from the chunk itself).
-- the slot number is a separate field drawn over the spaces after "Slot": reworded slot lines keep that tail in
-  place ("in save game slot" has about the width of "in MEMORY CARD Slot", so the line stays nearly centered).
+- the slot number is a separate field drawn over the spaces after "Slot" (USA) or "MEMORY CARD" (Italian):
+  reworded slot lines keep that tail in place (`{SLOT}`, anchor word per table).
 - the chunk is a serialized structure with pointers, so nothing moves: a new line has at most the old glyph count,
   the rest are zero-width spaces, and x is recomputed to keep it centered.
 
@@ -147,3 +159,11 @@ The overlay is in ps2xIOP, shared by both builds. The Switch build needs: the ex
 `lang/` folder in the RomFS next to the disc files (port/switch/nsp, make_romfs_links.sh), and
 `PS2X_DISC_OVERLAY=lang/<text>_<voice>.layout` in its defaults (`sdmc:/switch/gow/env.txt` overrides). A language
 choice on the console would be an `env.txt` line until there is an in-game setting.
+
+Menus checked 2026-10-19 (dist runner, muted, it_it): title menu "Nuova partita"/"Carica", difficulty "Seleziona
+difficoltà", load screen "Nessun dato salvato di God of War / nello slot di salvataggio 1." (before the save folder
+rename) and the save list; tools/savetest.py in Italian: 129 pages written into BASCUS-97399GodOfWar, screens
+"Selezionare file su cui salvare / nello slot di salvataggio 1.", "Sovrascrivere il salvataggio di God of War nello
+slot di salvataggio 1?", "Salvataggio in corso / nello slot 1... / Non chiudere / il gioco.", "Salvataggio
+completato.". fr_fr, de_de, es_es: title, load and save list in their language. English output is byte-identical to
+before (shell_en.bin = the former shell.bin).

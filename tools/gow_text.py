@@ -24,12 +24,23 @@ FONTS = {
     'FLP_Shell': (25, {'"': 2, "'": 3, '(': 4, ')': 5, ',': 7, '.': 9, ':': 21, '?': 24,
                        **{str(i): 11 + i for i in range(10)}}),
 }
-SLOT = '{SLOT}'  # in a new line: the old line's spaces after "Slot", in place (the slot number is drawn over them)
+# the European chunks (R_SHELL<l>/R_PERM<l>.WAD of the European disc, used for its languages, see tools/lang_pack.py)
+# number letters, digits and punctuation the same way and add accented glyphs above 'z', numbered per language's
+# chunk (the same accent has different numbers in the French and the Italian HUD). Per language and chunk, the glyphs
+# named from that chunk's own words (2026-10-19); only these can be written.
+EUROPEAN = {
+    'it': {
+        'FLP_Shell': {'!': 1, '-': 8, '/': 10, 'à': 105, 'è': 109, 'ì': 113},
+        'FLP_HUD': {'/': 11, '°': 81, 'à': 106, 'è': 110, 'ì': 114, 'ò': 119, 'ù': 123},
+    },
+}
+SLOT = '{SLOT}'  # in a new line: the old line's spaces after the anchor ("Slot"), in place (the slot number is drawn
+# over them)
 
 
 class Font:
-    def __init__(self, a, specials):
-        self.code = {' ': 0, **specials}
+    def __init__(self, a, specials, extra=None):
+        self.code = {' ': 0, **specials, **(extra or {})}
         for i in range(26):
             self.code[chr(65 + i)] = a + i
             self.code[chr(97 + i)] = a + 26 + i
@@ -46,6 +57,7 @@ def style_length(flags):
 def lines(data, font):
     """text lines: dicts with the glyph run position, its glyphs, the style record and the text height in effect"""
     out, p, height = [], 0, None
+    limit = max(100, max(font.char) + 1)  # glyph numbers above the font's are not text
     while p < len(data) - 5:
         n = data[p]
         if 1 <= n <= 80 and p + 1 + 4 * n <= len(data):
@@ -56,7 +68,7 @@ def lines(data, font):
                 if s >= 0 and data[s] == flags:
                     style = (s, flags)
                     break
-            if (style and all(g <= 100 and a <= 0x400 for g, a in glyphs)
+            if (style and all(g <= limit and a <= 0x400 for g, a in glyphs)
                     and sum(g in font.char and g != 0 for g, _ in glyphs) >= (n + 1) // 2):
                 s, flags = style
                 q = s + 1
@@ -86,9 +98,11 @@ def width(glyphs):
     return sum(a for _, a in glyphs)
 
 
-def rewrite(data, chunk, table):
-    """table: [(old line, new line)]; returns the new data and how many lines each entry changed"""
-    font = Font(*FONTS[chunk])
+def rewrite(data, chunk, table, extra=None, anchor='Slot'):
+    """table: [(old line, new line)]; returns the new data and how many lines each entry changed. extra: more glyphs
+    of the chunk's font (a European chunk's accents, EUROPEAN[language][chunk]); anchor: the word after which a
+    line's slot number gap starts."""
+    font = Font(*FONTS[chunk], extra)
     found = lines(data, font)
     adv = advances(found)
     by_glyph = collections.defaultdict(dict)
@@ -116,7 +130,7 @@ def rewrite(data, chunk, table):
             prefix, suffix = new, ''
             if SLOT in new:  # keep the spaces after "Slot" (the slot number is drawn over them) where they were
                 prefix, suffix = new.split(SLOT)
-                cut = old.index('Slot') + 4
+                cut = old.index(anchor) + len(anchor)
                 end = cut
                 while end < len(glyphs) and glyphs[end][0] == 0:
                     end += 1
@@ -147,20 +161,29 @@ def wad_chunks(data):
         pos += 32 + ((body + 15) & ~15)
 
 
-def rewrite_wad(wad, table_by_chunk):
+def rewrite_wad(wad, table_by_chunk, extra_by_chunk=None, anchor='Slot'):
     out = bytearray(wad)
     report = {}
     for pos, tag, size, name in wad_chunks(wad):
         if name in table_by_chunk:
-            new, done = rewrite(wad[pos + 32:pos + 32 + size], name, table_by_chunk[name])
+            extra = (extra_by_chunk or {}).get(name)
+            new, done = rewrite(wad[pos + 32:pos + 32 + size], name, table_by_chunk[name], extra, anchor)
             out[pos + 32:pos + 32 + size] = new
             report[name] = done
     return bytes(out), report
 
 
 if __name__ == '__main__':
-    wad = open(sys.argv[1], 'rb').read()
+    # usage: gow_text.py <WAD> [chunk] [--lang it]   (--lang: a European chunk of that language, its accents)
+    args = sys.argv[1:]
+    language = None
+    if '--lang' in args:
+        i = args.index('--lang')
+        language = args[i + 1]
+        del args[i:i + 2]
+    wad = open(args[0], 'rb').read()
     for pos, tag, size, name in wad_chunks(wad):
-        if name in FONTS and (len(sys.argv) < 3 or sys.argv[2] == name):
-            for line in lines(wad[pos + 32:pos + 32 + size], Font(*FONTS[name])):
+        if name in FONTS and (len(args) < 2 or args[1] == name):
+            extra = EUROPEAN.get(language, {}).get(name)
+            for line in lines(wad[pos + 32:pos + 32 + size], Font(*FONTS[name], extra)):
                 print(f"{name} {line['pos']:#07x} h={line['height']} {len(line['glyphs']):2d} {line['text']}")
