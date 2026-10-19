@@ -61,11 +61,20 @@ toolchain (`deko3d` 0.5.0 with the `uam` shader compiler, `/opt/devkitpro/tools/
   the check the GL RAM path already had) is not presented again, and the image is acquired with a fence the GPU waits
   on (`dkSwapchainAcquireImage` + `dkCmdBufWaitFence`), not this thread.
 
-| console, guest fps | GL v15 (switch-mesa) | deko3d (b2f41fe) |
-|---|---|---|
-| title menu | 25-26 | **27** |
-| gameplay (ship, fighting) | 9-13 | **18.6-19.2** |
-| GS thread busy per 5 s, gameplay | ~3.9 s | ~2.0 s (vrun 0.65, clut 0.6, texflush 0.4, present 0.27) |
-| VU1 / EE busy per 5 s, gameplay | ~2.6 / ~2.3 s | ~4.0 / ~3.5 s (now the limit) |
+Measured with the env file really applied (an earlier test script uploaded `env_*.txt` under its own name, so the
+game kept reading an old `env.txt` with scale 1; the "1.6" figures before 2026-10-19 04:00 were 1x):
 
-The renderer is no longer the bottleneck: VU1 and the EE are (the GS thread waits for them ~60% of the time).
+| console, guest fps (deko3d + VU1 0732eff + EE d352c1c merged, ext bd65531) | title menu | gameplay (ship, fighting) |
+|---|---|---|
+| GL v15 (switch-mesa), for comparison | 25-26 | 9-13 |
+| deko3d, scale 1.6 (~720 lines internal), bicubic present | 28.0-28.8 | 12.6-15.0 |
+| **deko3d, scale 1 (640x448 internal), bicubic GPU upscale to 720p: the default** | **27.8-29.2** | **19.4-28.0** (19.4-20.6 in the longest fight) |
+
+- Rendering at 720p is GPU-bound in gameplay; the PS2's own resolution with the GPU upscale is the default
+  (`ps2_switch_runtime.cpp`: `PS2X_GS_HW_SCALE=1`, bicubic + sharpen; env.txt `PS2X_GS_HW_SCALE=1.6` /
+  `GOW_SCALER=bilinear` choose otherwise).
+- Where VU1 has little to do (the pause screen) the whole pipeline already runs at 59.6-59.8 fps.
+- Gameplay per 5 s at scale 1: VU1 ~4.0 s, EE ~2.7 s, GS thread ~1.0 s busy (deko3d): **VU1 is the limit**, then the
+  EE. The renderer is no longer what keeps the game under 60.
+- Remaining renderer work: the CLUT-from-render-target readback (a GPU round trip, cached per target version) and
+  GPU time at 1.6x (fill: the bicubic pass and the 1.6x targets).
