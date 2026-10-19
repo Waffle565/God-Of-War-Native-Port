@@ -1,10 +1,15 @@
 #include "sound_engine.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+
+#if defined(__SWITCH__)
+extern "C" void ps2xSwitchPinCurrentThread(int core, int priorityBoost); // ps2xRuntime ps2_switch_runtime.cpp
+#endif
 
 namespace ps2x::iop::detail
 {
@@ -45,10 +50,96 @@ namespace ps2x::iop::detail
     SoundEngine::SoundEngine() : m_ram(RamHalfwords)
     {
         reset();
+        const char *thread = std::getenv("GOW_SOUND_THREAD");
+        m_async = !(thread && thread[0] == '0');
+        if (const char *batch = std::getenv("GOW_SOUND_BATCH"); batch && std::atoi(batch) > 0)
+            m_batchCycles = static_cast<uint64_t>(std::atoi(batch)) * CyclesPerSample;
+        if (m_async)
+            m_worker = std::thread([this] { workerLoop(); });
+    }
+
+    SoundEngine::~SoundEngine()
+    {
+        {
+            std::lock_guard<std::mutex> lock(m_jobMutex);
+            m_stop = true;
+        }
+        m_jobCv.notify_all();
+        if (m_worker.joinable())
+            m_worker.join();
+    }
+
+    void SoundEngine::sync() const
+    {
+        if (!m_async)
+            return;
+        {
+            std::unique_lock<std::mutex> lock(m_jobMutex);
+            // a batch the worker has not started yet is taken back and mixed below with the remainder: waiting for a
+            // woken thread to be scheduled cost ~1 ms per wait on a busy PC; only a batch being mixed is waited for
+            m_jobPending = false;
+            if (m_jobRunning)
+            {
+                const auto t0 = std::chrono::steady_clock::now();
+                m_jobCv.wait(lock, [this] { return !m_jobRunning; });
+                m_syncWaitNanos += static_cast<uint64_t>(
+                    std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t0).count());
+                ++m_syncWaits;
+            }
+        }
+        // the samples the worker has not mixed (a remainder smaller than a batch, or a batch taken back): mixed here,
+        // as inline mixing would have (mixTo returns at once when the worker already got there)
+        m_handedTarget = m_callerTarget;
+        const_cast<SoundEngine *>(this)->mixTo(m_callerTarget);
+    }
+
+    double SoundEngine::takeMixerSeconds() noexcept
+    {
+        return static_cast<double>(m_mixerNanos.exchange(0, std::memory_order_relaxed)) * 1e-9;
+    }
+
+    double SoundEngine::takeSyncWaitSeconds(uint64_t &waits) noexcept
+    {
+        waits = m_syncWaits;
+        const double seconds = static_cast<double>(m_syncWaitNanos) * 1e-9;
+        m_syncWaits = m_syncWaitNanos = 0;
+        return seconds;
+    }
+
+    void SoundEngine::workerLoop()
+    {
+#if defined(__SWITCH__)
+        // the application core with room (default 0: with deko3d the GPU backend there got light, while core 1 carries
+        // the EE, the IOP and the GS frontend); GOW_CORE_SoundMix=<0-2> moves it
+        int core = 0;
+        if (const char *value = std::getenv("GOW_CORE_SoundMix"); value && value[0] >= '0' && value[0] <= '2' && value[1] == '\0')
+            core = value[0] - '0';
+        ps2xSwitchPinCurrentThread(core, 0);
+#endif
+        std::unique_lock<std::mutex> lock(m_jobMutex);
+        for (;;)
+        {
+            m_jobCv.wait(lock, [this] { return m_jobPending || m_stop; });
+            if (m_stop)
+                return;
+            const uint64_t target = m_jobTarget;
+            m_jobPending = false;
+            m_jobRunning = true;
+            lock.unlock();
+            const auto t0 = std::chrono::steady_clock::now();
+            m_workerSamples.fetch_add(mixTo(target), std::memory_order_relaxed);
+            m_mixerNanos.fetch_add(static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                       std::chrono::steady_clock::now() - t0).count()),
+                                   std::memory_order_relaxed);
+            lock.lock();
+            m_jobRunning = false;
+            m_jobCv.notify_all();
+        }
     }
 
     void SoundEngine::reset()
     {
+        sync();
         std::fill(m_ram.begin(), m_ram.end(), uint16_t{0});
         m_cores = {};
         m_stream = {};
@@ -58,10 +149,14 @@ namespace ps2x::iop::detail
             m_output.clear();
         }
         m_lastCycle = 0;
+        m_callerTarget = m_handedTarget = 0; // the IOP clock starts again
+        std::lock_guard<std::mutex> lock(m_jobMutex);
+        m_jobTarget = 0;
     }
 
     void SoundEngine::initCore(uint32_t core)
     {
+        sync();
         Core &c = m_cores[core & 1u];
         const std::array<Voice, VoicesPerCore> voices{};
         c = Core{};
@@ -73,6 +168,7 @@ namespace ps2x::iop::detail
 
     void SoundEngine::setParam(uint32_t entry, uint16_t value)
     {
+        sync();
         Core &c = m_cores[coreOf(entry)];
         const uint32_t voice = voiceOf(entry);
         // GOW_SND_REGLOG=1: core-level writes (MMIX, master/effect/input volumes) as the driver sets them
@@ -110,6 +206,7 @@ namespace ps2x::iop::detail
 
     uint16_t SoundEngine::getParam(uint32_t entry) const
     {
+        sync();
         const Core &c = m_cores[coreOf(entry)];
         const uint32_t voice = std::min(voiceOf(entry), VoicesPerCore - 1u);
         const Voice &v = c.voices[voice];
@@ -142,6 +239,7 @@ namespace ps2x::iop::detail
 
     void SoundEngine::setSwitch(uint32_t entry, uint32_t mask)
     {
+        sync();
         Core &c = m_cores[coreOf(entry)];
         mask &= 0xFFFFFFu;
         static const bool callLog = std::getenv("GOW_SND_CALLLOG") != nullptr;
@@ -164,6 +262,7 @@ namespace ps2x::iop::detail
 
     uint32_t SoundEngine::getSwitch(uint32_t entry) const
     {
+        sync();
         const Core &c = m_cores[coreOf(entry)];
         switch (idOf(entry))
         {
@@ -182,6 +281,7 @@ namespace ps2x::iop::detail
 
     void SoundEngine::setAddr(uint32_t entry, uint32_t byteAddress)
     {
+        sync();
         Core &c = m_cores[coreOf(entry)];
         const uint32_t halfwords = (byteAddress >> 1u) & (RamHalfwords - 1u) & ~7u;
         const uint32_t voice = voiceOf(entry);
@@ -217,6 +317,7 @@ namespace ps2x::iop::detail
 
     uint32_t SoundEngine::getAddr(uint32_t entry) const
     {
+        sync();
         const Core &c = m_cores[coreOf(entry)];
         const Voice &v = c.voices[std::min(voiceOf(entry), VoicesPerCore - 1u)];
         uint32_t halfwords = 0;
@@ -248,6 +349,7 @@ namespace ps2x::iop::detail
     // sceSdSetCoreAttr ids (entry & ~1): 2 effect enable, 4 IRQ enable, 6 mute, 8 noise clock, 0xA SPDIF mode
     void SoundEngine::setCoreAttr(uint32_t entry, uint32_t value)
     {
+        sync();
         Core &c = m_cores[coreOf(entry)];
         switch (entry & ~1u)
         {
@@ -261,6 +363,7 @@ namespace ps2x::iop::detail
 
     uint32_t SoundEngine::getCoreAttr(uint32_t entry) const
     {
+        sync();
         const Core &c = m_cores[coreOf(entry)];
         switch (entry & ~1u)
         {
@@ -276,6 +379,7 @@ namespace ps2x::iop::detail
 
     void SoundEngine::writeSampleRam(uint32_t byteAddress, const uint8_t *source, size_t bytes)
     {
+        sync();
         uint32_t halfword = byteAddress >> 1u;
         for (size_t i = 0; i + 1u < bytes; i += 2u)
             m_ram[halfword++ & (RamHalfwords - 1u)] = static_cast<uint16_t>(source[i] | (source[i + 1u] << 8u));
@@ -283,6 +387,7 @@ namespace ps2x::iop::detail
 
     void SoundEngine::readSampleRam(uint32_t byteAddress, uint8_t *destination, size_t bytes) const
     {
+        sync();
         uint32_t halfword = byteAddress >> 1u;
         for (size_t i = 0; i + 1u < bytes; i += 2u)
         {
@@ -294,6 +399,7 @@ namespace ps2x::iop::detail
 
     void SoundEngine::clearSampleRam(uint32_t byteAddress, size_t bytes)
     {
+        sync();
         uint32_t halfword = byteAddress >> 1u;
         for (size_t i = 0; i + 1u < bytes; i += 2u)
             m_ram[halfword++ & (RamHalfwords - 1u)] = 0u;
@@ -303,6 +409,7 @@ namespace ps2x::iop::detail
 
     void SoundEngine::startStream(uint32_t core, const uint8_t *ring, uint32_t size, bool loop)
     {
+        sync();
         StreamRing &s = m_stream[core & 1u];
         s.loop = loop;
         s.base = ring;
@@ -314,11 +421,13 @@ namespace ps2x::iop::detail
 
     void SoundEngine::stopStream(uint32_t core)
     {
+        sync();
         m_stream[core & 1u].active = false;
     }
 
     bool SoundEngine::takeStreamHalf(uint32_t core) noexcept
     {
+        sync();
         const bool half = m_streamHalf[core & 1u];
         m_streamHalf[core & 1u] = false;
         return half;
@@ -632,12 +741,36 @@ namespace ps2x::iop::detail
 
     void SoundEngine::advanceTo(uint64_t iopCycle)
     {
-        if (iopCycle <= m_lastCycle)
+        if (!m_async || m_stream[0].active || m_stream[1].active)
+        {
+            sync();
+            m_callerTarget = m_handedTarget = std::max(m_callerTarget, iopCycle);
+            mixTo(iopCycle);
             return;
+        }
+        // the IOP calls this every scheduler loop (~140000 times a second, mostly with no whole sample due): the worker
+        // is woken once per batch (GOW_SOUND_BATCH samples, default 128); sync() mixes a smaller remainder itself
+        m_callerTarget = std::max(m_callerTarget, iopCycle);
+        if (m_callerTarget < m_handedTarget + m_batchCycles)
+            return;
+        m_handedTarget = m_callerTarget;
+        {
+            std::lock_guard<std::mutex> lock(m_jobMutex);
+            m_jobTarget = m_handedTarget;
+            m_jobPending = true;
+        }
+        m_jobCv.notify_one();
+    }
+
+    // the samples up to iopCycle (whole samples; the rest of a sample waits for the next call)
+    uint64_t SoundEngine::mixTo(uint64_t iopCycle)
+    {
+        if (iopCycle <= m_lastCycle)
+            return 0;
         const uint64_t samples = (iopCycle - m_lastCycle) / CyclesPerSample;
         m_maxAdvance = std::max<uint64_t>(m_maxAdvance, iopCycle - m_lastCycle);
         if (samples == 0u)
-            return;
+            return 0;
         m_mixed.clear();
         for (uint64_t i = 0; i < samples; ++i)
             step();
@@ -646,6 +779,7 @@ namespace ps2x::iop::detail
         m_output.insert(m_output.end(), m_mixed.begin(), m_mixed.end());
         if (m_output.size() > kMaxBufferedFrames * 2u)
             m_output.erase(m_output.begin(), m_output.begin() + static_cast<std::ptrdiff_t>(m_output.size() / 2u & ~size_t{1}));
+        return samples;
     }
 
     size_t SoundEngine::pendingFrames() const

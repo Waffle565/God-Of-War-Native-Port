@@ -764,10 +764,12 @@ namespace ps2x::iop::detail
                     if (now - d.statsLast < std::chrono::seconds(5))
                         return;
                     d.statsLast = now;
+                    uint64_t syncWaits = 0;
                     std::ostringstream out;
                     out << "[IOP:native] instructions native=" << d.nativeInstructions << " interpreted=" << d.interpretedInstructions
                         << " | time total=" << static_cast<int>(d.totalSeconds * 1000.0) << " ms cpu=" << static_cast<int>(d.cpuSeconds * 1000.0)
-                        << " ms sound=" << static_cast<int>(d.spuSeconds * 1000.0) << " ms services=" << static_cast<int>(d.serviceSeconds * 1000.0)
+                        << " ms sound=" << static_cast<int>(d.spuSeconds * 1000.0) << " ms (mixer thread " << static_cast<int>(d.memory.sound().takeMixerSeconds() * 1000.0) << " ms, waits "
+                        << static_cast<int>(d.memory.sound().takeSyncWaitSeconds(syncWaits) * 1000.0) << " ms in " << syncWaits << ", worker samples " << d.memory.sound().takeWorkerSamples() << ") services=" << static_cast<int>(d.serviceSeconds * 1000.0)
                         << " ms | loops busy=" << d.busyLoops << " idle=" << d.idleLoops << " runCycles calls=" << d.runCyclesCalls << " (5 s window)";
                     d.busyLoops = d.idleLoops = d.runCyclesCalls = 0;
                     d.serviceSeconds = 0.0;
