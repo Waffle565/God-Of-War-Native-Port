@@ -93,6 +93,8 @@ Gameplay on the console (log `port/switch/logs/20261019_s16`, ship fight, ~21 fp
 - `GOW_CORE_<thread>=<0-2>` in env.txt overrides a thread's core (ThreadNaming.h): `GOW_CORE_GSStage=0` moves the GS
   frontend next to the deko3d backend on core 0, which deko3d made light, and leaves core 1 to the EE and the IOP.
   Untested on the console.
+- Gate (PC build of ext agent/sw-ee4 2b8d20f, regenerated code): port/swee4/gate/20261019_072605 zones 0-4 60 fps,
+  speed 1.00, no capture flagged against port/swvu1/gate/20261019_015639; savetest 129 pages, card directory intact.
 - EE generated code (devkitA64 -O2, instructions): 0x162F18 50133 -> 46039 (-8.2 %), 0x111760 52480 -> 50152,
   0x158DA8 4688 -> 4441, 0x1679F8 13655 -> 13226, 0x158020 5271 -> 5203, 0x1658F8 11143 -> 11385: slow-path lambda
   by value (no rdram/ctx reloads from the stack) and no PC/delay-slot stores the runtime cannot read
