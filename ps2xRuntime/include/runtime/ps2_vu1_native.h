@@ -226,6 +226,8 @@ struct VU1Interpreter::NativeState
     // direct chaining (chainDirect): steps a chain of generated blocks may take before returning to runNative (bounds
     // the stack where the compiler does not turn the generated `return next(n)` into a jump); GOW_VU1N_DIRECT=0: none
     uint32_t chainMax = (std::getenv("GOW_VU1N_DIRECT") && std::atoi(std::getenv("GOW_VU1N_DIRECT")) == 0) ? 0u : 64u;
+    // JR / JALR exits chain too (chainJr); GOW_VU1N_JR=0: they return to runNative (A/B on one build)
+    bool jrChain = !(std::getenv("GOW_VU1N_JR") && std::atoi(std::getenv("GOW_VU1N_JR")) == 0);
     unsigned verifyLeft = std::getenv("GOW_VU1N_VERIFY") ? static_cast<unsigned>(std::atoi(std::getenv("GOW_VU1N_VERIFY"))) : 0u;
     bool diag = std::getenv("GOW_VU1N_DIAG") != nullptr;
     unsigned long long nativePairs = 0, nativeBlocks = 0, missBlocks = 0, nativeRuns = 0, codeChanges = 0, slotSetups = 0;
@@ -266,6 +268,11 @@ struct VU1NativeAccess
     static const uint8_t *blockTiming(VU1Interpreter &vu, VU1Interpreter::NativeState::Slot &sl, uint32_t &cycId);
     // entry timing of a block that reads entry flags: the memo by predecessor (inline), else blockTiming
     static const uint8_t *entryTiming(VU1Interpreter &vu, VU1Interpreter::NativeState::Slot &sl, uint32_t &cycId);
+    // the same right after a native block finished at vu.m_cycle (chainTo / chainStep): that block (its timing data,
+    // table id and length in cycles) is the newest history entry, passed in registers instead of read back
+    static const uint8_t *entryTimingAfter(VU1Interpreter &vu, VU1Interpreter::NativeState::Slot &sl, uint32_t &cycId,
+                                           const VU1Interpreter::NativeState::BlockTiming *predBt, uint32_t predCycId,
+                                           uint64_t predLen);
     // the FDIV/EFU part of blockTiming's in-flight signature as one word (slack per unit read at entry, 0: not busy)
     static uint32_t scalarKey(const VU1Interpreter &vu, const VU1Interpreter::NativeState::BlockTiming &bt, uint64_t start);
     static void scalarStart(VU1Interpreter &vu, uint64_t issue, uint32_t latency, bool fdiv);
@@ -281,6 +288,10 @@ struct VU1NativeAccess
     static void finishScalars(VU1Interpreter &vu, const VU1Interpreter::NativeState::Slot &sl, const uint8_t *cyc, uint64_t start);
     static uint32_t chainTo(VU1NativeCtx &n, uint32_t pc, VU1NativeFn expected);
     static uint32_t chainDirect(VU1NativeCtx &n, uint32_t pc, uint64_t key); // key: the successor's block key
+    // a JR / JALR exit (vu1n_gen.py JR): key != 0 as chainDirect (a predicted target), key 0: whatever block the slot at
+    // the target holds (as runNative would dispatch it); 0 when GOW_VU1N_JR=0
+    static uint32_t chainJr(VU1NativeCtx &n, uint32_t pc, uint64_t key);
+    static uint32_t chainStep(VU1NativeCtx &n, uint32_t pc, uint64_t key, bool any); // chainDirect / chainJr
     static VU1NativeFn slotFn(const VU1NativeCtx &n); // the function of the slot chainDirect set up
     static void callLower(VU1NativeCtx &n, uint32_t pc, uint32_t lower, uint32_t upper);
     static void callUpper(VU1NativeCtx &n, uint32_t pc, uint32_t upper);
@@ -511,25 +522,36 @@ VU1N_INLINE const uint8_t *VU1NativeAccess::entryTiming(VU1Interpreter &vu, VU1I
 {
     using NS = VU1Interpreter::NativeState;
     NS &ns = *vu.m_native;
-    const uint64_t start = vu.m_cycle;
     if (ns.histCount != 0u && sl.memoCyc[0])
     {
         const NS::Hist &pred = ns.hist[(ns.histNext + NS::kHist - 1u) % NS::kHist];
-        if (pred.end == start && pred.end - pred.start >= ns.maxLat && ns.arraysReadyBy <= start)
+        if (pred.end == vu.m_cycle)
+            return entryTimingAfter(vu, sl, cycId, pred.bt, pred.cycId, pred.end - pred.start);
+    }
+    return blockTiming(vu, sl, cycId);
+}
+
+VU1N_INLINE const uint8_t *VU1NativeAccess::entryTimingAfter(VU1Interpreter &vu, VU1Interpreter::NativeState::Slot &sl, uint32_t &cycId,
+                                                             const VU1Interpreter::NativeState::BlockTiming *predBt, uint32_t predCycId,
+                                                             uint64_t predLen)
+{
+    using NS = VU1Interpreter::NativeState;
+    NS &ns = *vu.m_native;
+    const uint64_t start = vu.m_cycle;
+    if (sl.memoCyc[0] && predLen >= ns.maxLat && ns.arraysReadyBy <= start)
+    {
+        const bool m0 = predBt == sl.memoPred[0] && predCycId == sl.memoPredId[0];
+        const bool m1 = sl.memoCyc[1] && predBt == sl.memoPred[1] && predCycId == sl.memoPredId[1];
+        if (m0 | m1)
         {
-            const bool m0 = pred.bt == sl.memoPred[0] && pred.cycId == sl.memoPredId[0];
-            const bool m1 = sl.memoCyc[1] && pred.bt == sl.memoPred[1] && pred.cycId == sl.memoPredId[1];
-            if (m0 | m1)
+            // the FDIV/EFU key once for both entries
+            const uint32_t key = sl.memoable ? 0u : ns.chainFlags ? scalarKey(vu, *sl.bt, start) : ~0u;
+            const bool ok0 = m0 && (sl.memoable || (ns.chainFlags && key == sl.memoScalar[0]));
+            if (ok0 || (m1 && (sl.memoable || (ns.chainFlags && key == sl.memoScalar[1]))))
             {
-                // the FDIV/EFU key once for both entries
-                const uint32_t key = sl.memoable ? 0u : ns.chainFlags ? scalarKey(vu, *sl.bt, start) : ~0u;
-                const bool ok0 = m0 && (sl.memoable || (ns.chainFlags && key == sl.memoScalar[0]));
-                if (ok0 || (m1 && (sl.memoable || (ns.chainFlags && key == sl.memoScalar[1]))))
-                {
-                    const uint32_t m = ok0 ? 0u : 1u;
-                    cycId = sl.memoId[m];
-                    return sl.memoCyc[m];
-                }
+                const uint32_t m = ok0 ? 0u : 1u;
+                cycId = sl.memoId[m];
+                return sl.memoCyc[m];
             }
         }
     }
@@ -556,19 +578,25 @@ VU1N_INLINE uint32_t VU1NativeAccess::chainTo(VU1NativeCtx &n, uint32_t pc, VU1N
     const NS::Slot &sl = *static_cast<const NS::Slot *>(n.slot);
     if (ns.limit != ~0u || (vu.m_storePending | vu.m_vfPending | vu.m_viPending | vu.m_accPending) != 0u || vu.m_flagCount != 0u)
         return 0u;
-    finishBlockTiming(vu, sl, n.cyc, n.cycId, n.start);
+    const uint32_t predCycId = n.cycId;
+    const uint64_t predStart = n.start;
+    finishBlockTiming(vu, sl, n.cyc, predCycId, predStart);
     if (vu.m_cycle >= vu.m_nextCommitCycle)
         commitDue(vu);
     NS::Slot &next = ns.slots[(pc & 0x3FF8u) >> 3];
     if (vu.m_stopRequested || vu.m_cycle >= n.budgetEnd || next.fn != expected || !next.known ||
         (next.readsEntryFlags && !ns.chainFlags))
         return 2u;
-    ++ns.nativeBlocks; // runNative counts the block the function returns from
-    ns.nativePairs += sl.pairs;
+    if (ns.diag)
+    {
+        ++ns.nativeBlocks; // runNative counts the block the function returns from
+        ns.nativePairs += sl.pairs;
+    }
     n.slot = &next;
     n.start = vu.m_cycle;
     uint32_t cycId = 0u;
-    const uint8_t *cyc = next.readsEntryFlags ? entryTiming(vu, next, cycId) : next.idle;
+    // the block just finished is the newest history entry (entryTiming would read it back)
+    const uint8_t *cyc = next.readsEntryFlags ? entryTimingAfter(vu, next, cycId, sl.bt, predCycId, vu.m_cycle - predStart) : next.idle;
     n.cyc = cyc;
     n.cycId = cycId;
     if (next.tail)
@@ -591,6 +619,21 @@ VU1N_INLINE uint32_t VU1NativeAccess::chainTo(VU1NativeCtx &n, uint32_t pc, VU1N
 // (runNative finishes the block: bisecting, or the chain budget used up), 1: successor set up, call it, 2: block
 // finished, runNative dispatches the successor (the block returns with kVu1nFinished).
 VU1N_INLINE uint32_t VU1NativeAccess::chainDirect(VU1NativeCtx &n, uint32_t pc, uint64_t key)
+{
+    return chainStep(n, pc, key, false);
+}
+
+// JR / JALR exits: the target is only known at run time. A predicted target (key != 0) is checked like a static
+// successor; key 0 (any) goes on to whatever the slot holds when it is set up and has a function, which is the block
+// runNative would dispatch there (a slot not set up yet or without a function: runNative takes over, as before).
+VU1N_INLINE uint32_t VU1NativeAccess::chainJr(VU1NativeCtx &n, uint32_t pc, uint64_t key)
+{
+    if (!n.vu->m_native->jrChain)
+        return 0u;
+    return key ? chainStep(n, pc, key, false) : chainStep(n, pc, 0u, true);
+}
+
+VU1N_INLINE uint32_t VU1NativeAccess::chainStep(VU1NativeCtx &n, uint32_t pc, uint64_t key, bool any)
 {
     using NS = VU1Interpreter::NativeState;
     const uint32_t left = n.chainLeft;
@@ -620,7 +663,7 @@ VU1N_INLINE uint32_t VU1NativeAccess::chainDirect(VU1NativeCtx &n, uint32_t pc, 
         commitDue(vu);
     // the slot holds the expected block (its own function or a trace starting with it); a slot whose code changed has key 0
     NS::Slot &next = ns.slots[pc >> 3];
-    if (vu.m_stopRequested || vu.m_cycle >= n.budgetEnd || next.key != key)
+    if (vu.m_stopRequested || vu.m_cycle >= n.budgetEnd || (any ? (!next.known || !next.fn) : next.key != key))
         return 2u;
     n.chainLeft = left - 1u;
     if (ns.diag)
@@ -632,7 +675,7 @@ VU1N_INLINE uint32_t VU1NativeAccess::chainDirect(VU1NativeCtx &n, uint32_t pc, 
     n.slot = &next;
     n.start = nstart;
     uint32_t cycId = 0u;
-    const uint8_t *ncyc = next.readsEntryFlags ? entryTiming(vu, next, cycId) : next.idle;
+    const uint8_t *ncyc = next.readsEntryFlags ? entryTimingAfter(vu, next, cycId, sl.bt, h.cycId, end - start) : next.idle;
     n.cyc = ncyc;
     n.cycId = cycId;
     if (const VU1TailDesc *desc = next.tail)
@@ -650,6 +693,7 @@ VU1N_INLINE VU1NativeFn VU1NativeAccess::slotFn(const VU1NativeCtx &n)
     return static_cast<const VU1Interpreter::NativeState::Slot *>(n.slot)->fn;
 }
 #define VU1N_HAS_CHAIN_DIRECT 2 // 2: successors named by block key
+#define VU1N_HAS_CHAIN_JR 1     // chainJr (JR / JALR exits)
 
 VU1N_INLINE const void *VU1NativeAccess::tracePart(const VU1NativeCtx &n, uint32_t k)
 {
