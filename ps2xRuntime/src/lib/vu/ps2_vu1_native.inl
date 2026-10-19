@@ -12,6 +12,10 @@ static bool g_vu1nTraceThis = false;
 // GOW_VU1N_TRACES=0 so that every edge outside the generated loops is a dispatch): vu1n_gen.py --profile picks the
 // traces' likely successors from them
 static std::unordered_map<uint32_t, uint64_t> *g_vu1nEdgeProf = nullptr;
+// with GOW_VU1N_BLOCKPROF: JR / JALR site -> target ("j <pc of the JR> <target> <count>" lines): the block a function
+// returns from (also the second block of a two-block cycle, which the "e" lines attribute to the dispatched one) ends in
+// a JR / JALR at that pc; vu1n_gen.py chains to the most frequent targets of each site (docs/vu1-native-flags.md "JR")
+static std::unordered_map<uint32_t, uint64_t> *g_vu1nJrProf = nullptr;
 
 namespace
 {
@@ -990,6 +994,19 @@ bool VU1Interpreter::runNative(StepContext &context)
             if (g_vu1nEdgeProf && blocks != 0u)
                 ++(*g_vu1nEdgeProf)[(edgeFrom << 16) | pc];
             edgeFrom = pc;
+            const NativeState::Slot *ls = static_cast<const NativeState::Slot *>(ctx.slot);
+            if (g_vu1nJrProf && ls >= ns.slots && ls < ns.slots + 2048 && ls->pairs >= 2u && !(result & kVu1nEnded))
+            {
+                const uint32_t jpc = static_cast<uint32_t>(ls - ns.slots) * 8u + (ls->pairs - 2u) * 8u;
+                uint32_t lo = 0u, up = 0u;
+                if (jpc + 8u <= context.codeSize)
+                {
+                    std::memcpy(&lo, context.vuCode + jpc, 4);
+                    std::memcpy(&up, context.vuCode + jpc + 4u, 4);
+                }
+                if (!(up >> 31) && ((lo >> 25) == 0x24u || (lo >> 25) == 0x25u))
+                    ++(*g_vu1nJrProf)[(jpc << 16) | (result & 0x3FFFu)];
+            }
             if (g_vu1nTraceThis) // GOW_VU1N_TRACEREC=<record>: the dispatch sequence of that record
                 std::fprintf(stderr, "[vu1n-trace] %x +%llu -> %x\n", pc, static_cast<unsigned long long>(m_cycle - start), result & 0x3FFFu);
         }
@@ -1204,7 +1221,8 @@ void VU1NativeAccess::recordReplay(VU1Interpreter &vu, void *contextPtr, uint32_
                     vu.m_native->generation = ~0ull - 1u; // micro memory is not the game's: forget the block cache
                 if (rep == 1u && !g_vu1nBlockProf && std::getenv("GOW_VU1N_BLOCKPROF"))
                     g_vu1nBlockProf = new std::unordered_map<uint32_t, std::pair<uint64_t, uint64_t>>(),
-                    g_vu1nEdgeProf = new std::unordered_map<uint32_t, uint64_t>();
+                    g_vu1nEdgeProf = new std::unordered_map<uint32_t, uint64_t>(),
+                    g_vu1nJrProf = new std::unordered_map<uint32_t, uint64_t>();
                 g_vu1nTraceThis = rep == 1u && std::getenv("GOW_VU1N_TRACEREC") &&
                                   total == static_cast<unsigned>(std::atoi(std::getenv("GOW_VU1N_TRACEREC")));
                 std::memcpy(scratch->data, rec->data, sizeof(rec->data));
@@ -1359,12 +1377,16 @@ void VU1NativeAccess::recordReplay(VU1Interpreter &vu, void *contextPtr, uint32_
                                  static_cast<unsigned long long>(kv.second.second));
                 for (const auto &kv : *g_vu1nEdgeProf)
                     std::fprintf(bp, "e %x %x %llu\n", kv.first >> 16, kv.first & 0xFFFFu, static_cast<unsigned long long>(kv.second));
+                for (const auto &kv : *g_vu1nJrProf)
+                    std::fprintf(bp, "j %x %x %llu\n", kv.first >> 16, kv.first & 0xFFFFu, static_cast<unsigned long long>(kv.second));
                 std::fclose(bp);
             }
             delete g_vu1nBlockProf;
             g_vu1nBlockProf = nullptr;
             delete g_vu1nEdgeProf;
             g_vu1nEdgeProf = nullptr;
+            delete g_vu1nJrProf;
+            g_vu1nJrProf = nullptr;
         }
         std::fclose(f);
         vu = saved;
