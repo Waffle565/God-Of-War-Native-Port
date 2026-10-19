@@ -215,6 +215,9 @@ extern "C"
         // Tegra four times the fill and readback for detail the screen cannot show
         setenv("PS2X_GS_HW_SCALE", "1", 0);
 #endif
+        // the SoundMix thread takes batches of 32 samples: on the A57 the least IOP time left on core 1 of 128/64/32
+        // (docs/sound.md "Mixer thread", console table)
+        setenv("GOW_SOUND_BATCH", "32", 0);
         // speed lines in every log (a few lines every 5 s), so a log from the console says where the time goes
         setenv("GOW_PERF_DIAG", "1", 0);
         setenv("GOW_PERF_FRAME_PC", "0x001837B8", 0);
