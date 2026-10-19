@@ -49,3 +49,23 @@ toolchain (`deko3d` 0.5.0 with the `uam` shader compiler, `/opt/devkitpro/tools/
   same either way, so the choice is only GPU time against sharpness.
 - `GOW_PERF_DIAG=1`: `[gs-dk]` every 5 s (draws, submits, presents, GPU waits, uploads).
 - `GOW_DK_PRESENT_FLIP=0` turns the present pass's vertical flip off (if the picture ever shows upside down).
+
+## Console results (2026-10-19, remote loop: tools/switch_bot.py + switch_mtp.py, `PS2X_GS_HW_SCALE=1`)
+- Citron cannot run it: `dkQueueCreate` never returns there (Citron's GPU service), so deko3d builds are tested on the
+  console only.
+- First console run: the title menu drew correctly (720p, upright, colours right), then the game was closed by an
+  error: textures lived in a `std::vector`, and a `DkImageView` points at its `DkImage`, so the vector's growth left
+  every view dangling. Textures and programs are in deques now.
+- Every vsync's Present composed and presented a frame and waited in `dkQueueAcquireImage` for the display (GS thread
+  "present" ~2.6 s per 5 s, menu 18-19 fps). Now an unchanged frame (same display registers and displayed targets,
+  the check the GL RAM path already had) is not presented again, and the image is acquired with a fence the GPU waits
+  on (`dkSwapchainAcquireImage` + `dkCmdBufWaitFence`), not this thread.
+
+| console, guest fps | GL v15 (switch-mesa) | deko3d (b2f41fe) |
+|---|---|---|
+| title menu | 25-26 | **27** |
+| gameplay (ship, fighting) | 9-13 | **18.6-19.2** |
+| GS thread busy per 5 s, gameplay | ~3.9 s | ~2.0 s (vrun 0.65, clut 0.6, texflush 0.4, present 0.27) |
+| VU1 / EE busy per 5 s, gameplay | ~2.6 / ~2.3 s | ~4.0 / ~3.5 s (now the limit) |
+
+The renderer is no longer the bottleneck: VU1 and the EE are (the GS thread waits for them ~60% of the time).

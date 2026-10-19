@@ -404,6 +404,26 @@ Console v15: VU1 (`vu_ms`) ~3.9 s per 5 s in the menu (~31 ms per guest frame), 
   (`chainTo` costs about what runNative's dispatch does). Left: runNative's ~100 instructions per block, the flag-ring
   pushes and tail stores at block exits.
 
+- EE generated code (ext agent/sw-ee3 d352c1c, 2026-10-19; regenerate all runner files with
+  `ps2_recomp port/usa/recomp-clock.toml`, then a full build): two recompiler changes that make every guest
+  instruction cheaper, most of all on AArch64 (docs/runtime-changes.md has the details):
+  - JALR callers are no longer "fully resumable". An unresolved JR/JALR gave every instruction of the function a
+    label and an entry case; for a call that is never needed. 1079 functions (109k instructions) had only JALRs,
+    among them the hottest EE function 0x162F18 (~12 % of the EE thread); the labels kept the C++ compiler from
+    carrying anything across instructions and reset the recompiler's constant tracking at each one.
+  - `ctx->pc` is stored only where the runtime can read it: no store for pure arithmetic; a load/store publishes its
+    PC only on the macros' special-address path (`ps2_gen_pc`); main RAM is one compare. On AArch64 every guest
+    access used to carry a mov/movk/str for the PC (and kept the previous instruction's store alive).
+  - Measured: PC build, Switch layout, gameplay: EE thread busy 31.2 -> 26.6 % of samples (0x162F18 4.6 -> 2.9 %);
+    x86 stores a constant PC in one instruction, so ARM gains more: devkitA64 -O2 output of 0x162F18 68.3k -> 50.1k
+    instructions, no PC store left between guest memory accesses. Gate zones 0-4 60 fps speed 1.00 (slot 0 capture
+    5 differs, a combat scene, as in the v13/v15 gates), savetest ok.
+  - Looked at and left: the EE copies every VIF1 DMA chain into a buffer for the GS worker, ~105 MB/s in gameplay
+    (2 chains of ~900 KB per frame; on PC ~12 % of the EE thread's samples land in vcruntime's copy routines).
+    Handing the worker guest RAM instead would need the game never to rewrite data still queued (skinned vertex
+    buffers are rebuilt every frame), so it stays. Guest thread switches leave generated code by a C++ throw
+    (`EeDispatcherTransfer`): ~100 per second in gameplay (interrupt handlers), ~4 ms per second on PC: not a cost.
+
 ### Console logs (`log switch/`, from the user)
 - `python -I tools/switch_log_summary.py "log switch/<file>"` prints the speed windows, the GL-thread time per op,
   the GPU time per draw path and the bisect phases against their baselines.
