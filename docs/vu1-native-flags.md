@@ -88,6 +88,32 @@ entry, one flag push. The model is unchanged because the split form gives the sa
 - Which successor: the edge profile `port/vu1n_profile.txt` (dispatch counts from the replay harness), else a backward
   branch is taken and a forward one is not.
 
+**JR / JALR exits** (sw-vu1jr; opt-in: `vu1n_gen.py --jr`, measured no gain, so the default output is unchanged; on a
+`--jr` build env `GOW_VU1N_JR=0` gives the A/B). A JR / JALR has no static successor, so its block returns to
+runNative. With `--jr` its exit goes on through `VU1NativeAccess::chainJr`, the same step as chainDirect (history
+entry, FDIV/EFU, commitDue, stop / budget check, entry timing, tail record):
+- first the site's predicted targets (`VU1N_GOJ`, up to `JR_MAX` = 2, each at least 10 % of the site's count): the next
+  pc must equal the predicted pc and the slot there must hold the predicted block key, exactly like a static successor;
+- then any other target (`VU1N_GOJANY`, `--no-jr-any` turns it off): the slot at the target pc goes on when it is set
+  up and has a function. That is the block runNative would dispatch there (runNative calls the slot's function when it
+  is known and has one), so no key is needed; a slot not set up yet (`slotFor`) or without a function (a miss: the
+  exact engine) returns to runNative as before.
+- The targets come from the profile's `j <JR pc> <target> <count>` lines: with `GOW_VU1N_BLOCKPROF` the runtime records,
+  for every block a function returns from that ends in a JR / JALR (also the second block of a two-block cycle, which
+  the `e` lines attribute to the dispatched block), the JR's pc and the next pc. tools/vu1_harness/edgeprof.sh sums them
+  with the `e` lines.
+- `--jr-traces`: traces also go on through a JR when its target is known: the return of a call earlier in the same trace (a BAL / JALR set
+  the link register and no later instruction of the trace may have written it; conservative: any lower instruction
+  naming the register in ft, fs or vid drops it), else the profile's target when it takes at least 60 % of the site.
+  The part's exit check (the next pc differs from the next part's pc -> the prefix finishes, `tracePart`) guards it like
+  any other branch.
+
+**Chain steps read the finished block from registers** (sw-vu1jr). chainTo (self-loops, two-block cycles) and
+chainDirect / chainJr give the successor's entry timing through `entryTimingAfter` with the block they just finished
+(timing data, table id, length) instead of reading the newest history entry back (`entryTiming` does exactly that and
+then the same memo test: the entry ended at the successor's start by construction). chainTo counts `nativeBlocks` /
+`nativePairs` only with `GOW_VU1N_DIAG`, like chainDirect (diagnostics only).
+
 **Code changes.** Slots are derived from the micro memory. When its generation changes (VIF MPG, EE stores), the
 native state compares the micro memory with its own copy and only slots whose extent overlaps a changed pair (the
 block's pairs plus the pair after it, which ended the extent scan) are set up again; the rest stay valid. The VIF
@@ -167,7 +193,8 @@ threefold on the real core, so changes are timed on the console with the replay 
 | sw-vu1-hle (two-block cycles, maddc, invariant views) | 137.0 | docs/vu1-hle.md |
 | sw-vu1fast: fast variants (range analysis + entry check, bit-exact) | not measured yet | qemu -16 %; docs/vu1-hle.md |
 | sw-vu1cyc: loops reading entry flags chained, memo with FDIV/EFU state (bit-exact) | not measured yet | qemu -14.7 % on top; docs/vu1-hle.md |
-| sw-vu1disp: direct chaining + traces (bit-exact) | not measured yet | qemu (corrected counting) ship -3.7 %, PC zone -15.5 % on top; docs/vu1-hle.md top section |
+| sw-vu1disp: direct chaining + traces (bit-exact) | not measured yet | qemu (corrected counting) ship -3.7 %, PC zone -15.5 % on top; docs/vu1-hle.md |
+| sw-vu1jr: chain steps read the finished block from registers (runtime only, bit-exact) | not measured yet | qemu ship -2.0 %, PC zone -1.4 % on top; `--jr` (JR chaining) +0.2 %: off; docs/vu1-hle.md top section |
 
 - In game: 18.2 -> 16.9 ns per VU1 cycle with `--locals`; gameplay stays ~20-21 fps (VU1 still saturated).
   `switch/build.sh` now refuses pregenerated blocks without `--locals` (`ALLOW_OLD_VU1N=1` overrides).

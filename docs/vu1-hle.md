@@ -3,6 +3,74 @@
 Goal: VU1 is the limit of the Switch build in gameplay (~4.0 s busy per 5 s at ~20 fps, docs/switch-deko3d.md); 60 fps
 needs it ~2.4x faster. This page records what the VU1 time is spent on and what the generator does about it.
 
+## JR / JALR exits and the chain step (2026-10-19, ext agent/sw-vu1jr)
+**Handoff.** Branch `agent/sw-vu1jr` (ext 665d3ce + 97a964b; worktree ext/PS2Recomp-kl-vu1jr, own build dir
+`out/build-pc` configured like sw-vu1disp's with `-DPS2X_VU1N_GEN_OVERRIDE=<root>/port/vu1jr/gen/vu1n_gen.py` = the
+committed tools/vu1/vu1n_gen.py). What pays is a runtime change (the chain step); the generator's JR chaining works and
+is bit-exact but measured no gain, so it is opt-in (`--jr`) and the default output is byte-identical to 3254106's (the
+vu1disp output). Not yet run on the console.
+
+**What was tried (JR / JALR exits).** On the ship recording ~27 dispatches per run were left (800 per warm pass of
+s30), nearly all at JR / JALR exits: the vertex-loop dispatcher blocks (0x1228 / 0x1248: `JALR vi15` into the loop
+chosen per batch, 24-26 different targets) and the subroutine returns (`JR vi14` / `JR vi15` back to the dispatcher).
+- Profile: with `GOW_VU1N_BLOCKPROF` the runtime also writes `j <JR pc> <target> <count>` for every block a function
+  returns from that ends in a JR / JALR (the `e` lines attribute the second block of a two-block cycle to the
+  dispatched one); tools/vu1_harness/edgeprof.sh sums them into port/vu1n_profile.txt (now with 599 `j` lines; the `e`
+  lines are unchanged). 181 sites; the most frequent target takes 58 % of the JR dispatches, the two most frequent 74 %.
+- `--jr`: a JR exit tries the site's 1-2 most frequent targets by block key (as chainDirect), then any target whose
+  slot is set up and has a function (`chainJr` with key 0: what runNative would dispatch there); the model in
+  docs/vu1-native-flags.md "JR / JALR exits". Ship dispatches per warm pass of s30: ~800 -> ~100 (left: chains that ran
+  their 64 steps); runNative ship 0.079 -> 0.047 M, PC zone 0.090 -> 0.045 M.
+- `--jr-traces`: traces continue through a JR (call/return pair inside the trace, else the profile's target when it
+  takes >= 60 % of the site): 1057 -> 1230 traces.
+- Result: no gain. A chain step does what runNative's dispatch does (history entry, FDIV/EFU, commit, budget, entry
+  timing, tail record; ~95 vs ~110 qemu instructions, sw-vu1disp), so chaining a JR moves the cost instead of removing
+  it, and the JR traces' side exits (returns to another caller) cost more than the merges save.
+
+**What pays (runtime, bit-exact by construction).**
+- `entryTimingAfter`: chainTo (self-loops and the two-block cycles of the vertex loops: every pass) and chainDirect /
+  chainJr give the successor's entry timing from the block they just finished (timing data, table id, length) instead of
+  reading the newest history entry back; `entryTiming` is that read plus the same memo test, and the entry they read
+  is by construction the one just written, ending at the successor's start.
+- chainTo counts `nativeBlocks` / `nativePairs` (diagnostics) only with `GOW_VU1N_DIAG`, as chainDirect already did.
+
+**Results.**
+- Replay harness x86 and aarch64 (qemu): ship 2000, consecutive 3000, PC zone 1832 records, 0 differ, warm passes 0
+  differ; the dumps (state incl. VU cycles, data memory, GIF packets) are byte-identical to sw-vu1fast's x86 dumps
+  (aarch64 identical to x86) for all four variants below.
+- qemu, VU1 functions per warm pass of 30 records (icb.sh "VU1 functions", corrected counting):
+
+| build | ship (s30) | PC zone (g30) |
+|---|---|---|
+| sw-vu1disp (665d3ce runtime, 3254106 output) | 1.626 M | 1.932 M |
+| **+ chain step (97a964b runtime, default output)** | **1.594 M (-2.0 %)** | **1.904 M (-1.4 %)** |
+| + `--jr` | 1.597 M | 1.907 M |
+| + `--jr --jr-traces` | 1.598 M | 1.910 M |
+| `--jr --jr-traces`, env `GOW_VU1N_JR=0` | 1.602 M | 1.910 M |
+
+- x86 replay (WSL, 5 warm passes, 7 alternating rounds, ms): ship 22.7-25.4 (vu1disp) / 22.6-24.8 (chain step) /
+  23.5-25.4 (`--jr`), consecutive 44.4-45.8 / 43.5-45.4 / 43.7-46.5, PC zone 23.3-24.5 / 22.1-24.5 / 22.2-25.6: within the
+  noise, `--jr` not faster.
+- PC build (`out/build-pc`, default output = the vu1disp parts): zone gate port/vu1jr/gate/20261019_212540 5/5 ok (60
+  fps, speed 1.01; slot 0 flags one ship-fight capture against port/vu1disp/gate/20261019_191036: another moment of the
+  fight, a tutorial prompt on screen, rendered correctly), savetest 129 pages, card directory intact;
+  an earlier build with `--jr --jr-traces` also passed the gate (port/vu1jr/gate/20261019_205810, 5/5 ok, 60 fps,
+  speed 1.01, no capture flagged against port/vu1disp/gate/20261019_191036).
+- Expected on the console: ~-2 % VU1 time (qemu), small against the 2.4x VU1 needs for 60 fps.
+- Console build: `VU1_PREGEN=<root>/ext/PS2Recomp-kl-vu1jr/out/vu1pregen` (a copy of sw-vu1disp's: vu1_generado =
+  sw-vu1-par's, vu1n_generado = the default output) with `switch/build.sh` of the **vu1jr** worktree (runtime changed;
+  copy the untracked build files of the sw-vu1-par worktree into a new WSL build dir). Optional A/B of JR chaining on
+  the A57 (its indirect-branch prediction is what qemu and x86 do not show): `out/vu1pregen-jr` (vu1n_generado from
+  `--jr`), with `GOW_VU1N_JR=0` in env.txt as the off case on the same build.
+
+**Vertex-loop bookkeeping.** What is left per pass of a two-block cycle is the chain step itself: the pending-queue
+check, the history entry, the FDIV start (the loops hold a DIV), commitDue, the slot check, the memo lookup with the
+FDIV key (these blocks are not `memoable`), the tail record, and in the generated code the flag push and Q store /
+reload around chainTo. The earlier probe that drops flag rings, history and FDIV timing altogether (wrong results)
+was -7.6 % on the Switch replay benchmark (docs/vu1-native-flags.md "Cost"): the upper bound of what the bookkeeping
+can still give. Small next steps: chainTo already tested the pending queues, so its commitDue could go straight to
+the FDIV/EFU part; a cycle's A -> B -> A steps could keep the successor slot and its memo entry in registers.
+
 ## Dispatch: direct chaining and traces (2026-10-19, ext agent/sw-vu1disp)
 **Handoff.** Branch `agent/sw-vu1disp` (ext 823cf54 + 665d3ce; worktree ext/PS2Recomp-kl-vu1disp, own build dir
 `out/build-pc` configured like sw-vu1cyc's with `-DPS2X_VU1N_GEN_OVERRIDE=<root>/port/vu1disp/gen/vu1n_gen.py` = the
