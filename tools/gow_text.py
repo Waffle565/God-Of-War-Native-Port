@@ -33,6 +33,19 @@ EUROPEAN = {
         'FLP_Shell': {'!': 1, '-': 8, '/': 10, 'à': 105, 'è': 109, 'ì': 113},
         'FLP_HUD': {'/': 11, '°': 81, 'à': 106, 'è': 110, 'ì': 114, 'ò': 119, 'ù': 123},
     },
+    'fr': {  # Shell: N°1, Écran, fichier à, Colère, Réinsérez, être; HUD: N°1, Écraser, Pâques, Colère, été, Œil
+        'FLP_Shell': {'-': 8, '/': 10, '°': 80, 'É': 88, 'à': 105, 'è': 109, 'é': 110, 'ê': 111},
+        'FLP_HUD': {'/': 11, 'Œ': 79, '°': 81, 'É': 89, 'à': 106, 'â': 108, 'è': 111, 'é': 112},
+    },
+    'de': {  # Shell: CARD-Steckplatz, Schätze, Götter, Zurück; HUD: GÖTTERZORN, Größeres, bewältigt, erhöhen, für
+        'FLP_Shell': {'-': 8, '/': 10, 'ä': 107, 'ö': 121, 'ü': 125},
+        'FLP_HUD': {'/': 11, '°': 81, 'Ö': 100, 'ß': 105, 'ä': 108, 'ö': 122, 'ü': 126},
+    },
+    'es': {  # Shell: ¿Quieres, Atrás, Héroe, difícil, analógico, menú; HUD: ¿Seguro, ÁREA, más, éxito, Sí, daño, sólo,
+        # último
+        'FLP_Shell': {'/': 10, '¿': 81, 'á': 106, 'é': 110, 'í': 114, 'ó': 119, 'ú': 123},
+        'FLP_HUD': {'/': 11, '°': 81, '¿': 82, 'Á': 84, 'á': 107, 'é': 111, 'í': 115, 'ñ': 118, 'ó': 120, 'ú': 124},
+    },
 }
 SLOT = '{SLOT}'  # in a new line: the old line's spaces after the anchor ("Slot"), in place (the slot number is drawn
 # over them)
@@ -98,10 +111,11 @@ def width(glyphs):
     return sum(a for _, a in glyphs)
 
 
-def rewrite(data, chunk, table, extra=None, anchor='Slot'):
+def rewrite(data, chunk, table, extra=None, anchor='Slot', loose=False):
     """table: [(old line, new line)]; returns the new data and how many lines each entry changed. extra: more glyphs
     of the chunk's font (a European chunk's accents, EUROPEAN[language][chunk]); anchor: the word after which a
-    line's slot number gap starts."""
+    line's slot number gap starts; loose: lines match without their trailing spaces (the European chunks repeat a
+    line with different padding)."""
     font = Font(*FONTS[chunk], extra)
     found = lines(data, font)
     adv = advances(found)
@@ -119,7 +133,7 @@ def rewrite(data, chunk, table, extra=None, anchor='Slot'):
     done = collections.Counter()
     for line in found:
         for old, new in table:
-            if line['text'] != old:
+            if line['text'] != old and not (loose and line['text'].rstrip() == old.rstrip()):
                 continue
             glyphs = line['glyphs']
 
@@ -161,13 +175,13 @@ def wad_chunks(data):
         pos += 32 + ((body + 15) & ~15)
 
 
-def rewrite_wad(wad, table_by_chunk, extra_by_chunk=None, anchor='Slot'):
+def rewrite_wad(wad, table_by_chunk, extra_by_chunk=None, anchor='Slot', loose=False):
     out = bytearray(wad)
     report = {}
     for pos, tag, size, name in wad_chunks(wad):
         if name in table_by_chunk:
             extra = (extra_by_chunk or {}).get(name)
-            new, done = rewrite(wad[pos + 32:pos + 32 + size], name, table_by_chunk[name], extra, anchor)
+            new, done = rewrite(wad[pos + 32:pos + 32 + size], name, table_by_chunk[name], extra, anchor, loose)
             out[pos + 32:pos + 32 + size] = new
             report[name] = done
     return bytes(out), report

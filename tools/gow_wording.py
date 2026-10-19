@@ -120,9 +120,151 @@ LINES_IT = [
     ('Memory card (PS2) trovata', 'Salvataggio trovato'),
 ]
 
-# per text language: (table, word the slot number gap follows); the European languages' chunks also bring their
-# accented glyphs (gow_text.EUROPEAN)
-TABLES = {'en': (LINES, 'Slot'), 'it': (LINES_IT, 'CARD')}
+# French: the memory card becomes the save ("sauvegarde") and its slot the "emplacement"; the slot number gap follows
+# "N°". The tables of fr/de/es match lines without their trailing spaces (gow_text.rewrite loose). New lines use only
+# glyphs both chunks have (no â, ê in French; no ß in German; no ñ in Spanish).
+LINES_FR = [
+    # controller prompts
+    ('Insérez une manette analogique', 'Insérez une manette'),
+    ('(DUALSHOCK  2) dans le port de', 'pour continuer.'),
+    ('manette N°1 pour continuer.', ''),
+    ('La manette analogique', 'La manette'),
+    (' (DUALSHOCK  2) a été retirée.', 'a été débranchée.'),
+    ('analogique (DUALSHOCK  2).', 'compatible.'),
+    # card names and slots
+    ('sur la memory card (PS2)', ''),
+    ('depuis la memory card (PS2)', ''),
+    ('de la memory card (PS2)', ''),
+    ('dans la fente pour MEMORY CARD N°1 et 2', ''),
+    ('dans la fente pour MEMORY CARD N°1 et 2.', 'dans les emplacements N°1 et 2.'),
+    ('La memory card (PS2) dans la fente', ''),
+    ('pour MEMORY CARD N°    contient des', "L'emplacement N°" + SLOT + 'contient des'),
+    ('dans la fente pour MEMORY CARD N°   .', "dans l'emplacement N°" + SLOT + '.'),
+    ('dans la fente pour MEMORY CARD N°    ?', "dans l'emplacement N°" + SLOT + '?'),
+    ('dans la fente pour MEMORY CARD N°', "dans l'emplacement N°" + SLOT),
+    ('fente pour MEMORY CARD N°   .', "l'emplacement N°" + SLOT + '.'),
+    ('Sélectionner fichier à charger dans la', 'Sélectionner fichier à charger dans'),
+    ('Fente pour', 'Sauvegarde'),
+    ('MEMORY CARD N°1', 'N°1'),
+    ('MEMORY CARD N°2', 'N°2'),
+    ('Memory card (PS2) dans la fente pour', ''),
+    ('MEMORY CARD N°    non formatée.', "L'emplacement N°" + SLOT + 'est vide.'),
+    ('Formater ?', 'Le créer ?'),
+    ('Pas de memory card (PS2)', 'Pas de sauvegarde'),
+    ('Memory card (PS2)', 'Sauvegarde'),
+    # first lines of the messages
+    ('Ne pas retirer', 'Ne pas quitter'),
+    ('la memory card (PS2).', 'la partie.'),  # no j in the French menu font
+    ('Ne pas éteindre ou redémarrer.', ''),
+    ('Erreur lors du formatage', 'Erreur de création'),
+    ('Formatage terminé.', 'Création terminée.'),
+    ('Formatage', 'Création'),
+]
+
+# German: the memory card becomes the save ("Spielstand") and its slot "Slot"; the slot number gap follows
+# "Steckplatz". The line before a slot line keeps its preposition ("Speichert Spiel auf / Slot 1.").
+LINES_DE = [
+    # controller prompts
+    ('Analog Controller (DUALSHOCK  2)', 'Controller'),
+    ('an Controller-Anschluss 1 anschl.', 'verbinden.'),
+    ('Der Analog Controller', 'Der Controller'),
+    ('(DUALSHOCK  2) wurde entfernt.', 'wurde getrennt.'),
+    ('Analog Controller', 'Controller'),
+    ('(DUALSHOCK  2) anschl.', 'verbinden.'),
+    # card names and slots
+    ('Speicherdatei auf Memory Card (PS2)', 'Speicherdatei auf'),
+    ('in MEMORY CARD-Steckplatz 1 und 2.', 'Slot 1 und 2.'),
+    ('Auf Memory Card (PS2) in MEMORY CARD-', 'In'),
+    ('Steckplatz     sind freigesch. Schätze', 'Slot' + SLOT + 'sind freigesch. Schätze'),
+    ('in MEMORY CARD-Steckplatz   .', 'Slot' + SLOT + '.'),
+    ('in MEMORY CARD-Steckplatz', 'Slot' + SLOT),
+    ('Steckplatz    auswählen.', 'Slot' + SLOT + 'auswählen.'),
+    ('Ladedatei von MEMORY CARD-', 'Ladedatei von'),
+    ('Speicherdatei von MEMORY CARD-', 'Speicherdatei auf'),
+    ('MEMORY CARD-', 'Spielstand'),
+    ('Steckplatz 1', 'Slot 1'),
+    ('Steckplatz 2', 'Slot 2'),
+    ('Memory Card (PS2)', ''),
+    ('Memory Card (PS2) in MEMORY CARD-', ''),
+    ('Steckplatz    erstellen?', 'Slot' + SLOT + 'erstellen?'),
+    ('Steckplatz    überschreiben?', 'Slot' + SLOT + 'überschreiben?'),
+    (' Steckplatz    gefunden.', 'Slot' + SLOT + 'gefunden.'),
+    ('Steckplatz    gefunden. .', 'Slot' + SLOT + 'gefunden.'),
+    ('Steckplatz    laden?', 'Slot' + SLOT + 'laden?'),
+    ('Steckplatz    ist nicht formatiert.', 'Slot' + SLOT + 'ist nicht angelegt.'),
+    ('Möchten Sie sie formatieren?', 'Möchten Sie ihn anlegen?'),
+    ('Keine Memory Card (PS2) in', 'Kein Spielstand in'),
+    ('MEMORY CARD-Steckplatz 1 und 2 gefunden.', 'Slot 1 und 2 gefunden.'),
+    ('Memory Card (PS2) in', 'Spielstand in'),
+    ('MEMORY CARD-Steckplatz    gefunden.', 'Slot' + SLOT + 'gefunden.'),
+    # first lines of the messages
+    ('nicht entfernen.', 'Nicht beenden.'),
+    ('Nicht ausschalten oder zurücksetzen.', ''),
+    ('Suche nach', 'Prüfe'),
+    ('Fehler beim Formatieren der', 'Fehler beim Anlegen von'),
+    ('Formatierung abgeschlossen.', 'Spielstand angelegt.'),
+    ('Formatiert', 'Erstelle'),
+]
+
+# Spanish: the memory card becomes the saved game ("partida guardada") and its slot the "ranura"; the slot number
+# gap follows "CARD".
+LINES_ES = [
+    # controller prompts
+    ('Inserta un mando analógico', 'Conecta un mando'),
+    ('(DUALSHOCK  2) en el', 'para continuar.'),
+    (' puerto de mando 1 para continuar.', ''),
+    (' Se ha extraído', 'Se desconectó'),
+    ('el mando analógico (DUALSHOCK  2).', 'el mando.'),
+    (' Inserta un mando', 'Conecta un mando'),
+    ('Inserta un mando', 'Conecta un mando'),
+    ('analógico (DUALSHOCK  2)', 'compatible.'),
+    # card names and slots
+    ('nuevo archivo en la memory card (PS2)', 'nuevo archivo de guardado en'),
+    ('de la ranura para MEMORY CARD 1 y 2.', 'las ranuras 1 y 2.'),
+    ('La memory card (PS2) de la ranura para', ''),
+    ('MEMORY CARD     contiene tesoros', 'La ranura' + SLOT + 'contiene tesoros'),
+    ('de la ranura para MEMORY CARD   .', 'la ranura' + SLOT + '.'),
+    ('de la ranura para MEMORY CARD   ?', 'la ranura' + SLOT + '?'),
+    ('de la ranura para MEMORY CARD', 'la ranura' + SLOT),
+    ('la ranura para MEMORY CARD   .', 'la ranura' + SLOT + '.'),
+    ('la ranura para MEMORY CARD   ?', 'la ranura' + SLOT + '?'),
+    (' la ranura para MEMORY CARD   .', 'la ranura' + SLOT + '.'),
+    (' la ranura para MEMORY CARD   ?', 'la ranura' + SLOT + '?'),
+    ('en la ranura para MEMORY CARD   .', 'en la ranura' + SLOT + '.'),
+    (' en la ranura para MEMORY CARD   .', 'en la ranura' + SLOT + '.'),
+    ('Ranura para', 'Ranura de'),
+    ('MEMORY CARD 1', 'guardado 1'),
+    ('MEMORY CARD 2', 'guardado 2'),
+    ('memory card (PS2) de', ''),
+    ('memory card (PS2)', ''),
+    ('en la memory card (PS2) de', 'en'),
+    ('War en la memory card (PS2) de', 'War en'),
+    ('de la memory card (PS2) de', 'de'),
+    ('La memory card (PS2)', ''),
+    ('de la ranura para', ''),
+    ('MEMORY CARD    no tiene formato.', 'La ranura' + SLOT + 'no está preparada.'),
+    ('¿Quieres formatearla?', '¿Quieres prepararla?'),
+    ('No hay ninguna memory card (PS2)', 'No hay ninguna partida guardada'),
+    ('en la ranura para MEMORY CARD 1 ó 2.', 'en las ranuras 1 o 2.'),
+    ('Se ha encontrado una memory card (PS2)', 'Se ha encontrado una partida'),
+    # first lines of the messages
+    ('Error al cargar de la', 'Error al cargar de'),
+    ('Error al guardar en la', 'Error al guardar en'),
+    ('Guardando partida en la', 'Guardando partida en'),
+    ('Error al leer la', 'Error al leer'),
+    ('Comprobando la', 'Comprobando'),
+    ('Error al formatear la', 'Error al preparar'),
+    ('Formateado realizado con éxito.', 'Ranura preparada.'),
+    ('Formateando la', 'Preparando'),
+    ('No extraigas la', 'No cierres'),
+    ('memory card (PS2).', 'el juego.'),
+    ('No apagues ni reinicies la consola.', ''),
+]
+
+# per text language: (table, word the slot number gap follows, match without trailing spaces); the European
+# languages' chunks also bring their accented glyphs (gow_text.EUROPEAN)
+TABLES = {'en': (LINES, 'Slot', False), 'it': (LINES_IT, 'CARD', False), 'fr': (LINES_FR, 'N°', True),
+          'de': (LINES_DE, 'Steckplatz', True), 'es': (LINES_ES, 'CARD', True)}
 
 
 def apply(wad, language='en'):
@@ -130,9 +272,9 @@ def apply(wad, language='en'):
     European ones otherwise; other WADs come back unchanged). A language without a table keeps the card wording."""
     if language not in TABLES:
         return wad
-    lines, anchor = TABLES[language]
+    lines, anchor, loose = TABLES[language]
     new, _ = gow_text.rewrite_wad(wad, {'FLP_HUD': lines, 'FLP_Shell': lines}, gow_text.EUROPEAN.get(language),
-                                  anchor)
+                                  anchor, loose)
     return new
 
 
@@ -142,10 +284,10 @@ if __name__ == '__main__':
     language = 'en'
     if args[:1] == ['--lang']:
         language, args = args[1], args[2:]
-    lines, anchor = TABLES[language]
+    lines, anchor, loose = TABLES[language]
     for path in args:
         _, report = gow_text.rewrite_wad(open(path, 'rb').read(), {'FLP_HUD': lines, 'FLP_Shell': lines},
-                                         gow_text.EUROPEAN.get(language), anchor)
+                                         gow_text.EUROPEAN.get(language), anchor, loose)
         for chunk, done in report.items():
             print(path, chunk, sum(done.values()), 'lines')
             for old, _ in lines:

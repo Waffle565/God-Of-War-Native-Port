@@ -104,9 +104,20 @@ card slots, formatting and the DUALSHOCK 2 are reworded: `tools/gow_wording.py` 
 `tools/gow_text.py` (the format), applied by lang_pack.py to every overlay. Example: "Saving Game
 to / MEMORY CARD (8MB)(for PlayStation 2) / in MEMORY CARD Slot 1. / Do not remove / MEMORY CARD (8MB)(for
 PlayStation 2). / Do not turn power off or reset." becomes "Saving game / in save game slot 1. / Do not quit / the
-game while saving.". Tables per text language (`TABLES`): English (USA chunks) and Italian (European chunks: "file
-di salvataggio", "slot di salvataggio", "Collega un controller"; the slot number gap follows "CARD"). French,
-German and Spanish have no table yet and keep the European memory card / DUALSHOCK wording.
+game while saving.". Tables per text language (`TABLES`: lines, anchor word of the slot gap, loose matching):
+- English (USA chunks), exact lines, gap after "Slot".
+- Italian: "file di salvataggio", "slot di salvataggio", "Collega un controller"; gap after "CARD".
+- French: "sauvegarde", "emplacement N°1", "Ne pas quitter la partie.", formatting = "Création"; gap after "N°".
+- German: "Spielstand", "Slot 1" (the line before keeps its preposition: "Speichert Spiel auf / Slot 1."),
+  formatting = "anlegen"; gap after "Steckplatz".
+- Spanish: "partida guardada", "la ranura 1", "Conecta un mando", formatting = "preparar"; gap after "CARD".
+
+The French, German and Spanish tables match lines without their trailing spaces (`loose`): their chunks repeat a line
+with different padding. A new line may only use glyphs the chunk has drawn somewhere (their advance is measured from
+the chunk): no â/ê in French (each is in one chunk only), no "j" in the French menu font ("la partie", not "le jeu"),
+no ß in German, no ñ in Spanish. Checked 2026-10-19: every table entry matches, no line of the built `text_<code>.bin`
+/ `shell_<code>.bin` names a memory card, DUALSHOCK, PS2 or the console (en, it, fr, de, es); English and Italian
+files byte-identical to before the French/German/Spanish tables.
 
 Text format (FLP_HUD in R_PERM.WAD, FLP_Shell in R_SHELL.WAD; `python -I tools/gow_text.py <wad>` lists it):
 - static text as SWF-style text records: style byte `0x80|flags`, then (flags 0x08) u16 font + u16 height,
@@ -114,10 +125,12 @@ Text format (FLP_HUD in R_PERM.WAD, FLP_Shell in R_SHELL.WAD; `python -I tools/g
 - glyphs: letters are linear per font (HUD: 'A' = 26, Shell: 'A' = 25, lowercase right after 'Z', drawn as small
   caps), 0 = space, punctuation and digits measured (`FONTS` in gow_text.py). The European chunks number letters,
   digits and punctuation the same and add accented glyphs above 'z', numbered per language and chunk (Italian
-  Shell: à 105, è 109, ì 113; Italian HUD: / 11, à 106, è 110, ì 114, ò 119, ù 123; the French HUD has è at 111):
+  Shell: à 105, è 109, ì 113; Italian HUD: / 11, à 106, è 110, ì 114, ò 119, ù 123; French HUD: è 111, é 112;
+  German HUD: ä 108, ö 122, ü 126, ß 105; Spanish HUD: á 107, é 111, í 115, ñ 118, ó 120, ú 124, ¿ 82):
   `EUROPEAN[language][chunk]`, named from each chunk's own words. Only named glyphs can be written.
 - lines are centered through their x; advances depend on the height (measured per height from the chunk itself).
-- the slot number is a separate field drawn over the spaces after "Slot" (USA) or "MEMORY CARD" (Italian):
+- the slot number is a separate field drawn over the spaces after "Slot" (USA), "MEMORY CARD" (Italian,
+  Spanish), "N°" (French) or "Steckplatz" (German):
   reworded slot lines keep that tail in place (`{SLOT}`, anchor word per table).
 - the chunk is a serialized structure with pointers, so nothing moves: a new line has at most the old glyph count,
   the rest are zero-width spaces, and x is recomputed to keep it centered.
