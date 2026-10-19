@@ -13,6 +13,9 @@ that branches back to its own start repeats inside its function (VU1NativeAccess
 --no-fast: no fast variants (range analysis, see Bounds; on by default with --locals).
 --no-cycles: no two-block cycles (gen_cycle) and no loop regions; --regions: loops of more blocks in one function
 (gen_region; off by default, measured slower, see REGIONS).
+--no-direct: no direct chaining (see DIRECT): every block returns to runNative (the output before 2026-10-19 evening);
+also no traces. --no-traces: no traces (see TRACES); --no-trace-entry: traces only from blocks that do not read entry
+flags. --profile <file> / --no-profile: the edge profile the traces follow (see PROFILE).
 """
 import os
 import re
@@ -34,6 +37,24 @@ CYCLES = True
 # loop at 0x0cd8, the PC zones' loop at 0x1728, ...). Off by default (--regions turns it on): bit-exact, but more qemu
 # instructions than runNative's dispatch it saves (ship +7 %, PC zone +6 %; docs/vu1-hle.md "Loop regions").
 REGIONS = False
+# direct chaining (needs LOCALS, on by default; --no-direct: off): every exit of a block function to a static successor
+# (taken target / fall-through) whose block is known stores the registers back as before, then goes on to that block's
+# function itself through VU1NativeAccess::chainDirect (`return next(n)`, a tail call) instead of returning to runNative.
+# The successor's function is the one most images hold at that pc; chainDirect checks the slot (else runNative takes over).
+DIRECT = True
+# traces (needs DIRECT; --no-traces: off): a block and the blocks it most likely goes on to (static guess: a backward
+# branch is taken, a forward one is not) as one function and one block for the runtime (vu1nRegisterTrace): one timing
+# table (the parts' idle tables one after the other), one history entry, one flag push at the end, the registers in
+# locals throughout. A part's branch that leaves the trace exits as the prefix block (VU1NativeAccess::tracePart). The
+# parts after the first must not read entry flags (they use their idle table in the split form too, so the merged table
+# is exact); TRACE_ENTRY: the first part may (runtime: its entry timing, then the idle tables of the others).
+TRACES = True
+TRACE_ENTRY = True
+TRACE_MAX_PAIRS = 48
+# edge profile for the traces' likely successors ("e <from> <to> <count>", hex pcs, from the replay harness: GOW_VU1N_BLOCKPROF
+# with GOW_VU1N_DIRECT=0 GOW_VU1N_TRACES=0, port/vu1disp/prof.sh): --profile <file>, default vu1n_profile.txt next to the
+# heads file; --no-profile: the static guess only
+PROFILE = {}
 REGION_MAX_BLOCKS = 10
 REGION_MAX_PAIRS = 64
 
@@ -893,20 +914,25 @@ def emit_lower(l, pc, upper, bkp, mac_expr, clip_expr, clip_var):
     return [f"VU1NativeAccess::callLower(n, {pc}u, 0x{l:08x}u, 0x{upper:08x}u);"]
 
 
-def gen_block(pc0, pairs, tail_out=None, selfname=None, regs=None, pieces=None):
+def gen_block(pc0, pairs, tail_out=None, selfname=None, regs=None, pieces=None, trace=None):
     """tail_out: list that receives the block's VU1TailDesc (mac pairs, mac masks, clip pairs) when it has one.
+    trace (gen_trace): the pairs are several blocks run one after the other (a trace): {'pcs': pc of every pair, 'ends':
+    end index of every part but the last, 'next': the pc of the part after it, 'ptails': list receiving each prefix's
+    VU1TailDesc or None}; each part's branch that leaves the trace exits there as the prefix block (tracePart).
     selfname: the block's own function name when it may repeat itself in place (self-loop, see the exit below).
     regs / pieces (gen_cycle): generate with that register file and return only the body lines and the exit expression
     in pieces (lines, nx, end_pc) instead of a whole function.
     C++ body for a block, or None if the block uses something the native backend does not support."""
     n = len(pairs)
+    pcs = trace['pcs'] if trace else [(pc0 + 8 * i) & 0x3FFF for i in range(n)]
+    part_ends = trace['ends'] if trace else []
     infos = [lower_info(l) if not (u >> 31) else lower_info(0) for (l, u) in pairs]
     uinfo = [upper_info(u) for (l, u) in pairs]
     # structural checks
     for i, (l, u) in enumerate(pairs):
         br = is_branch(l, u)
         if br:
-            if i != n - 2:
+            if i != n - 2 and i + 2 not in part_ends:
                 return None            # branch must be the second to last pair (delay slot last)
             if (u >> 30) & 1 or (u >> 28) & 1 or (u >> 27) & 1:
                 return None
@@ -971,10 +997,11 @@ def gen_block(pc0, pairs, tail_out=None, selfname=None, regs=None, pieces=None):
         c = [j for j in clip_w if j < i]
         return f"c{c[-1]}" if c else "VU1NativeAccess::clipChain(n)"
 
-    def flush_final(i):
+    def flush_final(i, tails=None):
         """Block end: the newest MAC / clip writer is queued with the block's tail record (n.tail); the older writers that
         can still be the visible one after the exit (successor in the last three pairs) are only stored there, the reader
-        decides (VU1FlagRing::tailVisible)."""
+        decides (VU1FlagRing::tailVisible). tails: receives the descriptor (default tail_out)."""
+        tails = tail_out if tails is None else tails
         out, desc = [], {"m": [], "c": []}
         for writers, prefix in ((mac_w, "m"), (clip_w, "c")):
             w = [j for j in writers if j <= i]
@@ -984,14 +1011,17 @@ def gen_block(pc0, pairs, tail_out=None, selfname=None, regs=None, pieces=None):
                 out.append(f"n.tail->q[{k}] = q{j};" if prefix == "m" else f"n.tail->c[{k}] = c{j};")
         has_tail = bool(desc["m"] or desc["c"])
         tail = "n.tail" if has_tail else "nullptr"
-        if mac_w and mac_w[-1] <= i:
-            j = mac_w[-1]
+        # the newest writer up to pair i (a trace's prefix exit ends before the last part's writers)
+        wm = [j for j in mac_w if j <= i]
+        wc = [j for j in clip_w if j <= i]
+        if wm:
+            j = wm[-1]
             out.append(f"VU1NativeAccess::pushMacRaw(n, n.cyc[{j}], q{j}, {REV4[(pairs[j][1] >> 21) & 0xF]}u, {tail});")
-        if clip_w and clip_w[-1] <= i:
-            j = clip_w[-1]
+        if wc:
+            j = wc[-1]
             out.append(f"VU1NativeAccess::pushClipTail(n, n.cyc[{j}], c{j}, {tail});")
-        if has_tail and tail_out is not None:
-            tail_out.append((desc["m"], [REV4[(pairs[j][1] >> 21) & 0xF] for j in desc["m"]], desc["c"]))
+        if has_tail and tails is not None:
+            tails.append((desc["m"], [REV4[(pairs[j][1] >> 21) & 0xF] for j in desc["m"]], desc["c"]))
         return out
 
     def flush(i):
@@ -1021,7 +1051,7 @@ def gen_block(pc0, pairs, tail_out=None, selfname=None, regs=None, pieces=None):
     # cleared by any other write. The block starts (and a self-loop repeats) with nothing known.
     clean_regs = {}
     for i, (l, u) in enumerate(pairs):
-        pc = pc0 + 8 * i
+        pc = pcs[i]
         clean_i = {r: lm for r, lm in clean_regs.items() if r not in infos[i]['vfw']}
         li, (uw, ur, umac, uq) = infos[i], uinfo[i]
         iBit = bool(u >> 31)
@@ -1046,6 +1076,8 @@ def gen_block(pc0, pairs, tail_out=None, selfname=None, regs=None, pieces=None):
         lines.append(f"// pair {i} pc=0x{pc:04x} lower={l:08x} upper={u:08x}")
         lines.extend(backup)
         if is_branch(l, u):
+            # a branch that ends a part of a trace: its own names (the last part's are taken / target)
+            tk, tg = ("taken", "target") if i == n - 2 else (f"taken{i}", f"target{i}")
             op = l >> 25
             f = lower_fields(l)
             ft, fs, imm = f['ft'], f['fs'], f['imm11']
@@ -1057,21 +1089,21 @@ def gen_block(pc0, pairs, tail_out=None, selfname=None, regs=None, pieces=None):
             tgt = (pc + 8 + imm * 8) & 0x3FFF
             branch_targets = [] if op in (0x24, 0x25) else [tgt]
             if op == 0x20:
-                lines.append("bool taken = true;")
-                lines.append(f"uint32_t target = {tgt}u;")
+                lines.append(f"bool {tk} = true;")
+                lines.append(f"uint32_t {tg} = {tgt}u;")
             elif op == 0x21:
                 if ft:
                     lines.append(RG.setvi(ft, f"{(pc + 16) // 8}"))
-                lines.append("bool taken = true;")
-                lines.append(f"uint32_t target = {tgt}u;")
+                lines.append(f"bool {tk} = true;")
+                lines.append(f"uint32_t {tg} = {tgt}u;")
             elif op == 0x24:
-                lines.append("bool taken = true;")
-                lines.append(f"uint32_t target = (((uint32_t)(uint16_t){RG.vi(fs)}) * 8u) & 0x3FFFu;")
+                lines.append(f"bool {tk} = true;")
+                lines.append(f"uint32_t {tg} = (((uint32_t)(uint16_t){RG.vi(fs)}) * 8u) & 0x3FFFu;")
             elif op == 0x25:
-                lines.append(f"uint32_t target = (((uint32_t)(uint16_t){RG.vi(fs)}) * 8u) & 0x3FFFu;")
+                lines.append(f"uint32_t {tg} = (((uint32_t)(uint16_t){RG.vi(fs)}) * 8u) & 0x3FFFu;")
                 if ft:
                     lines.append(RG.setvi(ft, f"{(pc + 16) // 8}"))
-                lines.append("bool taken = true;")
+                lines.append(f"bool {tk} = true;")
             else:
                 cmp = {0x28: "==", 0x29: "!="}.get(op)
                 if cmp:
@@ -1079,8 +1111,8 @@ def gen_block(pc0, pairs, tail_out=None, selfname=None, regs=None, pieces=None):
                 else:
                     cmp = {0x2C: "< 0", 0x2D: "> 0", 0x2E: "<= 0", 0x2F: ">= 0"}[op]
                     cond = f"(int16_t){rd(fs)} {cmp}"
-                lines.append(f"bool taken = {cond};")
-                lines.append(f"uint32_t target = {tgt}u;")
+                lines.append(f"bool {tk} = {cond};")
+                lines.append(f"uint32_t {tg} = {tgt}u;")
             # upper still executes in the branch pair
             lines.extend(emit_upper(u, pc, i, f"m{i}" if i in mac_w else None, f"c{i}", clip_prev(i), clean_i))
             continue
@@ -1120,7 +1152,22 @@ def gen_block(pc0, pairs, tail_out=None, selfname=None, regs=None, pieces=None):
             lines.append("if (s.dBitEnabled) { " + " ".join(flush(i) + RG.writeback()) + f" s.stoppedByD = true; return kVu1nEnded | {(pc + 8) & 0x3FFF}u; }}")
         if (u >> 27) & 1:
             lines.append("if (s.tBitEnabled) { " + " ".join(flush(i) + RG.writeback()) + f" s.stoppedByT = true; return kVu1nEnded | {(pc + 8) & 0x3FFF}u; }}")
-    end_pc = (pc0 + 8 * n) & 0x3FFF
+        if i + 1 in part_ends:
+            # end of a part of a trace: leaving the trace here finishes the prefix (parts 0..k) as one block
+            k = part_ends.index(i + 1)
+            pend = (pc + 8) & 0x3FFF
+            if i >= 1 and is_branch(*pairs[i - 1]):
+                nxk = f"taken{i - 1} ? target{i - 1} : {pend}u"
+            else:
+                nxk = f"{pend}u"
+            pt = []
+            fl = flush_final(i, pt)
+            trace['ptails'].append(pt[0] if pt else None)
+            if nxk != f"{trace['next'][k]}u":
+                ex = ([f"n.tail->desc = &{trace['name']}_ptail{k};"] if pt else []) + fl + RG.writeback()
+                ex += [f"n.slot = VU1NativeAccess::tracePart(n, {k}u);", f"return {nxk};"]
+                lines += [f"if (({nxk}) != {trace['next'][k]}u)", "{"] + ["    " + ln for ln in ex] + ["}"]
+    end_pc = (pcs[n - 1] + 8) & 0x3FFF
     ebit = any((u >> 30) & 1 for (l, u) in pairs)
     lines.extend(flush_final(n - 1))
     if ebit:
@@ -1232,6 +1279,41 @@ def gen_cycle(pc_a, pairs_a, pc_b, pairs_b, name_a, name_b, bstate=None):
     body += ["        " + ln for ln in pb['lines'] + exit_of(pb, pc_b, name_b, "goto cycleB", pc_a, name_a, "continue")]
     body += ["    }", "}"]
     return body
+
+
+def gen_trace(parts, name, loop):
+    """A trace (see TRACES): parts = [(pc, pairs)], run one after the other; loop: the last part's likely successor is the
+    first part (the trace repeats in place while chainTo agrees). The registers of all parts are loaded at entry and stored
+    at every exit (an exit after part k stores what later parts wrote in earlier passes). Returns (body lines, tail list,
+    prefix tail list) or None."""
+    global BND
+    if not (LOCALS and LOOPS):
+        return None
+    allpairs = [pr for _, ps in parts for pr in ps]
+    pcs = [(pc + 8 * i) & 0x3FFF for pc, ps in parts for i in range(len(ps))]
+    ends, c = [], 0
+    for _, ps in parts[:-1]:
+        c += len(ps)
+        ends.append(c)
+    tr = {'pcs': pcs, 'ends': ends, 'next': [pc for pc, _ in parts[1:]], 'ptails': [], 'name': name}
+    saved, BND = BND, None
+    union = Regs(True)
+    if gen_block(parts[0][0], allpairs, [], None, regs=union, pieces={}, trace=tr) != 'pieces':
+        BND = saved
+        return None
+    seeded = Regs(True)
+    seeded.defined = list(union.defined)
+    seeded.need = list(union.defined)
+    seeded.dirty = list(union.dirty)
+    if loop:
+        seeded.inv = {k[1] for k in union.defined if k[0] == 'f' and k not in union.dirty and k[1] != 0}
+    tails = []
+    tr['ptails'] = []
+    body = gen_block(parts[0][0], allpairs, tails, name if loop else None, regs=seeded, pieces=None, trace=tr)
+    BND = saved
+    if body is None:
+        return None
+    return body, tails, tr['ptails']
 
 
 def static_succs(pc, pairs):
@@ -1382,6 +1464,58 @@ def gen_region(root, members, code, names, bodies):
         # chain step and keeps every block's registers live through the whole function, spilling them)
         out += [f"region_{p:04x}:", "{", "    VU1N_REGION_BARRIER();", "    uint32_t rx;", "    {"] + ["        " + ln for ln in lines]
         out += ["    }", f"exit_{p:04x}:"] + ["    " + ln for ln in step] + ["}"]
+    return out
+
+
+DIRECT_PREAMBLE = r"""// direct chaining (vu1n_gen.py DIRECT): go on to the successor's function when the next pc is its pc
+#if defined(VU1N_HAS_CHAIN_DIRECT)
+#if defined(__GNUC__) && !defined(__clang__) && __GNUC__ >= 15
+#define VU1N_TAILCALL __attribute__((musttail))
+#elif defined(__clang__)
+#define VU1N_TAILCALL [[clang::musttail]]
+#else
+#define VU1N_TAILCALL
+#endif
+#define VU1N_GO(cx, pc, key) \
+    if ((cx) == (pc)) \
+    { \
+        const uint32_t go_ = VU1NativeAccess::chainDirect(n, (pc), (key)); \
+        if (go_ == 1u) \
+            VU1N_TAILCALL return VU1NativeAccess::slotFn(n)(n); \
+        return (cx) | (go_ ? kVu1nFinished : 0u); \
+    }
+#else
+#define VU1N_GO(cx, pc, key)
+#endif
+"""
+
+_DIRECT_LG_RE = re.compile(r'^(\s*)return nx \| \(lg \? kVu1nFinished : 0u\);$')
+_DIRECT_NX_RE = re.compile(r'^(\s*)return (taken\d* \? target\d* : \d+u|\d+u);$')
+
+
+def direct_exits(lines, cands):
+    """direct chaining: the function's exits to a next pc (after the register writeback) go on to the candidate
+    successors (cands: pc -> block key) through VU1N_GO; a self-loop's or cycle's exit only when its chainTo
+    did nothing (lg == 0)"""
+    out = []
+    for ln in lines:
+        m = _DIRECT_LG_RE.match(ln)
+        if m:
+            ind = m.group(1)
+            out += [f"{ind}if (!lg)", f"{ind}{{"] + [f"{ind}    VU1N_GO(nx, {t}u, {fn})" for t, fn in sorted(cands.items())]
+            out += [f"{ind}}}", ln]
+            continue
+        m = _DIRECT_NX_RE.match(ln)
+        if m:
+            ind, expr = m.group(1), m.group(2)
+            ts = sorted(cands.items())
+            if re.fullmatch(r'\d+u', expr):
+                ts = [(t, fn) for t, fn in ts if t == int(expr[:-1])]
+            if ts:
+                out += [f"{ind}{{", f"{ind}    const uint32_t cx = {expr};"] + [f"{ind}    VU1N_GO(cx, {t}u, {fn})" for t, fn in ts]
+                out += [f"{ind}    return cx;", f"{ind}}}"]
+                continue
+        out.append(ln)
     return out
 
 
@@ -1677,6 +1811,7 @@ namespace vu1nf
 def main():
     args = sys.argv[1:]
     heads_file = None
+    prof_file = None
     parts = 6
     files = []
     out = args[0]
@@ -1696,6 +1831,24 @@ def main():
         elif args[i] == '--no-cycles':
             global CYCLES
             CYCLES = False
+            i += 1
+        elif args[i] == '--no-direct':
+            global DIRECT
+            DIRECT = False
+            i += 1
+        elif args[i] == '--profile':
+            prof_file = args[i + 1]
+            i += 2
+        elif args[i] == '--no-profile':
+            prof_file = ''
+            i += 1
+        elif args[i] == '--no-traces':
+            global TRACES
+            TRACES = False
+            i += 1
+        elif args[i] == '--no-trace-entry':
+            global TRACE_ENTRY
+            TRACE_ENTRY = False
             i += 1
         elif args[i] == '--regions':
             global REGIONS
@@ -1719,6 +1872,13 @@ def main():
             line = line.strip()
             if line:
                 extra.add(int(line, 16) & 0x3FF8)
+    if prof_file is None and heads_file:
+        prof_file = os.path.join(os.path.dirname(heads_file), 'vu1n_profile.txt')
+    if prof_file and os.path.exists(prof_file):
+        for line in open(prof_file):
+            f_ = line.split()
+            if len(f_) == 4 and f_[0] == 'e':
+                PROFILE[(int(f_[1], 16), int(f_[2], 16))] = PROFILE.get((int(f_[1], 16), int(f_[2], 16)), 0) + int(f_[3])
     blocks = {}
     unsupported = 0
     fused = {}            # A's key -> the other functions its function chains to (gen_cycle: B, gen_region: the loop)
@@ -1726,6 +1886,7 @@ def main():
     extern_names = set()  # B functions called by name from another block's function: not static, declared before use
     nregions = 0
     region_of = {}        # key -> the body of its loop-region function (gen_region)
+    succ_keys = {}        # direct chaining: key -> {successor pc: {successor block key: images}}
     for f in inputs:
         code = open(f, 'rb').read()
         if len(code) != CODE_SIZE:
@@ -1736,6 +1897,14 @@ def main():
                 continue
             words = [w for pr in pairs for w in pr]
             key = fnv_block(pc, words)
+            if DIRECT and LOCALS:
+                sk = succ_keys.setdefault(key, {})
+                for t in static_succs(pc, pairs) or []:
+                    pt = extent(code, t)
+                    if pt:
+                        kt = fnv_block(t, [w for pr in pt for w in pr])
+                        sk.setdefault(t, {})
+                        sk[t][kt] = sk[t].get(kt, 0) + 1
             if key in blocks:
                 continue
             name = f"b{pc:04x}_{key & 0xFFFFFFFF:08x}"
@@ -1779,6 +1948,111 @@ def main():
                 extern_names.add(name_b)
                 p, npairs, _, tail, reads_entry = blocks[key]
                 blocks[key] = (p, npairs, body, tail, reads_entry)
+    # traces (after every image's blocks and cycles)
+    traces = {}       # trace key -> (parts [(pc, key, pairs)], name, body, tails, ptails, reads_entry, images)
+    trace_heads = {}  # head block key -> {trace key: images}
+    if TRACES and DIRECT and LOCALS and CYCLES:
+        local_ok = {}
+        # blocks whose function is a loop (gen_cycle's A and B, self-loops) keep it: no trace starts at or runs through them
+        looped = set(fused) | {k for k in blocks if any(f"b{blocks[k][0]:04x}_{k & 0xFFFFFFFF:08x}" in v for v in fused.values())}
+        looped |= {k for k in blocks if blocks[k][2] is not None and any(ln.startswith("for (;;)") for ln in blocks[k][2])}
+
+        def part_ok(pc, pairs, key, first):
+            b = blocks.get(key)
+            if b is None or b[2] is None or key in looped or (b[4] and not (first and TRACE_ENTRY)):
+                return False
+            if any((u >> 30) & 1 or (u >> 28) & 1 or (u >> 27) & 1 for (l, u) in pairs):
+                return False      # E / D / T bits: the block's own exits finish it with its own timing
+            if key not in local_ok:
+
+                local_ok[key] = gen_trace([(pc, pairs)], "probe", False) is not None
+            return local_ok[key]
+
+        def likely(pc, pairs, h=None):
+            ss = static_succs(pc, pairs)
+            if not ss:
+                return None
+            if len(ss) == 1:
+                return ss[0]
+            cnt = {t: PROFILE.get((pc, t), 0) for t in ss}
+            if max(cnt.values()) > 0:
+                return max(ss, key=lambda t: (cnt[t], t == h))
+            if h in ss:
+                return h      # closes the trace's loop
+            tgt, end = ss
+            return tgt if tgt <= pc else end
+
+        for f in inputs:
+            code = open(f, 'rb').read()
+            if len(code) != CODE_SIZE:
+                continue
+            ext = {}
+
+            def get(pc):
+                if pc not in ext:
+                    pairs = extent(code, pc)
+                    ext[pc] = (pairs, fnv_block(pc, [w for pr in pairs for w in pr]) if pairs else None)
+                return ext[pc]
+            hs = sorted(heads_of(code, extra))
+            nlikely, back = {}, set()
+            for pc in hs:
+                pairs, key = get(pc)
+                if not pairs:
+                    continue
+                t = branch_target(pc, pairs)
+                if t is not None and t <= pc:
+                    back.add(t)
+                if part_ok(pc, pairs, key, False):
+                    nx = likely(pc, pairs)
+                    if nx is not None:
+                        nlikely[nx] = nlikely.get(nx, 0) + 1
+            todo = [pc for pc in hs if pc in back or not nlikely.get(pc)]
+            done = set()
+            while todo:
+                h = todo.pop()
+                if h in done:
+                    continue
+                done.add(h)
+                pairs, key = get(h)
+                if not pairs or not part_ok(h, pairs, key, True):
+                    continue
+                path, total, loop = [(h, key, pairs)], len(pairs), False
+                cur, cp = h, pairs
+                while True:
+                    nx = likely(cur, cp, h)
+                    if nx is None:
+                        break
+                    if nx == h:
+                        loop = True
+                        break
+                    if any(nx == q for q, _, _ in path):
+                        break
+                    np_, nk = get(nx)
+                    if not np_ or total + len(np_) > TRACE_MAX_PAIRS or not part_ok(nx, np_, nk, False):
+                        if np_ and nx not in done:
+                            todo.append(nx)   # the trace stops before it: it starts one of its own
+                        break
+                    path.append((nx, nk, np_))
+                    total += len(np_)
+                    cur, cp = nx, np_
+                if len(path) < 2:
+                    continue
+                tkey = 1469598103934665603
+                for q, k, _ in path:
+                    tkey = ((tkey ^ k) * 1099511628211) & 0xFFFFFFFFFFFFFFFF
+                tkey = ((tkey ^ int(loop)) * 1099511628211) & 0xFFFFFFFFFFFFFFFF
+                trace_heads.setdefault(key, {})
+                trace_heads[key][tkey] = trace_heads[key].get(tkey, 0) + 1
+                if tkey in traces:
+                    continue
+                name = f"t{h:04x}_{tkey & 0xFFFFFFFF:08x}"
+                g = gen_trace([(q, ps) for q, _, ps in path], name, loop)
+                if g is None:
+                    trace_heads[key].pop(tkey)
+                    continue
+                body, tails, ptails = g
+                reads_entry = any("macAt(" in ln or "clipAt(" in ln for ln in body)
+                traces[tkey] = ([(q, k, len(ps)) for q, k, ps in path], name, body, tails, ptails, reads_entry, loop)
     # loops of more blocks (after every image's blocks and cycles): the loop's blocks get a function that runs the loop
     # from them (gen_region); the block's own function body stays as <name>_x when it has no exact twin yet
     if CYCLES and REGIONS:
@@ -1804,6 +2078,31 @@ def main():
                             extern_names.add(names[p] + "_x")
                     extern_names.update(names.values())
                     nregions += 1
+    # direct chaining: the successor functions each block function goes on to (the most frequent block at each successor
+    # pc; a cycle's function also holds B's exits)
+    direct = {}
+    if DIRECT and LOCALS:
+        name_key = {f"b{blocks[k][0]:04x}_{k & 0xFFFFFFFF:08x}": k for k in blocks}
+
+        # the successor is named by its block key: the slot at its pc runs whatever it holds for that block (its own
+        # function, or a trace starting with it)
+        def cands_of(keys):
+            cands = {}
+            for k in keys:
+                for t, ks in succ_keys.get(k, {}).items():
+                    kt = max(sorted(ks), key=lambda x: ks[x])
+                    if kt in blocks and blocks[kt][2] is not None:
+                        cands.setdefault(t, f"0x{kt:016x}ull")
+            return cands
+        for key in blocks:
+            if blocks[key][2] is None or key in region_of:
+                continue
+            cands = cands_of([key] + [name_key[o] for o in fused.get(key, []) if o in name_key])
+            if cands:
+                direct[key] = cands
+        for tkey, tr in traces.items():
+            cands = cands_of([k for _, k, _ in tr[0]])
+            traces[tkey] = tr[:2] + (direct_exits(tr[2], cands),) + tr[3:] + (cands,)
     os.makedirs(out, exist_ok=True)
     texts = [[] for _ in range(parts)]
     regs = [[] for _ in range(parts)]
@@ -1821,6 +2120,10 @@ def main():
             mp, mm, cp = (list(x) + [0] * (3 - len(x)) for x in tail)
             t.append(f"static const VU1TailDesc {name}_tail = {{{len(tail[0])}, {len(tail[2])}, {{{mp[0]}, {mp[1]}, {mp[2]}}}, "
                      f"{{{mm[0]}, {mm[1]}, {mm[2]}}}, {{{cp[0]}, {cp[1]}, {cp[2]}}}}};")
+        if key in direct:
+            body = direct_exits(body, direct[key])
+            if key in fast:
+                fast[key] = (direct_exits(fast[key][0], direct[key]),) + tuple(fast[key][1:])
         if key in region_of:
             # the region function's first scope is the block's own (fast) body: its exact twin <name>_x stays
             t.append(f"{'' if name in extern_names else 'static '}uint32_t {name}(VU1NativeCtx &n);")
@@ -1842,13 +2145,36 @@ def main():
         # bit 16: the block reads flags written before it; only such blocks need exact entry timing (see runNative)
         regs[part].append(f"    vu1nRegisterBlock(0x{key:016x}ull, {name}, {npairs | (0x10000 if reads_entry else 0)}u, "
                           f"{'&' + name + '_tail' if tail else 'nullptr'});")
+    for tkey, (tparts, name, body, tails, ptails, reads_entry, loop, cands) in sorted(traces.items()):
+        part = count % parts
+        count += 1
+        t = [f"static uint32_t {name}(VU1NativeCtx &n);"]
+
+        def desc(tl):
+            mp, mm, cp = (list(x) + [0] * (3 - len(x)) for x in tl)
+            return f"{{{len(tl[0])}, {len(tl[2])}, {{{mp[0]}, {mp[1]}, {mp[2]}}}, {{{mm[0]}, {mm[1]}, {mm[2]}}}, {{{cp[0]}, {cp[1]}, {cp[2]}}}}}"
+        # a trace always has a tail record (its prefixes may use it)
+        t.append(f"static const VU1TailDesc {name}_tail = {desc(tails[0]) if tails else '{0, 0, {0, 0, 0}, {0, 0, 0}, {0, 0, 0}}'};")
+        for k, pt in enumerate(ptails):
+            if pt:
+                t.append(f"static const VU1TailDesc {name}_ptail{k} = {desc(pt)};")
+        t += [f"static uint32_t {name}(VU1NativeCtx &n)", "{", "    VU1State &s = *n.s;"]
+        t += ["    " + ln for ln in body]
+        t += ["}", ""]
+        t.append(f"static const uint16_t {name}_pcs[] = {{{', '.join(f'{q}u' for q, _, _ in tparts)}}};")
+        t.append(f"static const uint16_t {name}_counts[] = {{{', '.join(f'{c}u' for _, _, c in tparts)}}};")
+        t.append(f"static const uint64_t {name}_keys[] = {{{', '.join(f'0x{k:016x}ull' for _, k, _ in tparts)}}};")
+        texts[part].append("\n".join(t))
+        regs[part].append(f"    vu1nRegisterTrace(0x{tkey:016x}ull, {name}, {0x10000 if reads_entry else 0}u, {len(tparts)}u, "
+                          f"{name}_pcs, {name}_counts, {name}_keys, &{name}_tail);")
     header = ('// Generated by tools/vu1/vu1n_gen.py from the game\'s VU1 microcode. Do not publish.\n'
               '#include "runtime/ps2_vu1_native.h"\n#include <cmath>\n\n'
               '#if defined(_MSC_VER)\n#pragma float_control(precise, on, push)\n#pragma fp_contract(off)\n#endif\n\n'
               '#ifndef VU1N_HAS_MADDC // runtimes before agent/sw-vu1-hle: same result, clamp always\n'
               'namespace vu1n\n{\n    template <bool Sub>\n'
               '    inline __m128 maddc(__m128 acc, __m128 a, __m128 b, __m128 &raw)\n    {\n'
-              '        raw = madd<Sub>(acc, a, b);\n        return clampv(raw);\n    }\n}\n#endif\n\n' + (REGION_PREAMBLE if REGIONS else '') + FAST_PREAMBLE)
+              '        raw = madd<Sub>(acc, a, b);\n        return clampv(raw);\n    }\n}\n#endif\n\n' + (REGION_PREAMBLE if REGIONS else '') + FAST_PREAMBLE
+              + (DIRECT_PREAMBLE if direct else ''))
     footer = '\n#if defined(_MSC_VER)\n#pragma float_control(pop)\n#endif\n'
     for k in range(parts):
         body = header + "\n".join(texts[k]) + "\nnamespace\n{\n    const bool g_registered = []\n    {\n" + "\n".join(regs[k]) + "\n        return true;\n    }();\n}\n" + footer
@@ -1861,7 +2187,10 @@ def main():
         for e in v[1].values():
             es[e] = es.get(e, 0) + 1
     print(f"[vu1n_gen] {len(inputs)} images, {len(blocks)} distinct blocks, {count} generated, {unsupported} unsupported, "
-          f"{len(fast)} fast variants (lowered entry bounds: {dict(sorted(es.items()))}), {nregions} loop-region functions")
+          f"{len(fast)} fast variants (lowered entry bounds: {dict(sorted(es.items()))}), {nregions} loop-region functions, "
+          f"{len(direct)} with direct chaining ({sum(len(v) for v in direct.values())} successors), "
+          f"{len(traces)} traces ({sum(len(v[0]) for v in traces.values())} parts, {sum(1 for v in traces.values() if v[6])} loops, "
+          f"{sum(1 for v in traces.values() if v[5])} reading entry flags)")
 
 
 if __name__ == '__main__':

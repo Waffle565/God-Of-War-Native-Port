@@ -27,10 +27,15 @@ for line in open(dis, errors='replace'):
         if 'VU1NativeCtx' in func and func[:1] in ('b', 'r') and not KEEP_BLOCKS:
             func = '<generated blocks>'
 
-tbs = {}       # start pc -> byte length
+# A guest pc can be translated more than once with different lengths (the translation cache fills up with large
+# binaries and is flushed): each executed TB is identified by its host code pointer (Trace lines), mapped to the length
+# of the translation logged just before its first execution; counts are kept per (pc, length).
+tbs = {}       # start pc -> byte length of its latest translation
+host = {}      # host TB pointer -> byte length of the translation it holds
 counts = collections.Counter()
 cur = None
-re_exec = re.compile(r'^Trace \d+: 0x[0-9a-f]+ \[[0-9a-f]+/([0-9a-f]+)/')
+fresh = None   # (pc, length) of the translation logged last, not yet executed
+re_exec = re.compile(r'^Trace \d+: (0x[0-9a-f]+) \[[0-9a-f]+/([0-9a-f]+)/')
 with open(log, errors='replace') as f:
     for line in f:
         if line.startswith('IN:'):
@@ -39,20 +44,26 @@ with open(log, errors='replace') as f:
         if cur == 'start' and line.startswith('0x'):
             cur = int(line.split(':')[0], 16)
             tbs[cur] = 0
+            fresh = None
             continue
         if isinstance(cur, int) and line.startswith('OBJD-T:'):
             tbs[cur] += len(line.split()[1]) // 2
+            fresh = (cur, tbs[cur])
             continue
         if line.startswith('Trace'):
             cur = None
             m = re_exec.match(line)
             if m:
-                counts[int(m.group(1), 16)] += 1
+                pc = int(m.group(2), 16)
+                if fresh and fresh[0] == pc:
+                    host[m.group(1)] = fresh[1]
+                    fresh = None
+                counts[(pc, host.get(m.group(1), tbs.get(pc, 0)))] += 1
 
 tot = collections.Counter()
 by = collections.Counter()
-for pc, c in counts.items():
-    for a in range(pc, pc + tbs.get(pc, 0), 4):
+for (pc, length), c in counts.items():
+    for a in range(pc, pc + length, 4):
         i = insn.get(a)
         if not i:
             tot['unknown'] += c
@@ -63,11 +74,11 @@ for pc, c in counts.items():
         by[i[2]] += c * (1 + i[0])
 print(" ".join(f"{k}={v}" for k, v in tot.items()) + f" a57_cost={tot['insns'] + tot['q']}")
 entries = collections.Counter()
-for pc, c in counts.items():
+for (pc, _), c in counts.items():
     if pc in starts:
         f = starts[pc]
         if 'VU1NativeCtx' in f and f[:1] in ('b', 'r') and not KEEP_BLOCKS:
             f = '<generated blocks>'
         entries[f] += c
-for name, c in by.most_common(25):
+for name, c in by.most_common(None if '--all' in sys.argv else 25):  # --all: every function (diffs of two runs)
     print(f"{c} {name} [calls {entries.get(name, 0)}]")
