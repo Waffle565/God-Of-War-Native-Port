@@ -31,6 +31,13 @@ model: the SPU2 register-level model and the IOP's SPU DMA channels were removed
   handler `handler(channel, arg)` (989snd 0x78bc: releases its transfer lock and wakes the waiting thread) 512 IOP cycles
   later through `IopNativeServices::callGuestLater`, as the DMA interrupt did. VoiceTransStatus returns 1.
 - One stereo sample per 768 IOP cycles (`advanceTo`), drained by the host audio thread (`drainOutput`).
+- Mixer thread (2026-10-19, for the Switch's core 1): `advanceTo` only records the IOP cycle to mix up to, and the
+  `SoundMix` thread runs the per-sample DSP there. Every other call (set/get param, switch, address, core attribute,
+  sample RAM transfers, streams, `streamPosition`, reset) first waits until that thread has caught up, so each register
+  write or read happens after exactly the samples it did with inline mixing: the output is the same sample for sample,
+  and the mixing runs in parallel with the EE between the driver's calls. While a core input stream (a movie) plays,
+  the IOP fills its ring outside these calls, so `advanceTo` mixes inline then. `GOW_SOUND_THREAD=0` mixes inline
+  always. On the Switch the thread runs on core 0 (`GOW_CORE_SoundMix=<0-2>` moves it).
 - Sample clock = the IOP cycles the EE granted (`IopEmulator::runCycles`), each call clamped to its grant: IOP work
   outside runCycles (EE-side RPC calls into IOP servers; a dbcman RPC at 0x12BCC costs ~10 M IOP cycles/s on the
   title screen and menus) and overshoot inside it move the IOP clock ahead of the EE but produce no samples.

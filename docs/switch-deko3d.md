@@ -102,6 +102,14 @@ Gameplay on the console (log `port/switch/logs/20261019_s16`, ship fight, ~21 fp
 - Looked at and left: `__restrict` on rdram/ctx (no gain with the lambda fixed either); direct calls instead of
   `dispatchGuestBranch` for static JAL (the table lookup is already a subtract and a shift; the rest is the debug ring,
   history and two statics); typed (non-memcpy) guest accesses (ctx->r is a vector of 64-bit lanes, so 64/128-bit
-  accesses would still alias it). The next big EE lever is keeping guest registers in C++ locals inside a function
-  (like the VU1 generator's `--locals`): every guest instruction still loads its operands from and stores its result to
-  `ctx`.
+  accesses would still alias it).
+- EE guest registers in C++ locals (sw-ee5, 2026-10-19, measured with devkitA64 -O2 on the six hot functions, not
+  adopted): (a) per function, every scalar-used GPR a local, loaded at entry, written back before calls/dispatch/
+  syscalls/returns, reloaded after (callee-saved s0-s7/gp/sp/fp kept, only written registers flushed): 0x162F18 46039
+  -> 60451 instructions, stack accesses 375 -> 7671; (b) locals only inside straight-line runs between labels,
+  branches and calls: 0x162F18 47448, 0x111760 48686, 0x1658F8 12804 (+12 %), stack accesses 375 -> 1831. GCC
+  cannot keep the locals in registers across these functions' few hundred labels and gotos, so they become stack
+  slots: no cheaper than `ctx`. Not pursued; the EE side is better served by moving work off core 1.
+- Sound mixing off core 1 (sw-ee5): the IOP's sound engine mixes on its own `SoundMix` thread, core 0 on the Switch
+  (docs/sound.md "Mixer thread"). Of the IOP's ~1.2 s per 5 s on core 1, the mixing part leaves; the IRX code and
+  the services stay on the EE thread.
