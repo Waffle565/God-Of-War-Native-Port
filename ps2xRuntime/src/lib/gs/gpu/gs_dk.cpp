@@ -902,10 +902,32 @@ namespace
         sh.binary = findBinary(fnv64(sh.source));
         if (!sh.binary)
         {
-            // a draw variant this build has no DKSH for (tools/dk_shaders.py takes the keys this line logs)
-            const char *mark = std::strstr(sh.source.c_str(), "#define GS_SPECIALIZED");
-            std::fprintf(stderr, "[gs-dk] no deko3d build of a shader (hash %016llx)%s\n",
-                         static_cast<unsigned long long>(fnv64(sh.source)), mark ? ": a draw variant (uber used)" : "");
+            // a draw variant this build has no DKSH for: its key (gs_hw_backend.cpp drawVariantKey) rebuilt from the
+            // defines drawVariantFor wrote, for switch/dk_variant_keys.txt (tools/dk_shaders.py)
+            const char *text = sh.source.c_str();
+            const auto define = [text](const char *name) -> int
+            {
+                const std::string needle = std::string("#define ") + name + " ";
+                const char *at = std::strstr(text, needle.c_str());
+                return at ? std::atoi(at + needle.size()) : 0;
+            };
+            if (std::strstr(text, "#define GS_SPECIALIZED"))
+            {
+                const int ztex = define("uZTex");
+                const uint32_t key = static_cast<uint32_t>(define("uTme")) | static_cast<uint32_t>(define("uReinterp")) << 1 |
+                                     static_cast<uint32_t>(define("uIndexed")) << 2 |
+                                     static_cast<uint32_t>(ztex == 0 ? 0 : ztex == 16 ? 1 : 2) << 3 |
+                                     static_cast<uint32_t>(define("uLinear")) << 5 | static_cast<uint32_t>(define("uRtTex24")) << 6 |
+                                     static_cast<uint32_t>(define("uTfx")) << 8 | static_cast<uint32_t>(define("uTcc")) << 10 |
+                                     static_cast<uint32_t>(define("uFst")) << 11 | static_cast<uint32_t>(define("uIip")) << 12 |
+                                     static_cast<uint32_t>(define("uPass")) << 13 | static_cast<uint32_t>(define("uSwBlend")) << 15 |
+                                     static_cast<uint32_t>(define("uZAlias")) << 16 | static_cast<uint32_t>(define("uZAliasWrite")) << 19 |
+                                     static_cast<uint32_t>(define("uDate")) << 20 |
+                                     (std::strstr(text, "#define GS_DUAL_SOURCE") ? 1u << 21 : 0u);
+                std::fprintf(stderr, "[gs-dk] no deko3d build of draw variant key=%06x (uber used)\n", key);
+            }
+            else
+                std::fprintf(stderr, "[gs-dk] no deko3d build of a shader (hash %016llx)\n", static_cast<unsigned long long>(fnv64(sh.source)));
         }
     }
     void dkGetShaderiv(GLuint id, GLenum pname, GLint *v)

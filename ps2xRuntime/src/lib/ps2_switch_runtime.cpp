@@ -203,11 +203,18 @@ extern "C"
         setenv("PS2X_GS_WORKER", "1", 0);
         setenv("GOW_GS_FINISH_ASINCRONO", "1", 0);
         setenv("GOW_MC0", "sdmc:/switch/gow/play.mcd", 0);
+#if defined(PS2X_DK)
+        // deko3d renderer (docs/switch-deko3d.md): the PS2's own 640x448 render targets, upscaled to the 720p screen on the
+        // GPU by the bicubic + sharpen present pass. Console 2026-10-19, gameplay: 1x 19-28 fps, 1.6x (720 lines) 12-15 fps.
+        // env.txt PS2X_GS_HW_SCALE=1.6 renders at 720p, GOW_SCALER=bilinear presents with one tap.
+        setenv("PS2X_GS_HW_SCALE", "1", 0);
+#else
         // one bilinear tap to present (the bicubic + sharpen pass costs GPU time the Tegra lacks, and crashes Citron)
         setenv("GOW_SCALER", "bilinear", 0);
         // native PS2 resolution (640x448 targets): the console shows 720p, and the 2x targets (up to 2048x2048) cost the
         // Tegra four times the fill and readback for detail the screen cannot show
         setenv("PS2X_GS_HW_SCALE", "1", 0);
+#endif
         // speed lines in every log (a few lines every 5 s), so a log from the console says where the time goes
         setenv("GOW_PERF_DIAG", "1", 0);
         setenv("GOW_PERF_FRAME_PC", "0x001837B8", 0);

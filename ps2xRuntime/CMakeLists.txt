@@ -774,6 +774,10 @@ endif()
 
 if(PS2X_IS_SWITCH)
     target_sources(ps2EntryRunner PRIVATE src/lib/ps2_switch_runtime.cpp)
+    if(PS2X_SWITCH_DEKO3D)
+        # the Switch start-up defaults differ for the deko3d renderer (ps2_switch_runtime.cpp)
+        target_compile_definitions(ps2EntryRunner PRIVATE PS2X_DK)
+    endif()
     set_source_files_properties(src/lib/ps2_switch_runtime.cpp PROPERTIES SKIP_UNITY_BUILD_INCLUSION TRUE)
     # host threads get 1 MiB stacks like on Windows (libnx default 128 KiB): ps2_switch_runtime.cpp __wrap_pthread_create
     target_link_options(ps2EntryRunner PRIVATE -Wl,--wrap=pthread_create)

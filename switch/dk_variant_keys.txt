@@ -1,3 +1,8 @@
+000921
+008941
+008c61
+202925
+204925
 Binary file port/switch/logs/20261018_v14/log.txt matches
 key=000000
 key=000901
