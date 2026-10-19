@@ -34,7 +34,7 @@ namespace
 
     // ---- GL enums the backend passes -------------------------------------------------------------------------------
     constexpr GLenum kArrayBuffer = 0x8892, kPixelPack = 0x88EB, kPixelUnpack = 0x88EC, kSsbo = 0x90D2,
-                     kCopyRead = 0x8F36, kCopyWrite = 0x8F37, kUniformBufferTarget = 0x8A11;
+                     kCopyRead = 0x8F36, kCopyWrite = 0x8F37, kUniformBufferTarget = 0x8A11, kElementArray = 0x8893;
     constexpr GLenum kBlend = 0x0BE2, kDepthTest = 0x0B71, kScissorTest = 0x0C11, kCullFace = 0x0B44,
                      kConservative = 0x9346;
     constexpr GLenum kTexture0 = 0x84C0;
@@ -97,6 +97,7 @@ namespace
         const GSDK::Family *family = nullptr;
         std::vector<uint8_t> ubo;
         bool uboDirty = true;
+        uint32_t dirtyLo = 0, dirtyHi = 0; // the bytes of ubo not yet pushed (when uboDirty)
         DkGpuAddr uboAddr = 0;
         uint32_t uboSize = 0;
         uint32_t samplerUnit[8] = {0, 1, 2, 3, 4, 5, 6, 7};
@@ -114,6 +115,7 @@ namespace
     struct Vao
     {
         Attrib attribs[8];
+        GLuint element = 0; // GL_ELEMENT_ARRAY_BUFFER is vertex-array state
     };
 
     struct Fbo
@@ -184,7 +186,9 @@ namespace
         uint32_t activeUnit = 0;
         GLuint arrayBuffer = 0, packBuffer = 0, unpackBuffer = 0, copyRead = 0, copyWrite = 0, ssboGeneric = 0;
         GLuint ssbo[4] = {};
-        GLuint vao = 0, fbo = 0, program = 0;
+        GLuint vao = 0, fbo = 0, program = 0, noVaoElement = 0;
+        DkGpuAddr boundIdx = 0; // index buffer of the open list (0: none)
+        DkIdxFormat boundIdxFormat = DkIdxFormat_Uint32;
         bool blend = false, depthTest = false, scissor = false;
         GLenum blendSrc = 1, blendDst = 0, blendSrcA = 1, blendDstA = 0, eqColor = 0x8006, eqAlpha = 0x8006;
         float blendConst[4] = {};
@@ -193,7 +197,24 @@ namespace
         GLenum depthFunc = 0x0201;
         float clearColor[4] = {}, clearDepth = 1.f;
         GLint viewport[4] = {}, scissorBox[4] = {};
-        bool stateDirty = true, rtDirty = true, viewportDirty = true, programDirty = true;
+        bool stateDirty = true, rtDirty = true, viewportDirty = true, programDirty = true, blendConstDirty = true;
+        // what the open command list has bound (GOW-Port: re-bound only when it changes; reset at every submit)
+        struct StageBinding
+        {
+            DkGpuAddr ubo = 0;
+            uint32_t uboSize = 0, numTextures = 0;
+            DkResHandle textures[8] = {};
+        } stageBound[2];
+        bool resourcesValid = false;
+        struct VertexBinding
+        {
+            uint32_t numAttribs = 0, numBuffers = 0;
+            DkVtxAttribState attribs[8] = {};
+            DkVtxBufferState states[8] = {};
+            DkGpuAddr gpu[8] = {};
+            uint32_t size[8] = {};
+        } vtxBound;
+        bool vertexValid = false;
         bool imageInvalidate = false, descriptorInvalidate = true;
         GLuint boundColor = 0, boundDepth = 0; // what the bound render targets are
         uint32_t rtWidth = 1, rtHeight = 1;
@@ -210,6 +231,9 @@ namespace
 
         // counters ([gs-dk] every 5 s with GOW_PERF_DIAG)
         uint64_t draws = 0, submitsCount = 0, waits = 0, waitNanos = 0, uploads = 0, uploadBytes = 0, presents = 0;
+        uint64_t stateBinds = 0, resourceBinds = 0, textureBinds = 0, programBinds = 0, uboPushes = 0, uboPushBytes = 0,
+                 vtxBinds = 0, vtxBufferBinds = 0, rtBinds = 0, barrierCount = 0, drawNanos = 0;
+        uint64_t acquireNanos = 0, presentSubmitNanos = 0, submitNanos = 0;
         std::chrono::steady_clock::time_point statsAt = std::chrono::steady_clock::now();
     };
 
@@ -278,9 +302,12 @@ namespace
         Submit &sub = s->submits.back();
         sub.serial = serial;
         dkCmdBufSignalFence(s->cmd, &sub.fence, true);
+        const auto start = std::chrono::steady_clock::now();
         const DkCmdList list = dkCmdBufFinishList(s->cmd);
         dkQueueSubmitCommands(s->queue, list);
         dkQueueFlush(s->queue);
+        s->submitNanos += static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - start).count());
         // the chunks this list used are free once its fence signals
         for (uint32_t i = 0; i < s->chunksThisList; ++i)
             s->chunkSerial[(s->chunk + kCmdChunks - i) % kCmdChunks] = serial;
@@ -289,7 +316,9 @@ namespace
         s->bytesThisList = 0;
         ++s->submitsCount;
         s->setsBound = false; // re-bound at the start of every list
-        s->stateDirty = s->rtDirty = s->viewportDirty = s->programDirty = true;
+        s->stateDirty = s->rtDirty = s->viewportDirty = s->programDirty = s->blendConstDirty = true;
+        s->resourcesValid = s->vertexValid = false;
+        s->boundIdx = 0;
         retire();
         return serial;
     }
@@ -517,6 +546,7 @@ namespace
         dkCmdBufBarrier(s->cmd, DkBarrier_Fragments, DkInvalidateFlags_Image);
         const DkImageView *views[] = {&color->view};
         dkCmdBufBindRenderTargets(s->cmd, views, 1, depth && depth->valid ? &depth->view : nullptr);
+        ++s->rtBinds;
         s->boundColor = fb.color;
         s->boundDepth = depth && depth->valid ? fb.depth : 0u;
         s->rtWidth = color->width;
@@ -591,8 +621,15 @@ namespace
 
     void flushFixedState()
     {
+        if (s->blendConstDirty)
+        {
+            dkCmdBufSetBlendConst(s->cmd, s->blendConst[0], s->blendConst[1], s->blendConst[2], s->blendConst[3]);
+            s->blendConstDirty = false;
+            ++s->stateBinds;
+        }
         if (!s->stateDirty)
             return;
+        ++s->stateBinds;
         DkRasterizerState raster;
         dkRasterizerStateDefaults(&raster);
         raster.cullMode = DkFace_None;
@@ -612,7 +649,6 @@ namespace
         dkBlendStateSetFactors(&blend, blendFactor(s->blendSrc), blendFactor(s->blendDst), blendFactor(s->blendSrcA),
                                blendFactor(s->blendDstA));
         dkCmdBufBindBlendState(s->cmd, 0, &blend);
-        dkCmdBufSetBlendConst(s->cmd, s->blendConst[0], s->blendConst[1], s->blendConst[2], s->blendConst[3]);
         DkDepthStencilState depth;
         dkDepthStencilStateDefaults(&depth);
         depth.depthTestEnable = s->depthTest;
@@ -624,17 +660,35 @@ namespace
 
     void bindProgramResources(Program &p, DkStage stage)
     {
-        dkCmdBufBindUniformBuffer(s->cmd, stage, 0, p.uboAddr, p.uboSize);
-        if (p.numSamplers)
+        DkResHandle handles[8];
+        for (uint32_t b = 0; b < p.numSamplers; ++b)
         {
-            DkResHandle handles[8];
-            for (uint32_t b = 0; b < p.numSamplers; ++b)
-            {
-                const GLuint id = s->units[p.samplerUnit[b] & 15u];
-                const Texture *t = id && id < s->textures.size() && s->textures[id].valid ? &s->textures[id] : &s->textures[0];
-                handles[b] = dkMakeTextureHandle(t->slot, samplerIndex(*t));
-            }
+            const GLuint id = s->units[p.samplerUnit[b] & 15u];
+            const Texture *t = id && id < s->textures.size() && s->textures[id].valid ? &s->textures[id] : &s->textures[0];
+            handles[b] = dkMakeTextureHandle(t->slot, samplerIndex(*t));
+        }
+        if (stage == DkStage_Compute)
+        {
+            dkCmdBufBindUniformBuffer(s->cmd, stage, 0, p.uboAddr, p.uboSize);
+            if (p.numSamplers)
+                dkCmdBufBindTextures(s->cmd, stage, 0, handles, p.numSamplers);
+            return;
+        }
+        State::StageBinding &bound = s->stageBound[stage == DkStage_Vertex ? 0 : 1];
+        if (!s->resourcesValid || bound.ubo != p.uboAddr || bound.uboSize != p.uboSize)
+        {
+            dkCmdBufBindUniformBuffer(s->cmd, stage, 0, p.uboAddr, p.uboSize);
+            bound.ubo = p.uboAddr;
+            bound.uboSize = p.uboSize;
+            ++s->resourceBinds;
+        }
+        if (p.numSamplers && (!s->resourcesValid || bound.numTextures != p.numSamplers ||
+                              std::memcmp(bound.textures, handles, p.numSamplers * sizeof(DkResHandle)) != 0))
+        {
             dkCmdBufBindTextures(s->cmd, stage, 0, handles, p.numSamplers);
+            bound.numTextures = p.numSamplers;
+            std::memcpy(bound.textures, handles, p.numSamplers * sizeof(DkResHandle));
+            ++s->textureBinds;
         }
     }
 
@@ -650,12 +704,18 @@ namespace
             const DkShader *list[2] = {&p.shaders[0], &p.shaders[1]};
             dkCmdBufBindShaders(s->cmd, p.stageMask, list, p.numShaders);
             s->programDirty = false;
-            p.uboDirty = true; // the bindings below are re-sent
+            ++s->programBinds;
         }
+        // GOW-Port: only the changed bytes are pushed (an in-order update of the program's own uniform memory, which
+        // keeps its contents across program switches and submits), not the whole block after every change or bind
         if (p.uboDirty)
         {
-            dkCmdBufPushConstants(s->cmd, p.uboAddr, p.uboSize, 0, p.uboSize, p.ubo.data());
+            const uint32_t lo = p.dirtyLo & ~3u, hi = std::min(p.uboSize, (p.dirtyHi + 3u) & ~3u);
+            if (hi > lo)
+                dkCmdBufPushConstants(s->cmd, p.uboAddr, p.uboSize, lo, hi - lo, p.ubo.data() + lo);
             p.uboDirty = false;
+            ++s->uboPushes;
+            s->uboPushBytes += hi > lo ? hi - lo : 0u;
         }
         if (compute)
             bindProgramResources(p, DkStage_Compute);
@@ -663,6 +723,7 @@ namespace
         {
             bindProgramResources(p, DkStage_Vertex);
             bindProgramResources(p, DkStage_Fragment);
+            s->resourcesValid = true;
         }
         return true;
     }
@@ -702,15 +763,34 @@ namespace
         }
         if (!n)
             return true;
-        dkCmdBufBindVtxAttribState(s->cmd, attribs, n);
-        dkCmdBufBindVtxBufferState(s->cmd, states, nb);
+        State::VertexBinding &bound = s->vtxBound;
+        const bool layoutSame = s->vertexValid && bound.numAttribs == n && bound.numBuffers == nb &&
+                                std::memcmp(bound.attribs, attribs, n * sizeof(DkVtxAttribState)) == 0 &&
+                                std::memcmp(bound.states, states, nb * sizeof(DkVtxBufferState)) == 0;
+        if (!layoutSame)
+        {
+            dkCmdBufBindVtxAttribState(s->cmd, attribs, n);
+            dkCmdBufBindVtxBufferState(s->cmd, states, nb);
+            bound.numAttribs = n;
+            bound.numBuffers = nb;
+            std::memcpy(bound.attribs, attribs, n * sizeof(DkVtxAttribState));
+            std::memcpy(bound.states, states, nb * sizeof(DkVtxBufferState));
+            ++s->vtxBinds;
+        }
         for (uint32_t b = 0; b < nb; ++b)
         {
             const Buffer &buf = s->buffers[bufferOf[b] < s->buffers.size() ? bufferOf[b] : 0];
             if (!buf.mem)
-                return false;
-            dkCmdBufBindVtxBuffer(s->cmd, b, buf.gpu, buf.size);
+                return s->vertexValid = false, false;
+            if (!layoutSame || bound.gpu[b] != buf.gpu || bound.size[b] != buf.size)
+            {
+                dkCmdBufBindVtxBuffer(s->cmd, b, buf.gpu, buf.size);
+                bound.gpu[b] = buf.gpu;
+                bound.size[b] = buf.size;
+                ++s->vtxBufferBinds;
+            }
         }
+        s->vertexValid = true;
         return true;
     }
 
@@ -726,7 +806,18 @@ namespace
                      (unsigned long long)s->draws, (unsigned long long)s->submitsCount, (unsigned long long)s->presents,
                      (unsigned long long)s->waits, s->waitNanos * 1e-6, (unsigned long long)s->uploads,
                      (unsigned long long)(s->uploadBytes >> 10), s->textures.size() - s->freeTextures.size());
+        std::fprintf(stderr, "[gs-dk-binds] draw_ms=%.1f state=%llu rt=%llu program=%llu ubo_push=%llu ubo_kb=%llu ubo_bind=%llu tex_bind=%llu vtx_state=%llu vtx_buf=%llu barriers=%llu\n",
+                     s->drawNanos * 1e-6, (unsigned long long)s->stateBinds, (unsigned long long)s->rtBinds,
+                     (unsigned long long)s->programBinds, (unsigned long long)s->uboPushes,
+                     (unsigned long long)(s->uboPushBytes >> 10), (unsigned long long)s->resourceBinds,
+                     (unsigned long long)s->textureBinds, (unsigned long long)s->vtxBinds,
+                     (unsigned long long)s->vtxBufferBinds, (unsigned long long)s->barrierCount);
         s->draws = s->submitsCount = s->presents = s->waits = s->waitNanos = s->uploads = s->uploadBytes = 0;
+        s->stateBinds = s->resourceBinds = s->textureBinds = s->programBinds = s->uboPushes = s->uboPushBytes = 0;
+        std::fprintf(stderr, "[gs-dk-time] acquire_ms=%.1f present_submit_ms=%.1f submit_ms=%.1f\n", s->acquireNanos * 1e-6,
+                     s->presentSubmitNanos * 1e-6, s->submitNanos * 1e-6);
+        s->vtxBinds = s->vtxBufferBinds = s->rtBinds = s->barrierCount = s->drawNanos = 0;
+        s->acquireNanos = s->presentSubmitNanos = s->submitNanos = 0;
         s->statsAt = now;
     }
 
@@ -808,6 +899,7 @@ namespace
         case kCopyRead: return s->copyRead;
         case kCopyWrite: return s->copyWrite;
         case kSsbo: return s->ssboGeneric;
+        case kElementArray: return s->vao && s->vao < s->vaos.size() ? s->vaos[s->vao].element : s->noVaoElement;
         default: return s->arrayBuffer;
         }
     }
@@ -984,6 +1076,8 @@ namespace
         while (p.family->samplers[p.numSamplers])
             ++p.numSamplers;
         p.uboDirty = true;
+        p.dirtyLo = 0;
+        p.dirtyHi = p.uboSize;
         p.linked = true;
     }
     void dkGetProgramiv(GLuint id, GLenum pname, GLint *v) { *v = pname == kLinkStatus ? (s->programs[id].linked ? 1 : 0) : 0; }
@@ -1029,6 +1123,10 @@ namespace
         if (u.offset + bytes > p->uboSize || std::memcmp(p->ubo.data() + u.offset, data, bytes) == 0)
             return;
         std::memcpy(p->ubo.data() + u.offset, data, bytes);
+        if (!p->uboDirty)
+            p->dirtyLo = u.offset, p->dirtyHi = u.offset + bytes;
+        else
+            p->dirtyLo = std::min(p->dirtyLo, u.offset), p->dirtyHi = std::max(p->dirtyHi, u.offset + bytes);
         p->uboDirty = true;
     }
     void dkUniform1ui(GLint loc, GLuint v) { setUniform(loc, &v, 4); }
@@ -1226,15 +1324,22 @@ namespace
     void dkFramebufferParameteri(GLenum, GLenum, GLint) {}
     void dkDrawBuffers(GLsizei, const GLenum *) {}
 
+    // GOW-Port: every setter marks its state dirty only when the value changes (the backend sets the whole state
+    // before every draw; re-sending unchanged state cost command-buffer writes and GPU state rolls per draw)
     void dkViewport(GLint x, GLint y, GLsizei w, GLsizei h)
     {
+        if (s->viewport[0] == x && s->viewport[1] == y && s->viewport[2] == w && s->viewport[3] == h)
+            return;
         s->viewport[0] = x, s->viewport[1] = y, s->viewport[2] = w, s->viewport[3] = h;
         s->viewportDirty = true;
     }
     void dkScissor(GLint x, GLint y, GLsizei w, GLsizei h)
     {
+        if (s->scissorBox[0] == x && s->scissorBox[1] == y && s->scissorBox[2] == w && s->scissorBox[3] == h)
+            return;
         s->scissorBox[0] = x, s->scissorBox[1] = y, s->scissorBox[2] = w, s->scissorBox[3] = h;
-        s->viewportDirty = true;
+        if (s->scissor)
+            s->viewportDirty = true;
     }
     void setEnable(GLenum cap, bool on)
     {
@@ -1251,26 +1356,43 @@ namespace
     void dkDisable(GLenum cap) { setEnable(cap, false); }
     void dkBlendFuncSeparate(GLenum a, GLenum b, GLenum c, GLenum d)
     {
+        if (s->blendSrc == a && s->blendDst == b && s->blendSrcA == c && s->blendDstA == d)
+            return;
         s->blendSrc = a, s->blendDst = b, s->blendSrcA = c, s->blendDstA = d;
         s->stateDirty = true;
     }
     void dkBlendEquationSeparate(GLenum a, GLenum b)
     {
+        if (s->eqColor == a && s->eqAlpha == b)
+            return;
         s->eqColor = a, s->eqAlpha = b;
         s->stateDirty = true;
     }
     void dkBlendColor(float r, float g, float b, float a)
     {
+        if (s->blendConst[0] == r && s->blendConst[1] == g && s->blendConst[2] == b && s->blendConst[3] == a)
+            return;
         s->blendConst[0] = r, s->blendConst[1] = g, s->blendConst[2] = b, s->blendConst[3] = a;
-        s->stateDirty = true;
+        s->blendConstDirty = true;
     }
     void dkColorMask(GLboolean r, GLboolean g, GLboolean b, GLboolean a)
     {
-        s->mask[0] = r, s->mask[1] = g, s->mask[2] = b, s->mask[3] = a;
+        const bool m[4] = {r != 0, g != 0, b != 0, a != 0};
+        if (s->mask[0] == m[0] && s->mask[1] == m[1] && s->mask[2] == m[2] && s->mask[3] == m[3])
+            return;
+        s->mask[0] = m[0], s->mask[1] = m[1], s->mask[2] = m[2], s->mask[3] = m[3];
         s->stateDirty = true;
     }
-    void dkDepthMask(GLboolean on) { s->depthWrite = on, s->stateDirty = true; }
-    void dkDepthFunc(GLenum f) { s->depthFunc = f, s->stateDirty = true; }
+    void dkDepthMask(GLboolean on)
+    {
+        if (s->depthWrite != (on != 0))
+            s->depthWrite = on != 0, s->stateDirty = true;
+    }
+    void dkDepthFunc(GLenum f)
+    {
+        if (s->depthFunc != f)
+            s->depthFunc = f, s->stateDirty = true;
+    }
     void dkClearColor(float r, float g, float b, float a) { s->clearColor[0] = r, s->clearColor[1] = g, s->clearColor[2] = b, s->clearColor[3] = a; }
     void dkClearDepth(double d) { s->clearDepth = static_cast<float>(d); }
     void dkClear(GLbitfield mask)
@@ -1338,21 +1460,69 @@ namespace
             s->vaos[s->vao].attribs[i].enabled = true;
     }
 
+    DkPrimitive primitiveOf(GLenum mode)
+    {
+        return mode == 0x0005 ? DkPrimitive_TriangleStrip : mode == 0x0006 ? DkPrimitive_TriangleFan
+               : mode == 0x0001 ? DkPrimitive_Lines : mode == 0x0000 ? DkPrimitive_Points : DkPrimitive_Triangles;
+    }
+    bool prepareDraw()
+    {
+        bindSets();
+        if (!bindTargets())
+            return false;
+        barriers();
+        flushViewport();
+        flushFixedState();
+        return flushProgram(false) && flushVertices();
+    }
+    struct DrawTimer
+    {
+        bool on;
+        std::chrono::steady_clock::time_point start;
+        DrawTimer()
+        {
+            static const bool timed = [] { const char *v = std::getenv("GOW_PERF_DIAG"); return v && *v && *v != '0'; }();
+            on = timed;
+            if (on)
+                start = std::chrono::steady_clock::now();
+        }
+        ~DrawTimer()
+        {
+            if (on)
+                s->drawNanos += static_cast<uint64_t>(
+                    std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - start).count());
+        }
+    };
+    // indices from the vertex array's element buffer; `offset` is a byte offset into it
+    void dkDrawElementsBaseVertex(GLenum mode, GLsizei count, GLenum type, const void *offset, GLint baseVertex)
+    {
+        if (count <= 0)
+            return;
+        DrawTimer timer;
+        const Buffer *ib = bound(kElementArray);
+        if (!ib || !ib->mem || !prepareDraw())
+            return;
+        const DkIdxFormat format = type == 0x1403 ? DkIdxFormat_Uint16 : type == 0x1401 ? DkIdxFormat_Uint8 : DkIdxFormat_Uint32;
+        const uint32_t bytes = format == DkIdxFormat_Uint16 ? 2u : format == DkIdxFormat_Uint8 ? 1u : 4u;
+        if (s->boundIdx != ib->gpu || s->boundIdxFormat != format)
+        {
+            dkCmdBufBindIdxBuffer(s->cmd, format, ib->gpu);
+            s->boundIdx = ib->gpu;
+            s->boundIdxFormat = format;
+        }
+        dkCmdBufDrawIndexed(s->cmd, primitiveOf(mode), static_cast<uint32_t>(count), 1,
+                            static_cast<uint32_t>(reinterpret_cast<uintptr_t>(offset) / bytes), baseVertex, 0);
+        ++s->draws;
+        maybeSubmit();
+    }
     void dkDrawArrays(GLenum mode, GLint first, GLsizei count)
     {
         if (count <= 0)
             return;
-        bindSets();
-        if (!bindTargets())
+        DrawTimer timer;
+        if (!prepareDraw())
             return;
-        barriers();
-        flushViewport();
-        flushFixedState();
-        if (!flushProgram(false) || !flushVertices())
-            return;
-        const DkPrimitive prim = mode == 0x0005 ? DkPrimitive_TriangleStrip : mode == 0x0006 ? DkPrimitive_TriangleFan
-                                 : mode == 0x0001 ? DkPrimitive_Lines : mode == 0x0000 ? DkPrimitive_Points : DkPrimitive_Triangles;
-        dkCmdBufDraw(s->cmd, prim, static_cast<uint32_t>(count), 1, static_cast<uint32_t>(first), 0);
+        dkCmdBufDraw(s->cmd, primitiveOf(mode), static_cast<uint32_t>(count), 1, static_cast<uint32_t>(first), 0);
         ++s->draws;
         maybeSubmit();
     }
@@ -1370,6 +1540,7 @@ namespace
     {
         // what the next draw reads of the bound target (destination alpha, blend in the shader, Z alias)
         dkCmdBufBarrier(s->cmd, DkBarrier_Fragments, DkInvalidateFlags_Image);
+        ++s->barrierCount;
     }
     void dkCopyImageSubData(GLuint src, GLenum, GLint, GLint sx, GLint sy, GLint, GLuint dst, GLenum, GLint, GLint dx, GLint dy, GLint,
                             GLsizei w, GLsizei h, GLsizei)
@@ -1443,7 +1614,10 @@ namespace
         // the GPU, not this thread, waits for the image to come back from the display
         int slot = 0;
         DkFence acquired{};
+        const auto acquireStart = std::chrono::steady_clock::now();
         dkSwapchainAcquireImage(s->swapchain, &slot, &acquired);
+        s->acquireNanos += static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - acquireStart).count());
         dkCmdBufWaitFence(s->cmd, &acquired);
         dkCmdBufBarrier(s->cmd, DkBarrier_Fragments, DkInvalidateFlags_Image);
         DkImageView view;
@@ -1503,8 +1677,11 @@ namespace
             s->program = previous;
         }
         dkCmdBufBarrier(s->cmd, DkBarrier_Fragments, 0);
+        const auto submitStart = std::chrono::steady_clock::now();
         submit();
         dkQueuePresentImage(s->queue, s->swapchain, slot);
+        s->presentSubmitNanos += static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - submitStart).count());
         s->rtDirty = s->stateDirty = s->viewportDirty = s->programDirty = true;
         ++s->presents;
         s->presented.fetch_add(1, std::memory_order_release);
@@ -1569,6 +1746,7 @@ namespace
         a.FramebufferParameteri = dkFramebufferParameteri;
         a.Viewport = dkViewport;
         a.DrawArrays = dkDrawArrays;
+        a.DrawElementsBaseVertex = dkDrawElementsBaseVertex;
         a.GenVertexArrays = dkGenVertexArrays;
         a.DeleteVertexArrays = dkDeleteVertexArrays;
         a.BindVertexArray = dkBindVertexArray;

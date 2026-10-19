@@ -214,6 +214,8 @@ namespace
             load(a.TextureBarrier, "glTextureBarrierNV", hwMissing);
         std::string copyMissing;
         load(a.CopyImageSubData, "glCopyImageSubData", copyMissing);
+        std::string indexedMissing;
+        load(a.DrawElementsBaseVertex, "glDrawElementsBaseVertex", indexedMissing);
         a.hwRaster = graphicsMissing.empty() && hwMissing.empty();
         if (!a.hwRaster)
             std::fprintf(stderr, "[gs-gl] classic raster entry points missing: %s (graphics=%d)\n", hwMissing.c_str(), graphicsMissing.empty() ? 1 : 0);

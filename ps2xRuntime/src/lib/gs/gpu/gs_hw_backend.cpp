@@ -532,7 +532,7 @@ struct GSHwBackend::Impl
     uint32_t vramSize = 0;
 
     float scale = 2.0f;
-    GLuint program = 0, vao = 0, vbo = 0;
+    GLuint program = 0, vao = 0, vbo = 0, ibo = 0;
     // GOW-Port: the draw program's uniforms by id (locXxx = uniform uXxx). u1i/u4i/u1f/u2f record values; before each
     // draw, useDrawProgram picks the program variant for them and sends that program the values it does not have yet.
 #define GS_DRAW_UNIFORMS(X) X(InvSize) X(Tex) X(TexSize) X(TexDim) X(Tme) X(Fst) X(Tfx) X(Tcc) X(Iip) X(Ate) X(FailTint) X(Atst) \
@@ -711,6 +711,10 @@ void main()
     std::unordered_map<const uint16_t *, uint32_t> tableOffset;
     std::unordered_map<uint32_t, uint32_t> inverseOffset; // psm -> offset of the inverse page table
     std::vector<HwVertex> pending;
+    // GOW-Port: the batch's triangles as indices into pending (three per triangle). Consecutive triangles of a strip or
+    // fan share vertices: each is converted and uploaded once and drawn indexed (GOW_GS_HW_INDEXED=0: plain lists)
+    std::vector<uint32_t> pendingIdx;
+    bool indexedDraws = false;
     // the previous sprite of the pending batch (strip seams: see the sprite path in draw)
     struct SpriteEdges
     {
@@ -980,7 +984,7 @@ void main()
     {
         GLsizeiptr size = 0, used = 0;
     };
-    StreamBuffer drawStream, shuffleStream;
+    StreamBuffer drawStream, shuffleStream, indexStream;
     static constexpr GLsizeiptr kStreamBytes = GLsizeiptr(8) << 20;
     // the buffer must be bound to GL_ARRAY_BUFFER; returns the index of the first vertex written
     // GOW-Port: [gs-hw-cpu] every 5 s (GOW_PERF_DIAG): GL thread time inside draw() (state, uploads, draw calls) and in
@@ -1014,12 +1018,20 @@ void main()
                      (unsigned long long)cpuTiming.draws, cpuTiming.parts[0] * 1e-6, cpuTiming.parts[1] * 1e-6,
                      cpuTiming.parts[2] * 1e-6, cpuTiming.parts[3] * 1e-6, (unsigned long long)decodes,
                      (unsigned long long)revalidated);
+        const WrapDiag &w = wrapDiag;
+        if (w.barrierBatches || w.groupedBatches || w.formula)
+            std::fprintf(stderr, "[gs-hw-wrap] barrier_batches=%llu barrier_tris=%llu grouped_batches=%llu grouped_tris=%llu groups=%llu not_flat=%llu mixed=%llu many=%llu big=%llu odd=%llu formula=%llu\n",
+                         (unsigned long long)w.barrierBatches, (unsigned long long)w.barrierTris, (unsigned long long)w.groupedBatches,
+                         (unsigned long long)w.groupedTris, (unsigned long long)w.groups, (unsigned long long)w.notFlat,
+                         (unsigned long long)w.mixed, (unsigned long long)w.many, (unsigned long long)w.big, (unsigned long long)w.odd,
+                         (unsigned long long)w.formula);
+        wrapDiag = WrapDiag{};
         decodes = 0;
         revalidated = 0;
         cpuTiming = CpuTiming{};
         cpuTiming.last = now;
     }
-    GLint streamVertices(StreamBuffer &sb, const void *data, size_t bytes, size_t stride)
+    GLint streamVertices(StreamBuffer &sb, const void *data, size_t bytes, size_t stride, GLenum target = kArrayBuffer)
     {
         const auto streamStart = std::chrono::steady_clock::now();
         struct StreamTimer
@@ -1034,11 +1046,11 @@ void main()
         if (at + length > sb.size)
         {
             sb.size = std::max<GLsizeiptr>(kStreamBytes, length);
-            g.BufferData(kArrayBuffer, sb.size, nullptr, kStreamDraw);
+            g.BufferData(target, sb.size, nullptr, kStreamDraw);
             at = 0;
             ++stats.orphans;
         }
-        g.BufferSubData(kArrayBuffer, at, length, data);
+        g.BufferSubData(target, at, length, data);
         sb.used = at + length;
         stats.uploadBytes += bytes;
         return static_cast<GLint>(at / step);
@@ -1116,6 +1128,12 @@ void main()
         g.VertexAttribPointer(5, 4, kFloat, kFalse, stride, reinterpret_cast<const void *>(offsetof(HwVertex, cu0)));
         for (GLuint i = 0; i < 6; ++i)
             g.EnableVertexAttribArray(i);
+        indexedDraws = g.DrawElementsBaseVertex != nullptr && [] { const char *v = std::getenv("GOW_GS_HW_INDEXED"); return !v || *v != '0'; }();
+        if (indexedDraws)
+        {
+            g.GenBuffers(1, &ibo);
+            g.BindBuffer(kElementArrayBuffer, ibo); // vertex-array state: comes back with vao
+        }
         buildTables();
         {
             const GLuint sv = compile(GSGL::kVertexShader, kShuffleVs), sfs = compile(GSGL::kFragmentShader, kShuffleFs);
@@ -1810,6 +1828,16 @@ void main()
 
     void addVertex(const GSDrawState &s, const GSVertex &v, float u, float tv, float zmax)
     {
+        pendingIdx.push_back(static_cast<uint32_t>(pending.size()));
+        addVertexOnly(s, v, u, tv, zmax);
+    }
+    // the GS vertex fields the conversion reads (GSVertex has no padding before fog)
+    static bool sameVertex(const GSVertex &a, const GSVertex &b)
+    {
+        return std::memcmp(&a, &b, offsetof(GSVertex, fog) + sizeof(a.fog)) == 0;
+    }
+    void addVertexOnly(const GSDrawState &s, const GSVertex &v, float u, float tv, float zmax)
+    {
         const GSContext &c = s.context;
         if (pending.empty())
             firstRawZ = v.z;
@@ -2290,16 +2318,39 @@ void main()
         if (!tri)
             return; // lines and sprites went through submit() one by one above
         const float zmax = zMaxFor(s.context.zbuf.psm);
+        // a vertex equal to one of the previous triangle's (strips share two, fans one) reuses its index: same GS
+        // vertex and state, same converted vertex
+        const GSPrimitiveVerts *prev = (indexedDraws && i > 0u && pendingIdx.size() >= 3u) ? &prims[i - 1u] : nullptr;
+        uint32_t prevIdx[3] = {};
+        if (prev)
+            std::memcpy(prevIdx, &pendingIdx[pendingIdx.size() - 3u], sizeof(prevIdx));
         for (; i < count; ++i)
         {
             const GSPrimitiveVerts &p = prims[i];
             if (p.vertexCount == 0u)
                 continue;
+            uint32_t idx[3];
             for (int v = 0; v < 3; ++v)
             {
+                int k = -1;
+                if (prev)
+                    k = sameVertex(p.vertices[v], prev->vertices[1]) ? 1 : sameVertex(p.vertices[v], prev->vertices[2]) ? 2
+                        : sameVertex(p.vertices[v], prev->vertices[0]) ? 0 : -1;
+                if (k >= 0)
+                {
+                    idx[v] = prevIdx[k];
+                    continue;
+                }
                 const float u = s.prim.fst ? static_cast<float>(p.vertices[v].u) / 16.0f : 0.0f;
                 const float t = s.prim.fst ? static_cast<float>(p.vertices[v].v) / 16.0f : 0.0f;
-                addVertex(s, p.vertices[v], u, t, zmax);
+                idx[v] = static_cast<uint32_t>(pending.size());
+                addVertexOnly(s, p.vertices[v], u, t, zmax);
+            }
+            pendingIdx.insert(pendingIdx.end(), idx, idx + 3);
+            if (indexedDraws)
+            {
+                prev = &p;
+                std::memcpy(prevIdx, idx, sizeof(prevIdx));
             }
             ++stats.draws;
         }
@@ -2313,21 +2364,127 @@ void main()
         {
             havePending = false;
             pending.clear();
+            pendingIdx.clear();
             return;
         }
         havePending = false;
         if (!ensure())
         {
             pending.clear();
+            pendingIdx.clear();
             return;
         }
         const auto drawStart = std::chrono::steady_clock::now();
         cpuTiming.vertices += pending.size();
         ++cpuTiming.draws;
-        draw(pendingState, pending);
+        draw(pendingState, pending, pendingIdx);
         cpuTiming.drawNanos += nanosSince(drawStart);
         pending.clear();
+        pendingIdx.clear();
         reportCpu();
+    }
+
+    // ---- COLCLAMP=0 counting batches drawn as a few constant-amount groups (draw(), GOW_GS_HW_WRAPGROUPS=0: off) --------
+    static constexpr uint32_t kWrapGroups = 4u;
+    struct WrapGroup
+    {
+        int dir = 0;              // +1 add, -1 reverse subtract
+        float amount[3] = {};     // blend constant per channel (amount / source colour)
+        uint32_t start = 0, count = 0; // triangles in wrapTris
+        uint32_t orig = 0;
+    };
+    WrapGroup wrapGroups[kWrapGroups];
+    uint32_t wrapGroupCount = 0;
+    std::vector<uint32_t> wrapTris; // triangle indices, grouped
+    const bool wrapGroupsOn = [] { const char *v = std::getenv("GOW_GS_HW_WRAPGROUPS"); return !v || *v != '0'; }();
+    struct WrapDiag
+    {
+        uint64_t barrierBatches = 0, barrierTris = 0, groupedBatches = 0, groupedTris = 0, groups = 0;
+        uint64_t formula = 0, notFlat = 0, mixed = 0, many = 0, big = 0, odd = 0;
+    } wrapDiag;
+
+    bool buildWrapGroups(const std::vector<HwVertex> &verts, uint32_t fix, const GLboolean written[3])
+    {
+        if (verts.size() % 3u != 0u)
+            return ++wrapDiag.odd, false;
+        const uint32_t tris = static_cast<uint32_t>(verts.size() / 3u);
+        thread_local std::vector<uint8_t> groupOf;
+        groupOf.resize(tris);
+        wrapGroupCount = 0;
+        for (uint32_t t = 0; t < tris; ++t)
+        {
+            const HwVertex &p = verts[t * 3u], &q = verts[t * 3u + 1u], &r = verts[t * 3u + 2u];
+            if (p.r != q.r || p.g != q.g || p.b != q.b || p.r != r.r || p.g != r.g || p.b != r.b)
+                return ++wrapDiag.notFlat, false;
+            const uint8_t col[3] = {p.r, p.g, p.b};
+            int direction = 0;
+            float amount[3] = {0.0f, 0.0f, 0.0f};
+            for (int ch = 0; ch < 3; ++ch)
+            {
+                if (!written[ch])
+                    continue;
+                const uint32_t v = std::min<uint32_t>(255u, (static_cast<uint32_t>(col[ch]) * fix) >> 7);
+                const int dir = v >= 128u ? -1 : 1;
+                if ((dir < 0 ? 256u - v : v) > 1u)
+                    return ++wrapDiag.big, false;
+                direction = direction == 0 || direction == dir ? dir : 2;
+                amount[ch] = col[ch] > 0u ? static_cast<float>(dir < 0 ? 256u - v : v) / static_cast<float>(col[ch]) : 0.0f;
+            }
+            if (direction != 1 && direction != -1)
+                return ++wrapDiag.mixed, false;
+            uint32_t gi = 0;
+            while (gi < wrapGroupCount && !(wrapGroups[gi].dir == direction && wrapGroups[gi].amount[0] == amount[0] &&
+                                            wrapGroups[gi].amount[1] == amount[1] && wrapGroups[gi].amount[2] == amount[2]))
+                ++gi;
+            if (gi == wrapGroupCount)
+            {
+                if (wrapGroupCount == kWrapGroups)
+                    return ++wrapDiag.many, false;
+                WrapGroup &g = wrapGroups[wrapGroupCount++];
+                g.dir = direction;
+                std::memcpy(g.amount, amount, sizeof(amount));
+                g.count = 0;
+            }
+            ++wrapGroups[gi].count;
+            groupOf[t] = static_cast<uint8_t>(gi);
+        }
+        // adds first (stable), then the subtractions; each triangle into its group's range, in its original order
+        for (uint32_t i = 0; i < wrapGroupCount; ++i)
+            wrapGroups[i].orig = i;
+        std::stable_partition(wrapGroups, wrapGroups + wrapGroupCount, [](const WrapGroup &g) { return g.dir > 0; });
+        uint32_t startOf[kWrapGroups] = {}, at = 0;
+        for (uint32_t i = 0; i < wrapGroupCount; ++i)
+        {
+            wrapGroups[i].start = at;
+            startOf[wrapGroups[i].orig] = at;
+            at += wrapGroups[i].count;
+        }
+        wrapTris.resize(tris);
+        for (uint32_t t = 0; t < tris; ++t)
+            wrapTris[startOf[groupOf[t]]++] = t;
+        ++wrapDiag.groupedBatches;
+        wrapDiag.groupedTris += tris;
+        wrapDiag.groups += wrapGroupCount;
+        return true;
+    }
+
+    // the grouped batch: one fixed-function draw per group (the first group's blend state is already set unless
+    // `resetFirst`, the alpha-fail pass, which follows the last group's)
+    void drawWrapGroups(GLint first, bool dualSource, bool resetFirst)
+    {
+        const Api &g = gl();
+        for (uint32_t i = 0; i < wrapGroupCount; ++i)
+        {
+            const WrapGroup &w = wrapGroups[i];
+            if (i > 0u || resetFirst)
+            {
+                g.BlendEquationSeparate(w.dir < 0 ? kFuncReverseSubtract : kFuncAdd, kFuncAdd);
+                g.BlendColor(w.amount[0], w.amount[1], w.amount[2], 0.0f);
+            }
+            useDrawProgram(dualSource);
+            g.DrawArrays(kTriangles, first + static_cast<GLint>(w.start * 3u), static_cast<GLsizei>(w.count * 3u));
+            ++stats.glDraws;
+        }
     }
 
     void blendState(const GSDrawState &s, bool &enabled, GLenum &sf, GLenum &df, float &fixScale, float &constant, GLenum &equation, bool &soft)
@@ -2570,8 +2727,28 @@ void main()
         }
     }
 
-    void draw(const GSDrawState &s, const std::vector<HwVertex> &verts)
+    void draw(const GSDrawState &s, const std::vector<HwVertex> &vertsIn, const std::vector<uint32_t> &idx)
     {
+        // indexed when vertices are shared; the COLCLAMP=0 paths (wrap groups, per-triangle barrier runs) and the
+        // debug dumps look at triangles in order and get the expanded list
+        bool indexed = indexedDraws && idx.size() != vertsIn.size();
+        thread_local std::vector<HwVertex> expanded;
+        if (indexed && (s.colclamp & 1u) == 0u)
+        {
+            expanded.resize(idx.size());
+            for (size_t i = 0; i < idx.size(); ++i)
+                expanded[i] = vertsIn[idx[i]];
+            indexed = false;
+        }
+        else if (!indexed && idx.size() != vertsIn.size())
+        {
+            expanded.resize(idx.size());
+            for (size_t i = 0; i < idx.size(); ++i)
+                expanded[i] = vertsIn[idx[i]];
+        }
+        const std::vector<HwVertex> &verts = (idx.size() != vertsIn.size() && !indexed) ? expanded : vertsIn;
+        // what one draw of the whole batch covers: indices when indexed, else vertices
+        const GLsizei batchCount = static_cast<GLsizei>(indexed ? idx.size() : verts.size());
         const Api &g = gl();
         ++frameBatch;
         cpuTiming.mark = std::chrono::steady_clock::now();
@@ -2705,7 +2882,7 @@ void main()
         // count stays inside 0..255 (it starts at 127). Drawing such passes per triangle through the shader blend stalled
         // the renderer for seconds in fights with many shadow casters.
         float wrapAmount[3] = {0.0f, 0.0f, 0.0f};
-        bool wrapCount = false;
+        bool wrapCount = false, wrapGroupsBuilt = false;
         if (softBlend && !zAliasWrite && (s.colclamp & 1u) == 0u && !s.prim.tme && !verts.empty())
         {
             const uint64_t al = c.alpha;
@@ -2737,7 +2914,32 @@ void main()
                     df = kOne;
                     equation = direction < 0 ? kFuncReverseSubtract : kFuncAdd;
                 }
+                else if (!flat && wrapGroupsOn)
+                {
+                    // GOW-Port: the volume passes draw their front and back faces in one batch (the VU1 program picks
+                    // each triangle's colour from its winding: G += 1 or G += 255 = -1), so the batch is not one flat
+                    // colour. Every triangle that is flat on its own adds one constant modulo 256; the batch is drawn as
+                    // a few fixed-function draws, one per (direction, amount): the adds first, then the subtractions.
+                    // Modulo-256 additions commute, so the result equals the GS's while no pixel's partial sum leaves
+                    // 0..255 on the way: with amounts of at most 1 (the counting passes) that needs fewer than 128
+                    // adding faces over one pixel. Otherwise (bigger amounts, a triangle mixing directions or not flat,
+                    // more than kWrapGroups kinds) the batch keeps the per-triangle barrier path below.
+                    wrapGroupsBuilt = buildWrapGroups(verts, fix, written);
+                    if (wrapGroupsBuilt)
+                    {
+                        wrapCount = true;
+                        softBlend = false;
+                        blend = true;
+                        sf = kConstantColor;
+                        df = kOne;
+                        equation = wrapGroups[0].dir < 0 ? kFuncReverseSubtract : kFuncAdd;
+                        for (int ch = 0; ch < 3; ++ch)
+                            wrapAmount[ch] = wrapGroups[0].amount[ch];
+                    }
+                }
             }
+            else
+                ++wrapDiag.formula;
         }
         if (softBlend || zAliasWrite) // the shader produces the final colour (a Z write replaces the colour word)
             blend = false;
@@ -2860,7 +3062,31 @@ void main()
         cpuMark(2);
         g.BindVertexArray(vao);
         g.BindBuffer(kArrayBuffer, vbo);
-        const GLint first = streamVertices(drawStream, dverts.data(), dverts.size() * sizeof(HwVertex), sizeof(HwVertex));
+        thread_local std::vector<HwVertex> grouped;
+        if (wrapGroupsBuilt)
+        {
+            // the triangles in group order (adds first), each group's in its original order
+            grouped.resize(wrapTris.size() * 3u);
+            for (size_t i = 0; i < wrapTris.size(); ++i)
+                std::memcpy(&grouped[i * 3u], &dverts[static_cast<size_t>(wrapTris[i]) * 3u], 3u * sizeof(HwVertex));
+        }
+        const std::vector<HwVertex> &sverts = wrapGroupsBuilt ? grouped : dverts;
+        const GLint first = streamVertices(drawStream, sverts.data(), sverts.size() * sizeof(HwVertex), sizeof(HwVertex));
+        GLint firstIndex = 0;
+        if (indexed)
+        {
+            g.BindBuffer(kElementArrayBuffer, ibo);
+            firstIndex = streamVertices(indexStream, idx.data(), idx.size() * sizeof(uint32_t), sizeof(uint32_t), kElementArrayBuffer);
+        }
+        // one draw of the whole batch (indexed or not)
+        const auto drawBatch = [&]
+        {
+            if (indexed)
+                g.DrawElementsBaseVertex(kTriangles, batchCount, GSGL::kUnsignedInt,
+                                         reinterpret_cast<const void *>(static_cast<uintptr_t>(firstIndex) * sizeof(uint32_t)), first);
+            else
+                g.DrawArrays(kTriangles, first, batchCount);
+        };
         cpuTiming.mark = std::chrono::steady_clock::now(); // the upload itself is stream_ms
 
         const bool ate = (c.test & 1u) != 0u;
@@ -2933,6 +3159,8 @@ void main()
             run.clear();
             size_t runStart = 0;
             const size_t end = verts.size() / 3u * 3u;
+            ++wrapDiag.barrierBatches;
+            wrapDiag.barrierTris += end / 3u;
             for (size_t i = 0; i < end; i += 3)
             {
                 const HwVertex &a = verts[i], &b = verts[i + 1], &d = verts[i + 2];
@@ -2963,7 +3191,12 @@ void main()
             }
         }
         else
-            useDrawProgram(dualSource), g.DrawArrays(kTriangles, first, static_cast<GLsizei>(verts.size())), ++stats.glDraws;
+        {
+            if (wrapGroupsBuilt)
+                drawWrapGroups(first, dualSource, false);
+            else
+                useDrawProgram(dualSource), drawBatch(), ++stats.glDraws;
+        }
         if (volBox[1] >= volBox[0] && volBox[3] >= volBox[2])
         {
             const int w = volBox[1] - volBox[0] + 1, h = volBox[3] - volBox[2] + 1;
@@ -2986,9 +3219,14 @@ void main()
             if (afail == 1u) { g.DepthMask(kFalse); }
             else if (afail == 2u) { g.ColorMask(kFalse, kFalse, kFalse, kFalse); }
             else { g.DepthMask(kFalse); g.ColorMask(mr, mg, mb, kFalse); }
-            useDrawProgram(dualSource);
-            g.DrawArrays(kTriangles, first, static_cast<GLsizei>(verts.size()));
-            ++stats.glDraws;
+            if (wrapGroupsBuilt)
+                drawWrapGroups(first, dualSource, true);
+            else
+            {
+                useDrawProgram(dualSource);
+                drawBatch();
+                ++stats.glDraws;
+            }
         }
         ++stats.batches;
         g.Disable(kScissorTest);

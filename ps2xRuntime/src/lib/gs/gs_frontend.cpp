@@ -2079,12 +2079,44 @@ void GS::WriteVram(uint32_t psm, uint32_t base, uint32_t bw, uint32_t x, uint32_
         m_backend->WriteVram(psm, base, bw, x, y, value);
 }
 
+// GOW-Port: [gs-stage-run] every 5 s (GOW_PERF_DIAG): primitive runs handed to the backend queue, their primitives and
+// the time spent queueing them (the rest of the GS frontend's gs_ms is GIF decoding and primitive assembly)
+namespace
+{
+    struct RunTiming
+    {
+        uint64_t runs = 0, prims = 0, nanos = 0;
+        std::chrono::steady_clock::time_point last = std::chrono::steady_clock::now();
+    };
+    RunTiming s_runTiming;
+}
+
 void GS::flushRun()
 {
     if (m_run.empty())
         return;
+    static const bool timed = ps2_perf::countFrames();
+    if (!timed)
+    {
+        m_backend->SubmitRun(m_runState, m_run.data(), static_cast<uint32_t>(m_run.size()));
+        m_run.clear();
+        return;
+    }
+    const auto start = std::chrono::steady_clock::now();
     m_backend->SubmitRun(m_runState, m_run.data(), static_cast<uint32_t>(m_run.size()));
+    const auto end = std::chrono::steady_clock::now();
+    RunTiming &t = s_runTiming;
+    ++t.runs;
+    t.prims += m_run.size();
+    t.nanos += static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(end - start).count());
     m_run.clear();
+    if (end - t.last >= std::chrono::seconds(5))
+    {
+        std::fprintf(stderr, "[gs-stage-run] runs=%llu prims=%llu queue_ms=%.1f\n", static_cast<unsigned long long>(t.runs),
+                     static_cast<unsigned long long>(t.prims), t.nanos * 1e-6);
+        t = RunTiming{};
+        t.last = end;
+    }
 }
 
 const GSDrawState &GS::drawState()

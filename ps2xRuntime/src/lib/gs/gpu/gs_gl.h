@@ -46,6 +46,7 @@ namespace GSGL
     constexpr GLenum kR32UI = 0x8236;
     constexpr GLenum kRedInteger = 0x8D94;
     constexpr GLenum kUnsignedInt = 0x1405;
+    constexpr GLenum kElementArrayBuffer = 0x8893;
     constexpr GLenum kVendor = 0x1F00;
     constexpr GLenum kRenderer = 0x1F01;
     constexpr GLenum kVersion = 0x1F02;
@@ -143,6 +144,8 @@ namespace GSGL
         void (*FramebufferParameteri)(GLenum, GLenum, GLint) = nullptr;
         void (*Viewport)(GLint, GLint, GLsizei, GLsizei) = nullptr;
         void (*DrawArrays)(GLenum, GLint, GLsizei) = nullptr;
+        // optional (GL 3.2): indexed batches (gs_hw_backend shares strip vertices); null = triangle lists only
+        void (*DrawElementsBaseVertex)(GLenum, GLsizei, GLenum, const void *, GLint) = nullptr;
         void (*GenVertexArrays)(GLsizei, GLuint *) = nullptr;
         void (*DeleteVertexArrays)(GLsizei, const GLuint *) = nullptr;
         void (*BindVertexArray)(GLuint) = nullptr;
