@@ -218,6 +218,11 @@ extern "C"
         // the SoundMix thread takes batches of 32 samples: on the A57 the least IOP time left on core 1 of 128/64/32
         // (docs/sound.md "Mixer thread", console table)
         setenv("GOW_SOUND_BATCH", "32", 0);
+        // the IOP runs inline on the EE thread: on the console the IopRun thread (core 0, next to the deko3d thread)
+        // fell behind and the EE waited ~0.8-1.0 s per 5 s for its lead in fights, slower than inline (same build,
+        // bot fight: 22.6-26 fps vs 26-31 after the heavy part; docs/switch-deko3d.md "Draw count"); env.txt
+        // GOW_IOP_THREAD=1 turns it on
+        setenv("GOW_IOP_THREAD", "0", 0);
         // speed lines in every log (a few lines every 5 s), so a log from the console says where the time goes
         setenv("GOW_PERF_DIAG", "1", 0);
         setenv("GOW_PERF_FRAME_PC", "0x001837B8", 0);

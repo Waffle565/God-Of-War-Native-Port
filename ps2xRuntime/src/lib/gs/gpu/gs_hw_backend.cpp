@@ -991,7 +991,7 @@ void main()
     // the vertex uploads alone, vertices and draws issued; the rest of the [gs-gl] vrun time is vertex conversion
     struct CpuTiming
     {
-        uint64_t drawNanos = 0, streamNanos = 0, vertices = 0, draws = 0;
+        uint64_t drawNanos = 0, streamNanos = 0, vertices = 0, draws = 0, clutNanos = 0, cluts = 0;
         uint64_t parts[4] = {}; // draw(): before the target bind, fixed state, texture setup, after the upload
         std::chrono::steady_clock::time_point last = std::chrono::steady_clock::now(), mark{};
     } cpuTiming;
@@ -1013,11 +1013,11 @@ void main()
         const auto now = std::chrono::steady_clock::now();
         if (!timed || now - cpuTiming.last < std::chrono::seconds(5))
             return;
-        std::fprintf(stderr, "[gs-hw-cpu] draw_ms=%.1f stream_ms=%.1f vertices=%llu draw_calls=%llu pre_ms=%.1f state_ms=%.1f tex_ms=%.1f post_ms=%.1f tex_decodes=%llu tex_revalidated=%llu\n",
+        std::fprintf(stderr, "[gs-hw-cpu] draw_ms=%.1f stream_ms=%.1f vertices=%llu draw_calls=%llu pre_ms=%.1f state_ms=%.1f tex_ms=%.1f post_ms=%.1f tex_decodes=%llu tex_revalidated=%llu clut_ms=%.1f cluts=%llu\n",
                      cpuTiming.drawNanos * 1e-6, cpuTiming.streamNanos * 1e-6, (unsigned long long)cpuTiming.vertices,
                      (unsigned long long)cpuTiming.draws, cpuTiming.parts[0] * 1e-6, cpuTiming.parts[1] * 1e-6,
                      cpuTiming.parts[2] * 1e-6, cpuTiming.parts[3] * 1e-6, (unsigned long long)decodes,
-                     (unsigned long long)revalidated);
+                     (unsigned long long)revalidated, cpuTiming.clutNanos * 1e-6, (unsigned long long)cpuTiming.cluts);
         const WrapDiag &w = wrapDiag;
         if (w.barrierBatches || w.groupedBatches || w.formula)
             std::fprintf(stderr, "[gs-hw-wrap] barrier_batches=%llu barrier_tris=%llu grouped_batches=%llu grouped_tris=%llu groups=%llu not_flat=%llu mixed=%llu many=%llu big=%llu odd=%llu formula=%llu\n",
@@ -3509,6 +3509,14 @@ void GSHwBackend::LoadClut(const GSTex0Reg &tex0, const GSTexClutReg &texclut)
 {
     Impl &d = *m_impl;
     d.flushPending();
+    // the CLUT load itself (the draws flushed above are draw_ms)
+    const auto clutStart = std::chrono::steady_clock::now();
+    struct ClutTimer
+    {
+        Impl &d;
+        std::chrono::steady_clock::time_point start;
+        ~ClutTimer() { d.cpuTiming.clutNanos += Impl::nanosSince(start); ++d.cpuTiming.cluts; }
+    } clutTimer{d, clutStart};
     if (d.initialized)
         d.store.LoadClut(tex0, texclut, [&d](const GSTex0Reg &t, uint32_t width, const uint16_t *xy, uint32_t count, uint32_t *words)
                          { return d.clutFromTarget(t, width, xy, count, words); });
