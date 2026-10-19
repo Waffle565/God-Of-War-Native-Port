@@ -19,6 +19,7 @@ public:
 
     void Submit(const GSPrimitiveBatch &batch) override;
     void SubmitRun(const GSDrawState &state, const GSPrimitiveVerts *prims, uint32_t count) override;
+    void SubmitKicks(const GSDrawState &state, uint64_t serial, const GSVertex *verts, uint32_t count) override;
     void LoadClut(const GSTex0Reg &tex0, const GSTexClutReg &texclut) override;
     void BeginTransfer(const GSTransferCommand &command) override;
     void UploadImage(const uint8_t *data, uint32_t sizeBytes) override;

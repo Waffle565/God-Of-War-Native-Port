@@ -117,6 +117,9 @@ struct GSVertex
     uint16_t u = 0;
     uint16_t v = 0;
     uint8_t fog = 0;
+    // GOW-Port: only in GSRasterBackend::SubmitKicks runs (in the padding; never compared or converted): 1 when this
+    // vertex's kick drew a triangle
+    uint8_t kick = 0;
 };
 
 struct GSFrameReg

@@ -2356,6 +2356,91 @@ void main()
         }
     }
 
+    // GOW-Port: a strip or fan as vertex kicks (GSRasterBackend::SubmitKicks). The first triangle goes through submit()
+    // like a run's; then every vertex is converted once and the triangles are indices into the window the GS keeps
+    // (strip: the last two vertices, fan: the first and the last).
+    void submitKicks(const GSDrawState &s, uint64_t serial, const GSVertex *v, uint32_t count)
+    {
+        const bool fan = s.prim.type == GS_PRIM_TRIFAN;
+        if (s.prim.type != GS_PRIM_TRISTRIP && !fan)
+            return;
+        const float zmax = zMaxFor(s.context.zbuf.psm);
+        constexpr uint32_t kNone = 0xFFFFFFFFu;
+        uint32_t window[2] = {}, windowIdx[2] = {kNone, kNone}, held = 0;
+        bool accepted = false;
+        const auto convert = [&](uint32_t i) -> uint32_t
+        {
+            const float u = s.prim.fst ? static_cast<float>(v[i].u) / 16.0f : 0.0f;
+            const float t = s.prim.fst ? static_cast<float>(v[i].v) / 16.0f : 0.0f;
+            const uint32_t at = static_cast<uint32_t>(pending.size());
+            addVertexOnly(s, v[i], u, t, zmax);
+            return at;
+        };
+        for (uint32_t i = 0; i < count; ++i)
+        {
+            if (held < 2u)
+            {
+                window[held] = i;
+                windowIdx[held] = kNone;
+                ++held;
+                continue;
+            }
+            uint32_t newIdx = kNone;
+            if (v[i].kick)
+            {
+                if (!accepted)
+                {
+                    GSPrimitiveBatch b;
+                    b.state = s;
+                    b.vertexCount = 3;
+                    b.vertices[0] = v[window[0]];
+                    b.vertices[1] = v[window[1]];
+                    b.vertices[2] = v[i];
+                    b.stateSerial = serial;
+                    const uint64_t before = stats.draws;
+                    submit(b);
+                    if (stats.draws != before)
+                    {
+                        accepted = true;
+                        const size_t n = pendingIdx.size();
+                        windowIdx[0] = pendingIdx[n - 3u];
+                        windowIdx[1] = pendingIdx[n - 2u];
+                        newIdx = pendingIdx[n - 1u];
+                    }
+                }
+                else if (!indexedDraws)
+                {
+                    const uint32_t tri[3] = {window[0], window[1], i};
+                    for (uint32_t k : tri)
+                    {
+                        const float u = s.prim.fst ? static_cast<float>(v[k].u) / 16.0f : 0.0f;
+                        const float t = s.prim.fst ? static_cast<float>(v[k].v) / 16.0f : 0.0f;
+                        addVertex(s, v[k], u, t, zmax);
+                    }
+                    ++stats.draws;
+                }
+                else
+                {
+                    if (windowIdx[0] == kNone)
+                        windowIdx[0] = convert(window[0]);
+                    if (windowIdx[1] == kNone)
+                        windowIdx[1] = convert(window[1]);
+                    newIdx = convert(i);
+                    const uint32_t tri[3] = {windowIdx[0], windowIdx[1], newIdx};
+                    pendingIdx.insert(pendingIdx.end(), tri, tri + 3);
+                    ++stats.draws;
+                }
+            }
+            if (!fan)
+            {
+                window[0] = window[1];
+                windowIdx[0] = windowIdx[1];
+            }
+            window[1] = i;
+            windowIdx[1] = newIdx;
+        }
+    }
+
     void flushPending()
     {
         ++batchSerial; // the next sprite starts a new batch: no seam with the previous one
@@ -3410,6 +3495,14 @@ void GSHwBackend::SubmitRun(const GSDrawState &state, const GSPrimitiveVerts *pr
     if (!d.ensure())
         return;
     d.submitRun(state, prims, count);
+}
+
+void GSHwBackend::SubmitKicks(const GSDrawState &state, uint64_t serial, const GSVertex *verts, uint32_t count)
+{
+    Impl &d = *m_impl;
+    if (!d.ensure())
+        return;
+    d.submitKicks(state, serial, verts, count);
 }
 
 void GSHwBackend::LoadClut(const GSTex0Reg &tex0, const GSTexClutReg &texclut)

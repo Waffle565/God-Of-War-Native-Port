@@ -173,6 +173,18 @@ void GSThreadedBackend::AppendLocked(Op op, const void *payload, uint32_t size, 
         m_open.insert(m_open.end(), static_cast<const uint8_t *>(payload), static_cast<const uint8_t *>(payload) + size);
 }
 
+// Op::Kicks: [serial][GSVertex x count], the vertices 8-aligned in the chunk like AppendLocked's aligned payloads
+void GSThreadedBackend::AppendKicksLocked(uint64_t serial, const GSVertex *verts, uint32_t count)
+{
+    const uint32_t bytes = count * static_cast<uint32_t>(sizeof(GSVertex));
+    AppendLocked(Op::Kicks, nullptr, 0u, 8u); // header + alignment pad; the payload follows in place
+    const size_t sizeAt = m_open.size() - 4u; // the op's length field
+    const uint32_t length = 8u + bytes;
+    std::memcpy(m_open.data() + sizeAt, &length, sizeof(length));
+    m_open.insert(m_open.end(), reinterpret_cast<const uint8_t *>(&serial), reinterpret_cast<const uint8_t *>(&serial) + 8);
+    m_open.insert(m_open.end(), reinterpret_cast<const uint8_t *>(verts), reinterpret_cast<const uint8_t *>(verts) + bytes);
+}
+
 // A DrawState op only when the state differs from the last one sent (equal serial = equal state).
 void GSThreadedBackend::AppendDrawStateLocked(const GSDrawState &state, uint64_t serial)
 {
@@ -375,6 +387,23 @@ void GSThreadedBackend::Execute(const std::vector<uint8_t> &chunk, GSPrimitiveBa
             }
             break;
         }
+        case Op::Kicks:
+        {
+            // the state serial, then the vertices (read in place when aligned)
+            const uint64_t serial = readAt<uint64_t>(payload);
+            const uint32_t count = (length - 8u) / static_cast<uint32_t>(sizeof(GSVertex));
+            const GSVertex *verts = reinterpret_cast<const GSVertex *>(payload + 8u);
+            thread_local std::vector<GSVertex> copy;
+            if (reinterpret_cast<uintptr_t>(verts) % alignof(GSVertex) != 0u)
+            {
+                copy.resize(count);
+                std::memcpy(copy.data(), payload + 8u, count * sizeof(GSVertex));
+                verts = copy.data();
+            }
+            if (!discardDraws() && count)
+                m_inner->SubmitKicks(draw.state, serial, verts, count);
+            break;
+        }
         case Op::Pad:
             break;
         case Op::Present:
@@ -446,6 +475,22 @@ void GSThreadedBackend::SubmitRun(const GSDrawState &state, const GSPrimitiveVer
     std::lock_guard<std::mutex> lock(m_producerMutex);
     AppendDrawStateLocked(state, prims[0].stateSerial);
     AppendLocked(Op::VerticesRun, prims, static_cast<uint32_t>(count * sizeof(GSPrimitiveVerts)), alignof(GSPrimitiveVerts));
+    if (m_open.size() >= kPublishBytes)
+        PublishLocked();
+}
+
+void GSThreadedBackend::SubmitKicks(const GSDrawState &state, uint64_t serial, const GSVertex *verts, uint32_t count)
+{
+    if (!count)
+        return;
+    if (!m_compactQueue || GsInventory::get().enabled())
+    {
+        GSRasterBackend::SubmitKicks(state, serial, verts, count); // expanded into triangles
+        return;
+    }
+    std::lock_guard<std::mutex> lock(m_producerMutex);
+    AppendDrawStateLocked(state, serial);
+    AppendKicksLocked(serial, verts, count);
     if (m_open.size() >= kPublishBytes)
         PublishLocked();
 }

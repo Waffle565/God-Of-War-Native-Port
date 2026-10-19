@@ -29,6 +29,7 @@ public:
 
     void Submit(const GSPrimitiveBatch &batch) override;
     void SubmitRun(const GSDrawState &state, const GSPrimitiveVerts *prims, uint32_t count) override;
+    void SubmitKicks(const GSDrawState &state, uint64_t serial, const GSVertex *verts, uint32_t count) override;
     void LoadClut(const GSTex0Reg &tex0, const GSTexClutReg &texclut) override;
 
     void BeginTransfer(const GSTransferCommand &command) override;
@@ -71,11 +72,13 @@ private:
         VerticesRun, // GSPrimitiveVerts[n] drawn with the current DrawState
         Call,
         Pad, // filler bytes in front of a payload that is read in place (AppendLocked's align)
+        Kicks, // GSVertex[n] of a strip or fan (SubmitKicks) drawn with the current DrawState
     };
 
     void Enqueue(Op op, const void *payload, uint32_t size);
     void AppendLocked(Op op, const void *payload, uint32_t size, uint32_t align = 1u);
     void AppendDrawStateLocked(const GSDrawState &state, uint64_t serial);
+    void AppendKicksLocked(uint64_t serial, const GSVertex *verts, uint32_t count);
     void PublishLocked();
     void Drain() const;
     void RunOnWorker(const std::function<void()> &function) const;

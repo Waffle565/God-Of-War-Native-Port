@@ -25,6 +25,45 @@ public:
             Submit(batch);
         }
     }
+    // GOW-Port: a triangle strip or fan as the GS received it: every vertex kick's vertex in order (the run starts with
+    // the vertices the GS's window still held from before it), GSVertex::kick = 1 where the kick drew a triangle. The
+    // triangles follow the GS's own rules: a strip draws the last three vertices, a fan the first and the last two.
+    // Strip vertices are sent once instead of in three triangles each. `serial` is the state's GS::m_stateSerial.
+    virtual void SubmitKicks(const GSDrawState &state, uint64_t serial, const GSVertex *verts, uint32_t count)
+    {
+        std::vector<GSPrimitiveVerts> prims;
+        ExpandKicks(state.prim.type, serial, verts, count, prims);
+        if (!prims.empty())
+            SubmitRun(state, prims.data(), static_cast<uint32_t>(prims.size()));
+    }
+    static void ExpandKicks(GSPrimType type, uint64_t serial, const GSVertex *verts, uint32_t count, std::vector<GSPrimitiveVerts> &out)
+    {
+        const bool fan = type == GS_PRIM_TRIFAN;
+        uint32_t window[2] = {}, held = 0;
+        for (uint32_t i = 0; i < count; ++i)
+        {
+            if (held < 2u)
+            {
+                window[held++] = i;
+                continue;
+            }
+            if (verts[i].kick)
+            {
+                GSPrimitiveVerts p;
+                p.vertexCount = 3;
+                p.vertices[0] = verts[window[0]];
+                p.vertices[1] = verts[window[1]];
+                p.vertices[2] = verts[i];
+                for (GSVertex &v : p.vertices)
+                    v.kick = 0;
+                p.stateSerial = serial;
+                out.push_back(p);
+            }
+            if (!fan)
+                window[0] = window[1];
+            window[1] = i;
+        }
+    }
     virtual void LoadClut(const GSTex0Reg &tex0, const GSTexClutReg &texclut) = 0;
 
     virtual void BeginTransfer(const GSTransferCommand &command) = 0;

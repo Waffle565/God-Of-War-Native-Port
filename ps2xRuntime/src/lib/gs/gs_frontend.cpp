@@ -1944,10 +1944,45 @@ void GS::vertexKick(bool drawing)
         return;
     }
 
-    if (m_vtxCount < needed)
-        return;
+    // GOW-Port: strips and fans go to the backend as their vertex kicks (each vertex once, not in three triangles);
+    // GOW_GS_KICKS=0 sends triangles as before. A run starts at the first kick that draws, with the two vertices the
+    // window holds then; after that every kick is recorded (ADC kicks too: they move the window).
+    static const bool kickRuns = [] { const char *v = std::getenv("GOW_GS_KICKS"); return !v || *v != '0'; }();
+    if (kickRuns && !fogDiag && m_backend && (m_prim.type == GS_PRIM_TRISTRIP || m_prim.type == GS_PRIM_TRIFAN))
+    {
+        const bool draws = drawing && m_vtxCount >= needed;
+        if (m_kicks.empty() && draws)
+        {
+            flushRun(); // (nothing: a run has one primitive type)
+            m_runState = drawState();
+            m_runSerial = m_stateSerial;
+            for (int i = 0; i + 1 < m_vtxCount; ++i)
+            {
+                m_kicks.push_back(m_vtxQueue[i]);
+                m_kicks.back().kick = 0;
+            }
+        }
+        if (!m_kicks.empty())
+        {
+            m_kicks.push_back(m_vtxQueue[(m_vtxCount - 1) % kMaxVerts]);
+            m_kicks.back().kick = draws ? 1u : 0u;
+            if (draws)
+            {
+                static const GSPrimitiveVerts noSprite{};
+                updatePreferredDisplaySourceForDraw(m_runState, noSprite);
+                recordDrawDebugEventUnlocked(needed);
+            }
+        }
+        if (m_vtxCount < needed)
+            return;
+    }
+    else
+    {
+        if (m_vtxCount < needed)
+            return;
+    }
 
-    if (drawing && m_backend)
+    if (drawing && m_backend && m_kicks.empty() && !(kickRuns && !fogDiag && (m_prim.type == GS_PRIM_TRISTRIP || m_prim.type == GS_PRIM_TRIFAN)))
     {
         GSPrimitiveVerts prim;
         prim.vertexCount = static_cast<uint8_t>(std::min(needed, 3));
@@ -2085,7 +2120,7 @@ namespace
 {
     struct RunTiming
     {
-        uint64_t runs = 0, prims = 0, nanos = 0;
+        uint64_t runs = 0, prims = 0, kicks = 0, nanos = 0;
         std::chrono::steady_clock::time_point last = std::chrono::steady_clock::now();
     };
     RunTiming s_runTiming;
@@ -2093,6 +2128,21 @@ namespace
 
 void GS::flushRun()
 {
+    if (!m_kicks.empty())
+    {
+        static const bool kickTimed = ps2_perf::countFrames();
+        const auto start = kickTimed ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+        m_backend->SubmitKicks(m_runState, m_runSerial, m_kicks.data(), static_cast<uint32_t>(m_kicks.size()));
+        if (kickTimed)
+        {
+            RunTiming &t = s_runTiming;
+            ++t.runs;
+            t.kicks += m_kicks.size();
+            t.nanos += static_cast<uint64_t>(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - start).count());
+        }
+        m_kicks.clear();
+    }
     if (m_run.empty())
         return;
     static const bool timed = ps2_perf::countFrames();
@@ -2112,8 +2162,8 @@ void GS::flushRun()
     m_run.clear();
     if (end - t.last >= std::chrono::seconds(5))
     {
-        std::fprintf(stderr, "[gs-stage-run] runs=%llu prims=%llu queue_ms=%.1f\n", static_cast<unsigned long long>(t.runs),
-                     static_cast<unsigned long long>(t.prims), t.nanos * 1e-6);
+        std::fprintf(stderr, "[gs-stage-run] runs=%llu prims=%llu kicks=%llu queue_ms=%.1f\n", static_cast<unsigned long long>(t.runs),
+                     static_cast<unsigned long long>(t.prims), static_cast<unsigned long long>(t.kicks), t.nanos * 1e-6);
         t = RunTiming{};
         t.last = end;
     }

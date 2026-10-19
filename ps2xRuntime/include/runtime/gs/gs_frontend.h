@@ -233,6 +233,10 @@ private:
     // triangles drawn since the last flushRun, all with m_runState (= the state at m_runState's serial)
     std::vector<GSPrimitiveVerts> m_run;
     GSDrawState m_runState{};
+    // GOW-Port: a strip or fan since the last flushRun as vertex kicks (GSRasterBackend::SubmitKicks), with m_runState
+    // and its serial; empty while m_run holds triangles (a run has one primitive type)
+    std::vector<GSVertex> m_kicks;
+    uint64_t m_runSerial = 0;
 
     bool m_prmodecont = true;
     bool m_pabe = false;
