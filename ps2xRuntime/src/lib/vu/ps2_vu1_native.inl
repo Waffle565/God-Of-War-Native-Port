@@ -957,6 +957,61 @@ void VU1NativeAccess::recordReplay(VU1Interpreter &vu, void *contextPtr, uint32_
         static const unsigned reps = std::getenv("GOW_VU1N_REPLAY_REPS") ? static_cast<unsigned>(std::atoi(std::getenv("GOW_VU1N_REPLAY_REPS"))) : 1u;
         auto scratch = std::make_unique<Vu1nRecord>();
         uint64_t timedNs = 0;
+        // GOW_VU1N_REPLAY_LIVEIN=1 (consecutive recording, STRIDE=1): what a run takes from the run before it. Per state
+        // field: "dead" = poisoning it at the start leaves the result unchanged (not read before written); "stale" = the
+        // value from the previous run's start (what a run started before its predecessor ended would see) leaves the
+        // result unchanged. "mem" = the result is unchanged when the bytes the previous run wrote (and the VIF did not
+        // rewrite since) hold their values from before that run. Prints the table at the end.
+        static const bool liveIn = std::getenv("GOW_VU1N_REPLAY_LIVEIN") != nullptr;
+        constexpr int kLiveFields = 32 + 16 + 8; // vf0-31, vi0-15, acc q p i r mac clip status
+        struct LiveCount { unsigned dead = 0, stale = 0, n = 0; };
+        std::vector<LiveCount> live(kLiveFields);
+        unsigned liveAllStale = 0, liveMem = 0, liveBoth = 0, livePairs = 0;
+        auto prevRec = std::make_unique<Vu1nRecord>();
+        auto prevOut = std::make_unique<Vu1nRecord>();
+        bool havePrev = false;
+        const auto runOnce = [&](const VU1State &st, const uint8_t *data, uint8_t *out) -> uint64_t
+        {
+            vu = saved;
+            vu.m_state = st;
+            std::memcpy(out, data, 16384u);
+            VU1Interpreter::StepContext c = context;
+            c.vuCode = rec->code;
+            c.vuData = out;
+            c.budgetEnd = vu.m_cycle + rec->maxCycles;
+            c.programEnded = false;
+            vu.m_activeVuData = out;
+            vu.m_activeVuDataSize = 16384u;
+            return silentNativeHash(vu, &c);
+        };
+        const auto setField = [](VU1State &d, const VU1State &src, int f, bool poison)
+        {
+            const uint32_t pv = 0x7F7FFFF1u; // a large float / odd integer nobody computes
+            auto put = [&](void *dst, const void *from, size_t n)
+            {
+                if (poison)
+                    for (size_t i = 0; i < n; i += 4)
+                        std::memcpy(static_cast<uint8_t *>(dst) + i, &pv, 4);
+                else
+                    std::memcpy(dst, from, n);
+            };
+            if (f < 32)
+                put(d.vf[f], src.vf[f], 16);
+            else if (f < 48)
+                put(&d.vi[f - 32], &src.vi[f - 32], 4);
+            else
+                switch (f - 48)
+                {
+                case 0: put(d.acc, src.acc, 16); break;
+                case 1: put(&d.q, &src.q, 4); break;
+                case 2: put(&d.p, &src.p, 4); break;
+                case 3: put(&d.i, &src.i, 4); break;
+                case 4: put(&d.r, &src.r, 4); break;
+                case 5: put(&d.mac, &src.mac, 4); break;
+                case 6: put(&d.clip, &src.clip, 4); break;
+                default: put(&d.status, &src.status, 4); break;
+                }
+        };
         while (std::fread(rec.get(), sizeof(Vu1nRecord), 1, f) == 1)
         {
             ++total;
@@ -994,6 +1049,82 @@ void VU1NativeAccess::recordReplay(VU1Interpreter &vu, void *contextPtr, uint32_
                 }
                 else
                 {
+                    if (liveIn && rec->state.pc < 0x40u)
+                    {
+                        auto tmp = std::make_unique<Vu1nRecord>();
+                        const uint64_t ref = h;
+                        VU1State allStale = rec->state;
+                        for (int fi = 0; fi < kLiveFields; ++fi)
+                        {
+                            VU1State st = rec->state;
+                            setField(st, rec->state, fi, true);
+                            const bool dead = runOnce(st, rec->data, tmp->data) == ref;
+                            live[fi].dead += dead ? 1u : 0u;
+                            if (havePrev)
+                            {
+                                st = rec->state;
+                                setField(st, prevRec->state, fi, false);
+                                live[fi].stale += runOnce(st, rec->data, tmp->data) == ref ? 1u : 0u;
+                                if (!dead)
+                                    setField(allStale, prevRec->state, fi, false);
+                            }
+                            ++live[fi].n;
+                        }
+                        if (havePrev)
+                        {
+                            ++livePairs;
+                            // every live field from the previous run's start
+                            const bool okStale = runOnce(allStale, rec->data, tmp->data) == ref;
+                            liveAllStale += okStale ? 1u : 0u;
+                            // memory: bytes the previous run wrote, not rewritten since, back to their old value
+                            auto spec = std::make_unique<Vu1nRecord>();
+                            std::memcpy(spec->data, rec->data, 16384u);
+                            for (uint32_t b = 0; b < 16384u; ++b)
+                                if (prevOut->data[b] != prevRec->data[b] && rec->data[b] == prevOut->data[b])
+                                    spec->data[b] = prevRec->data[b];
+                            // reference result (state + data + packets) of the real run
+                            auto refOut = std::make_unique<Vu1nRecord>();
+                            runOnce(rec->state, rec->data, refOut->data);
+                            const VU1State refState = vu.m_state;
+                            const std::vector<uint8_t> refPk = g_vuVerifyPackets;
+                            runOnce(rec->state, spec->data, tmp->data);
+                            // bytes the speculative run left alone still hold the old values: the merge puts the
+                            // previous run's results there (what a real implementation would do), then compare
+                            unsigned readDiff = 0;
+                            for (uint32_t b = 0; b < 16384u; ++b)
+                                if (spec->data[b] != rec->data[b] && tmp->data[b] == spec->data[b])
+                                    tmp->data[b] = rec->data[b];
+                            for (uint32_t b = 0; b < 16384u; ++b)
+                                readDiff += tmp->data[b] != refOut->data[b] ? 1u : 0u;
+                            const bool okMem = readDiff == 0u && g_vuVerifyPackets == refPk &&
+                                               std::memcmp(vu.m_state.vf, refState.vf, sizeof(refState.vf)) == 0 &&
+                                               std::memcmp(vu.m_state.vi, refState.vi, sizeof(refState.vi)) == 0 &&
+                                               vu.m_state.mac == refState.mac && vu.m_state.clip == refState.clip &&
+                                               vu.m_state.pc == refState.pc;
+                            static unsigned shown = 0;
+                            if (!okMem && shown++ < 8u)
+                            {
+                                uint32_t first = 0, last = 0, nrev = 0;
+                                for (uint32_t b = 0; b < 16384u; ++b)
+                                    if (spec->data[b] != rec->data[b])
+                                    {
+                                        if (!nrev++) first = b;
+                                        last = b;
+                                    }
+                                std::fprintf(stderr, "[vu1n-livein] mem record %u: reverted %u bytes qw %u..%u, data diff %u, packets %s\n",
+                                             total, nrev, first / 16u, last / 16u, readDiff,
+                                             g_vuVerifyPackets == refPk ? "same" : "differ");
+                            }
+                            liveMem += okMem ? 1u : 0u;
+                            liveBoth += 0u;
+                        }
+                        // this run's own output, for the next record
+                        runOnce(rec->state, rec->data, prevOut->data);
+                        std::memcpy(prevRec.get(), rec.get(), sizeof(Vu1nRecord));
+                        havePrev = true;
+                    }
+                    else if (liveIn)
+                        havePrev = false;
                     if (h != rec->hash && differ++ < 20u)
                         std::fprintf(stderr, "[vu1n-replay] record %u startPc=%x differs\n", total, rec->state.pc);
                     // GOW_VU1N_REPLAY_DUMP=<file>: every record's result (state, data memory, GIF packets), to compare
@@ -1016,6 +1147,23 @@ void VU1NativeAccess::recordReplay(VU1Interpreter &vu, void *contextPtr, uint32_
         }
         if (reps > 1u)
             std::fprintf(stderr, "[vu1n-replay] timing: %.3f ms for %u warm runs\n", timedNs / 1e6, total * (reps - 1u));
+        if (liveIn)
+        {
+            static const char *names[8] = {"acc", "q", "p", "i", "r", "mac", "clip", "status"};
+            for (int fi = 0; fi < kLiveFields; ++fi)
+            {
+                char nm[16];
+                if (fi < 32)
+                    std::snprintf(nm, sizeof(nm), "vf%d", fi);
+                else if (fi < 48)
+                    std::snprintf(nm, sizeof(nm), "vi%d", fi - 32);
+                else
+                    std::snprintf(nm, sizeof(nm), "%s", names[fi - 48]);
+                std::fprintf(stderr, "[vu1n-livein] %-6s runs=%u dead=%u stale_ok=%u\n", nm, live[fi].n, live[fi].dead, live[fi].stale);
+            }
+            std::fprintf(stderr, "[vu1n-livein] pairs=%u all_live_stale_ok=%u mem_ok=%u both_ok=%u\n", livePairs, liveAllStale,
+                         liveMem, liveBoth);
+        }
         if (g_vu1nBlockProf)
         {
             if (FILE *bp = std::fopen(std::getenv("GOW_VU1N_BLOCKPROF"), "w"))

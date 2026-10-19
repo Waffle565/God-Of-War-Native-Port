@@ -826,7 +826,25 @@ bool PS2Runtime::syncCoreSubsystems()
                                  if (m_eeScheduler)
                                      m_eeScheduler->postEvent(EeEvent{EeEventType::ExternalWake, 0xFFFFFFFFu, ~0ull});
                              });
-    m_memory.setVu1MscalCallback([this, eeContextForVu1, setVu1StopEnables, publishVu1Stop](uint32_t startPC, uint32_t top, uint32_t itop)
+    // GOW-Port: the native VU1 run of an MSCAL / MSCNT (on the GS worker, or on the VU1 thread with PS2X_VU1_ASYNC=1)
+    auto runVu1Native = [this](const PS2Memory::Vu1AsyncJob &job)
+    {
+        const uint64_t vuT0 = ps2_perf::enabled() ? ps2_perf::nowNanos() : 0u;
+        if (job.mscnt)
+            m_vu1.resume(m_memory.getVU1Code(), PS2_VU1_CODE_SIZE, m_memory.getVU1Data(), PS2_VU1_DATA_SIZE,
+                         m_gs, &m_memory, job.top, job.itop, 65536);
+        else
+            m_vu1.execute(m_memory.getVU1Code(), PS2_VU1_CODE_SIZE, m_memory.getVU1Data(), PS2_VU1_DATA_SIZE,
+                          m_gs, &m_memory, job.startPC, job.top, job.itop, 65536);
+        if (vuT0)
+        {
+            ps2_perf::gsw::vuNs.fetch_add(ps2_perf::nowNanos() - vuT0, std::memory_order_relaxed);
+            ps2_perf::gsw::runs.fetch_add(1, std::memory_order_relaxed);
+        }
+        gowReportVu1Budget(m_vu1, job.mscnt ? "MSCNT" : "MSCAL", job.mscnt ? 0xFFFFu : job.startPC);
+    };
+    m_memory.setVu1AsyncExec(runVu1Native);
+    m_memory.setVu1MscalCallback([this, eeContextForVu1, setVu1StopEnables, publishVu1Stop, runVu1Native](uint32_t startPC, uint32_t top, uint32_t itop)
                                  {
                                      R5900Context *cpuContext = eeContextForVu1();
                                      setVu1StopEnables(cpuContext);
@@ -842,12 +860,15 @@ bool PS2Runtime::syncCoreSubsystems()
                                          m_vu1.state().stoppedByT = result.stoppedByT;
                                      }
                                      else
-                                     m_vu1.execute(m_memory.getVU1Code(), PS2_VU1_CODE_SIZE,
-                                                   m_memory.getVU1Data(), PS2_VU1_DATA_SIZE,
-                                                   m_gs, &m_memory, startPC, top, itop, 65536);
-                                     gowReportVu1Budget(m_vu1, "MSCAL", startPC);
+                                     {
+                                         const PS2Memory::Vu1AsyncJob job{startPC, top, itop, false};
+                                         // on the worker (no EE context to publish the stop bits to) it may run on the VU1 thread
+                                         if (!cpuContext && m_memory.vu1AsyncSubmit(job))
+                                             return;
+                                         runVu1Native(job);
+                                     }
                                      publishVu1Stop(cpuContext); });
-    m_memory.setVu1MscntCallback([this, eeContextForVu1, setVu1StopEnables, publishVu1Stop](uint32_t top, uint32_t itop)
+    m_memory.setVu1MscntCallback([this, eeContextForVu1, setVu1StopEnables, publishVu1Stop, runVu1Native](uint32_t top, uint32_t itop)
                                  {
                                      R5900Context *cpuContext = eeContextForVu1();
                                      setVu1StopEnables(cpuContext);
@@ -862,10 +883,12 @@ bool PS2Runtime::syncCoreSubsystems()
                                          m_vu1.state().stoppedByT = result.stoppedByT;
                                      }
                                      else
-                                     m_vu1.resume(m_memory.getVU1Code(), PS2_VU1_CODE_SIZE,
-                                                  m_memory.getVU1Data(), PS2_VU1_DATA_SIZE,
-                                                  m_gs, &m_memory, top, itop, 65536);
-                                     gowReportVu1Budget(m_vu1, "MSCNT", 0xFFFFu);
+                                     {
+                                         const PS2Memory::Vu1AsyncJob job{0u, top, itop, true};
+                                         if (!cpuContext && m_memory.vu1AsyncSubmit(job))
+                                             return;
+                                         runVu1Native(job);
+                                     }
                                      publishVu1Stop(cpuContext); });
     resetIop();
     m_vu0.reset();

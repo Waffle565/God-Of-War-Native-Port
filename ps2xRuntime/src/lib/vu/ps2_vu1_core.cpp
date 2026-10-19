@@ -1238,7 +1238,15 @@ void VU1Interpreter::finishXgkick(const uint8_t *packet)
         }
     }
     if (m_activeMemory)
+    {
+        const uint64_t kickT0 = ps2_perf::enabled() ? ps2_perf::nowNanos() : 0u;
         m_activeMemory->submitGifPacket(GifPathId::Path1, packet, m_xgkick.totalBytes);
+        if (kickT0)
+        {
+            ps2_perf::gsw::kickNs.fetch_add(ps2_perf::nowNanos() - kickT0, std::memory_order_relaxed);
+            ps2_perf::gsw::kicks.fetch_add(1, std::memory_order_relaxed);
+        }
+    }
     else if (m_activeGs)
         m_activeGs->processGIFPacket(packet, m_xgkick.totalBytes);
     m_xgkick.active = false;

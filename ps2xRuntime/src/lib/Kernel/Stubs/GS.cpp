@@ -1205,9 +1205,13 @@ namespace ps2_stubs
 
     // GOW-Port: DMA transfers are complete when they are sent (docs/native-port.md, step 2); the paths are idle once the
     // GS worker has consumed the queued packets.
+    // PS2X_GS_SYNCPATH_DEPTH=<n> (default 0 = wait until the worker and the GS stage are idle): return once fewer than
+    // n worker jobs are queued, so the EE builds the next display list while VU1 still works on the last one (every
+    // later access to GS / VIF / VU state still syncs fully; the worker owns copies of the DMA data).
     void sceGsSyncPath(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
-        runtime->memory().syncGsWorker("sceGsSyncPath");
+        static const size_t depth = [] { const char *v = std::getenv("PS2X_GS_SYNCPATH_DEPTH"); return v ? static_cast<size_t>(std::strtoul(v, nullptr, 10)) : size_t{0}; }();
+        runtime->memory().syncGsWorkerPending("sceGsSyncPath", depth);
         setReturnS32(ctx, 0);
     }
 

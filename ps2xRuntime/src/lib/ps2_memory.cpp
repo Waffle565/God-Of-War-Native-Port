@@ -1,5 +1,6 @@
 #include "runtime/ps2_memory.h"
 #include "ThreadNaming.h"
+#include "runtime/ps2_perf.h"
 #include "runtime/gs/gs_stage.h"
 #include "runtime/gs/gs_display.h"
 #include <chrono>
@@ -267,6 +268,22 @@ PS2Memory::PS2Memory()
         m_gsWorker = std::thread([this] { gsWorkerLoop(); });
         m_gsWorkerId = m_gsWorker.get_id();
         std::fprintf(stderr, "[gs-worker] VIF1/GIF processing on a worker thread (PS2X_GS_WORKER=1)\n");
+        const char *async = std::getenv("PS2X_VU1_ASYNC");
+        if (async && (async[0] == '1' || async[0] == '2'))
+        {
+            m_vu1AsyncDefer = async[0] == '2';
+            const char *spin = std::getenv("PS2X_VU1_ASYNC_SPIN_US");
+            m_vu1AsyncSpinNs = static_cast<uint64_t>(spin ? std::strtoul(spin, nullptr, 10) : 300ul) * 1000ull;
+            m_vu1AsyncOn = true;
+            if (!m_vu1AsyncDefer)
+            {
+                m_vu1Async = std::thread([this] { vu1AsyncLoop(); });
+                m_vu1AsyncId = m_vu1Async.get_id();
+            }
+            std::fprintf(stderr, m_vu1AsyncDefer ? "[gs-worker] VU1 microprograms deferred to the next VIF1 sync point (PS2X_VU1_ASYNC=2, test)\n"
+                                                 : "[gs-worker] VU1 microprograms on their own thread, overlapping VIF1 (PS2X_VU1_ASYNC=1, spin %llu us)\n",
+                         static_cast<unsigned long long>(m_vu1AsyncSpinNs / 1000ull));
+        }
     }
 }
 
@@ -1991,6 +2008,112 @@ void PS2Memory::gsWorkerTrace(const char *what, size_t bytes)
                      std::chrono::duration<double, std::micro>(now.time_since_epoch()).count(), what, bytes);
 }
 
+namespace
+{
+    inline void vu1AsyncPause()
+    {
+#if defined(_MSC_VER) && (defined(_M_X64) || defined(_M_IX86))
+        _mm_pause();
+#elif defined(__aarch64__)
+        __asm__ __volatile__("yield");
+#elif defined(__x86_64__) || defined(__i386__)
+        __builtin_ia32_pause();
+#endif
+    }
+}
+
+void PS2Memory::vu1AsyncLoop()
+{
+    ThreadNaming::SetCurrentThreadName("VU1Run");
+    for (;;)
+    {
+        // spin a little for the next job (the MSCALs of a batch list come tens of microseconds apart), then sleep
+        if (m_vu1AsyncState.load(std::memory_order_acquire) != 1)
+        {
+            const uint64_t until = ps2_perf::nowNanos() + m_vu1AsyncSpinNs;
+            unsigned n = 0;
+            while (m_vu1AsyncState.load(std::memory_order_acquire) != 1)
+            {
+                vu1AsyncPause();
+                if ((++n & 63u) == 0u && ps2_perf::nowNanos() >= until)
+                    break;
+            }
+        }
+        if (m_vu1AsyncState.load(std::memory_order_acquire) != 1)
+        {
+            std::unique_lock<std::mutex> lock(m_vu1AsyncMutex);
+            m_vu1AsyncSleeping.store(true, std::memory_order_seq_cst);
+            m_vu1AsyncCv.wait(lock, [this] { return m_vu1AsyncStop || m_vu1AsyncState.load(std::memory_order_seq_cst) == 1; });
+            m_vu1AsyncSleeping.store(false, std::memory_order_relaxed);
+            if (m_vu1AsyncState.load(std::memory_order_acquire) != 1)
+                return; // stop
+        }
+        m_vu1AsyncState.store(2, std::memory_order_relaxed);
+        if (m_vu1AsyncExec)
+            m_vu1AsyncExec(m_vu1AsyncJob);
+        m_vu1AsyncState.store(0, std::memory_order_seq_cst);
+        if (m_vu1AsyncWaiting.load(std::memory_order_seq_cst))
+        {
+            std::lock_guard<std::mutex> lock(m_vu1AsyncMutex);
+            m_vu1AsyncDoneCv.notify_all();
+        }
+    }
+}
+
+bool PS2Memory::vu1AsyncSubmit(const Vu1AsyncJob &job)
+{
+    if (!m_vu1AsyncOn || !m_vu1AsyncExec || std::this_thread::get_id() != m_gsWorkerId)
+        return false;
+    vu1AsyncWait();
+    m_vu1AsyncJob = job;
+    m_vu1AsyncState.store(1, std::memory_order_seq_cst);
+    if (m_vu1AsyncDefer)
+        return true; // runs in the next vu1AsyncWait, after every VIF command up to the next sync point
+    if (m_vu1AsyncSleeping.load(std::memory_order_seq_cst))
+    {
+        std::lock_guard<std::mutex> lock(m_vu1AsyncMutex);
+        m_vu1AsyncCv.notify_one();
+    }
+    return true;
+}
+
+void PS2Memory::vu1AsyncWait()
+{
+    if (!m_vu1AsyncOn || std::this_thread::get_id() != m_gsWorkerId)
+        return;
+    if (m_vu1AsyncDefer && m_vu1AsyncState.load(std::memory_order_relaxed) == 1)
+    {
+        m_vu1AsyncState.store(2, std::memory_order_relaxed);
+        m_vu1AsyncExec(m_vu1AsyncJob);
+        m_vu1AsyncState.store(0, std::memory_order_relaxed);
+    }
+    if (m_vu1AsyncState.load(std::memory_order_acquire) != 0)
+    {
+        const uint64_t t0 = ps2_perf::enabled() ? ps2_perf::nowNanos() : 0u;
+        // the program often ends within a few microseconds of the next MSCAL: spin first
+        for (unsigned n = 0; n < 4096u && m_vu1AsyncState.load(std::memory_order_acquire) != 0; ++n)
+            vu1AsyncPause();
+        if (m_vu1AsyncState.load(std::memory_order_acquire) != 0)
+        {
+            std::unique_lock<std::mutex> lock(m_vu1AsyncMutex);
+            m_vu1AsyncWaiting.store(true, std::memory_order_seq_cst);
+            m_vu1AsyncDoneCv.wait(lock, [this] { return m_vu1AsyncState.load(std::memory_order_seq_cst) == 0; });
+            m_vu1AsyncWaiting.store(false, std::memory_order_relaxed);
+        }
+        if (t0)
+        {
+            ps2_perf::gsw::asyncWaitNs.fetch_add(ps2_perf::nowNanos() - t0, std::memory_order_relaxed);
+            ps2_perf::gsw::asyncWaits.fetch_add(1, std::memory_order_relaxed);
+        }
+    }
+    if (m_vu1AsyncDrainAfter)
+    {
+        m_vu1AsyncDrainAfter = false;
+        if (m_gifArbiter)
+            m_gifArbiter->drain();
+    }
+}
+
 void PS2Memory::runGsWorkerJob(GsWorkerJob &job)
 {
     size_t traceBytes = 0;
@@ -2008,12 +2131,15 @@ void PS2Memory::runGsWorkerJob(GsWorkerJob &job)
         }
         else
         {
+            vu1AsyncWait(); // PATH3 behind the running program's XGKICKs (and the arbiter is the VU1 thread's)
             m_seenGifCopy = true;
             m_gifCopyCount.fetch_add(1, std::memory_order_relaxed);
             submitGifPacket(GifPathId::Path3, item.data.data(), size, false);
         }
     }
-    if (m_gifArbiter)
+    if (m_vu1AsyncOn && m_vu1AsyncState.load(std::memory_order_acquire) != 0)
+        m_vu1AsyncDrainAfter = true; // the next job may go on unpacking; drained at the next wait
+    else if (m_gifArbiter)
         m_gifArbiter->drain();
 }
 
@@ -2024,7 +2150,27 @@ void PS2Memory::gsWorkerLoop()
     {
         GsWorkerJob job;
         {
+            if (m_vu1AsyncOn)
+            {
+                bool more;
+                {
+                    std::lock_guard<std::mutex> peek(m_gsWorkerMutex);
+                    more = !m_gsWorkerJobs.empty();
+                }
+                if (!more)
+                {
+                    vu1AsyncWait(); // idle only once the last program and its XGKICKs are done
+                    ps2_gs_stage::publish();
+                }
+            }
             std::unique_lock<std::mutex> lock(m_gsWorkerMutex);
+            if (m_vu1AsyncOn && m_gsWorkerJobs.empty() && (m_vu1AsyncState.load(std::memory_order_acquire) != 0 || m_vu1AsyncDrainAfter))
+            {
+                // only this thread submits VU1 jobs, so the wait above left it idle; kept for safety
+                lock.unlock();
+                vu1AsyncWait();
+                lock.lock();
+            }
             m_gsWorkerBusy = false;
             if (m_gsWorkerJobs.empty())
                 m_gsWorkerIdleCv.notify_all();
@@ -2034,7 +2180,10 @@ void PS2Memory::gsWorkerLoop()
             job = std::move(m_gsWorkerJobs.front());
             m_gsWorkerJobs.pop_front();
             m_gsWorkerBusy = true;
+            if (m_gsWorkerDepthWaiters != 0)
+                m_gsWorkerIdleCv.notify_all(); // syncGsWorkerPending
         }
+        const uint64_t jobT0 = ps2_perf::enabled() ? ps2_perf::nowNanos() : 0u;
         try
         {
             runGsWorkerJob(job);
@@ -2043,7 +2192,16 @@ void PS2Memory::gsWorkerLoop()
         {
             std::fprintf(stderr, "[gs-worker] job failed: %s\n", e.what());
         }
-        ps2_gs_stage::publish(); // GOW-Port: hand the job's GIF packets to a sleeping GS stage (gs_stage.h)
+        if (jobT0)
+        {
+            ps2_perf::gsw::jobNs.fetch_add(ps2_perf::nowNanos() - jobT0, std::memory_order_relaxed);
+            ps2_perf::gsw::jobs.fetch_add(1, std::memory_order_relaxed);
+            ps2_perf::gsw::reportFromWorker();
+        }
+        // GOW-Port: hand the job's GIF packets to a sleeping GS stage (gs_stage.h); not while the VU1 thread may be
+        // pushing XGKICKs (PS2X_VU1_ASYNC: one producer at a time), it publishes at the wait before the worker idles
+        if (!m_vu1AsyncOn || m_vu1AsyncState.load(std::memory_order_acquire) == 0)
+            ps2_gs_stage::publish();
         if (m_gsWorkerWake && (gs_regs.csr.load(std::memory_order_acquire) & 0x3u) != 0u)
             m_gsWorkerWake();
         for (GsWorkerItem &item : job.items)
@@ -2065,6 +2223,26 @@ void PS2Memory::syncGsWorkerFor(uint32_t address)
         return; // GOW-Port: the stage runs queued worker output; it must not wait for itself
     if (m_gsWorkerEnabled && needsGsWorkerSync(address) && !onGsWorkerThread())
         waitGsWorkerIdle(nullptr, address);
+}
+
+void PS2Memory::syncGsWorkerPending(const char *site, size_t maxQueued)
+{
+    if (maxQueued == 0u)
+    {
+        syncGsWorker(site);
+        return;
+    }
+    if (ps2_gs_stage::onStageThread() || !m_gsWorkerEnabled || onGsWorkerThread())
+        return;
+    std::unique_lock<std::mutex> lock(m_gsWorkerMutex);
+    if (m_gsWorkerJobs.size() < maxQueued)
+        return;
+    const uint64_t t0 = ps2_perf::enabled() ? ps2_perf::nowNanos() : 0u;
+    ++m_gsWorkerDepthWaiters;
+    m_gsWorkerIdleCv.wait(lock, [this, maxQueued] { return m_gsWorkerJobs.size() < maxQueued; });
+    --m_gsWorkerDepthWaiters;
+    (void)site;
+    (void)t0;
 }
 
 void PS2Memory::syncGsWorkerIfOtherThread(const char *site)
@@ -2140,6 +2318,16 @@ void PS2Memory::stopGsWorker()
     }
     m_gsWorkerCv.notify_all();
     m_gsWorker.join();
+    if (m_vu1Async.joinable())
+    {
+        {
+            std::lock_guard<std::mutex> lock(m_vu1AsyncMutex);
+            m_vu1AsyncStop = true;
+        }
+        m_vu1AsyncCv.notify_all();
+        m_vu1Async.join();
+        m_vu1AsyncOn = false;
+    }
     m_gsWorkerEnabled = false;
     ps2_gs_stage::stop();
 }

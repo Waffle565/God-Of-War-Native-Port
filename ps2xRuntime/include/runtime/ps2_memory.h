@@ -400,8 +400,30 @@ public:
     // Invariant: VIF1/VU1/GIF/GS-frontend state is touched by the worker while it has jobs, and by any other
     // thread only after syncGsWorker(); every such entry point below calls it.
     void syncGsWorker(const char *site = "stub");
+    // GOW-Port: like syncGsWorker, but returns as soon as fewer than `maxQueued` jobs wait in the worker queue (the
+    // running job and the GS stage may still be busy); 0 = syncGsWorker. For sync points whose only purpose is that
+    // the game may reuse its DMA buffers (the worker copied them at the kick): PS2X_GS_SYNCPATH_DEPTH.
+    void syncGsWorkerPending(const char *site, size_t maxQueued);
     void stopGsWorker();
-    bool onGsWorkerThread() const { return m_gsWorkerEnabled && std::this_thread::get_id() == m_gsWorkerId; }
+    bool onGsWorkerThread() const
+    {
+        return m_gsWorkerEnabled &&
+               (std::this_thread::get_id() == m_gsWorkerId || (m_vu1AsyncOn && std::this_thread::get_id() == m_vu1AsyncId));
+    }
+    // GOW-Port: PS2X_VU1_ASYNC=1 (with the GS worker): VU1 microprograms run on their own thread ("VU1Run") while the
+    // worker goes on decoding the VIF1 stream (UNPACKs into the other input buffers), as the hardware overlaps them.
+    // The worker waits for the running program before anything the hardware also orders behind it (the next
+    // MSCAL/MSCNT, MPG, FLUSH*, DIRECT, MSKPATH3, PATH3 GIF data, GIF arbiter drains) and before it reports idle.
+    // Only the VU run itself (VU1 registers, VU1 data/code, XGKICK -> GIF arbiter -> GS stage) is on that thread.
+    // PS2X_VU1_ASYNC=2 (test): no thread, each program runs at the next of those points, i.e. after every UNPACK the
+    // overlap could let through first; equal output there means the game never unpacks into a running program's data.
+    struct Vu1AsyncJob { uint32_t startPC, top, itop; bool mscnt; };
+    using Vu1AsyncExec = std::function<void(const Vu1AsyncJob &)>;
+    void setVu1AsyncExec(Vu1AsyncExec exec) { m_vu1AsyncExec = std::move(exec); }
+    // true: the job was handed to the VU1 thread (caller on the worker thread only)
+    bool vu1AsyncSubmit(const Vu1AsyncJob &job);
+    void vu1AsyncWait();
+    bool vu1AsyncEnabled() const { return m_vu1AsyncOn; }
     // VU0 FBRST as the EE had it when the running worker job was queued (MSCAL D/T-bit enables).
     uint32_t gsWorkerJobFbrst() const { return m_gsWorkerJobFbrst; }
     void setFbrstProvider(std::function<uint32_t()> provider) { m_fbrstProvider = std::move(provider); }
@@ -502,9 +524,28 @@ public:
     std::deque<GsWorkerJob> m_gsWorkerJobs;
     bool m_gsWorkerBusy = false;
     bool m_gsWorkerStop = false;
+    unsigned m_gsWorkerDepthWaiters = 0; // threads in syncGsWorkerPending (under m_gsWorkerMutex)
     uint32_t m_gsWorkerJobFbrst = 0;
     std::function<uint32_t()> m_fbrstProvider;
     std::function<void()> m_gsWorkerWake;
+    // PS2X_VU1_ASYNC (vu1AsyncSubmit): one job slot, 0 idle / 1 queued / 2 running; the VU1 thread spins for
+    // m_vu1AsyncSpinNs after a job before it sleeps on the condition variable.
+    void vu1AsyncLoop();
+    bool m_vu1AsyncOn = false;
+    bool m_vu1AsyncDefer = false; // PS2X_VU1_ASYNC=2: no thread, the program runs at the next sync point (worst-case overlap test)
+    std::thread m_vu1Async;
+    std::thread::id m_vu1AsyncId;
+    std::mutex m_vu1AsyncMutex;
+    std::condition_variable m_vu1AsyncCv;     // VU1 thread waits for a job
+    std::condition_variable m_vu1AsyncDoneCv; // worker waits for the job's end
+    std::atomic<int> m_vu1AsyncState{0};
+    std::atomic<bool> m_vu1AsyncSleeping{false};
+    std::atomic<bool> m_vu1AsyncWaiting{false};
+    bool m_vu1AsyncStop = false;
+    bool m_vu1AsyncDrainAfter = false; // a job end found the VU1 thread busy: drain the GIF arbiter after the wait
+    uint64_t m_vu1AsyncSpinNs = 0;
+    Vu1AsyncJob m_vu1AsyncJob{};
+    Vu1AsyncExec m_vu1AsyncExec;
 
     std::mutex m_completedDmacMutex;
     std::vector<uint32_t> m_completedDmacCauses;

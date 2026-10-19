@@ -135,6 +135,29 @@ namespace ps2_perf
         if (frames) guestFlips.fetch_add(1, std::memory_order_relaxed);
         if (speed && rdram) gameSpeedFrame(rdram);
     }
+    // GOW-Port: split of the GS worker thread (VIF1 + VU1) under GOW_PERF_DIAG, printed by the worker as [gsw-split]
+    // every 5 s: whole jobs, VU1 microprogram runs (MSCAL/MSCNT callback), XGKICK hand-off to the GIF/GS stage inside
+    // those runs, and the rest (VIF commands and unpacks, DIRECT, GIF copies) = job - vu. With PS2X_VU1_ASYNC=1 vu_ms
+    // is on the VU1 thread, vif_ms is not meaningful, and async_wait_ms is the worker waiting for the VU1 thread.
+    namespace gsw
+    {
+        inline std::atomic<uint64_t> jobNs{0}, vuNs{0}, kickNs{0}, runs{0}, kicks{0}, jobs{0}, asyncWaitNs{0}, asyncWaits{0};
+        inline void reportFromWorker()
+        {
+            static uint64_t last = nowNanos();
+            static uint64_t before[8] = {};
+            const uint64_t now = nowNanos();
+            if (now - last < 5000000000ull) return;
+            const uint64_t cur[8] = {jobNs.load(), vuNs.load(), kickNs.load(), runs.load(), kicks.load(), jobs.load(), asyncWaitNs.load(), asyncWaits.load()};
+            uint64_t d[8];
+            for (int i = 0; i < 8; ++i) { d[i] = cur[i] - before[i]; before[i] = cur[i]; }
+            std::fprintf(stderr, "[gsw-split] window=%.2f job_ms=%.1f vu_ms=%.1f kick_ms=%.1f vif_ms=%.1f runs=%llu kicks=%llu jobs=%llu async_wait_ms=%.1f async_waits=%llu\n",
+                         (now - last) * 1e-9, d[0] * 1e-6, d[1] * 1e-6, d[2] * 1e-6, (d[0] > d[1] ? d[0] - d[1] : 0) * 1e-6,
+                         (unsigned long long)d[3], (unsigned long long)d[4], (unsigned long long)d[5], d[6] * 1e-6,
+                         (unsigned long long)d[7]);
+            last = now;
+        }
+    }
     inline void report()
     {
         if (!countFrames()) return;

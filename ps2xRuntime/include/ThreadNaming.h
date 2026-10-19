@@ -67,7 +67,7 @@ namespace ThreadNaming
             core = 1;
         else if (name == "GSStage")
             core = 1, boost = 1;
-        else if (name == "GSWorker")
+        else if (name == "GSWorker" || name == "VU1Run") // VU1Run: PS2X_VU1_ASYNC=1 (move GSWorker with GOW_CORE_GSWorker)
             core = 2;
         const std::string variable = "GOW_CORE_" + std::string(name);
         if (const char *value = std::getenv(variable.c_str()); value && value[0] >= '0' && value[0] <= '2' && value[1] == '\0')

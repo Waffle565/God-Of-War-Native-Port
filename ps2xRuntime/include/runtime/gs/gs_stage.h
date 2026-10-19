@@ -25,7 +25,8 @@ namespace ps2_gs_stage
     // Queues a copy of the packet (blocks while too much is queued, so the worker cannot run far ahead). A sleeping
     // stage is woken only once enough is queued: the producer calls publish() when it has no more for now.
     void push(GifPathId path, const uint8_t *data, uint32_t size);
-    // Wakes the stage for whatever is queued (the worker calls it at the end of each job).
+    // Small packets are gathered on the producer side and queued together (16 KB, or at publish()): call publish()
+    // before anyone waits for the stage. Wakes the stage for whatever is queued (the worker calls it after each job).
     void publish();
 
     // Returns when every queued packet has been processed. No-op on the stage thread itself.

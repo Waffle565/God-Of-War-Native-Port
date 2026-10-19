@@ -400,6 +400,7 @@ void PS2Memory::processVIF1Data(uint32_t srcPhys, uint32_t sizeBytes)
 // No anteponer otra etiqueta IMAGE a un payload que ya continua una etiqueta abierta.
 void PS2Memory::submitVif1DirectPayload(const uint8_t *data, uint32_t sizeBytes, bool directHl)
 {
+    vu1AsyncWait(); // PATH2 behind the running program's XGKICKs
     submitGifPacket(GifPathId::Path2, data, sizeBytes, true, directHl);
 }
 
@@ -515,6 +516,7 @@ void PS2Memory::processVIF1Data(const uint8_t *data, uint32_t sizeBytes)
         else if (opcode == VIF_MSKPATH3)
         {
             // VIF command docs: MSKPATH3 uses IMMEDIATE bit 15.
+            vu1AsyncWait();
             const bool wasMasked = m_path3Masked;
             m_path3Masked = (imm & 0x8000u) != 0u;
             if (wasMasked && !m_path3Masked)
@@ -529,10 +531,12 @@ void PS2Memory::processVIF1Data(const uint8_t *data, uint32_t sizeBytes)
         }
         else if (opcode == VIF_FLUSHE || opcode == VIF_FLUSH || opcode == VIF_FLUSHA)
         {
+            vu1AsyncWait(); // the end of the running microprogram
             continue;
         }
         else if (opcode == VIF_MSCAL || opcode == VIF_MSCALF)
         {
+            vu1AsyncWait(); // VIF stalls an MSCAL until the previous program has ended
             uint32_t startPC = (uint32_t)imm * 8u;
 
             const uint32_t runTop = vif1_regs.tops & 0x3FFu;
@@ -566,6 +570,7 @@ void PS2Memory::processVIF1Data(const uint8_t *data, uint32_t sizeBytes)
         }
         else if (opcode == VIF_MSCNT)
         {
+            vu1AsyncWait();
             const uint32_t runTop = vif1_regs.tops & 0x3FFu;
             const uint32_t runItop = vif1_regs.itops & 0x3FFu;
             vif1_regs.top = runTop;
@@ -619,6 +624,7 @@ void PS2Memory::processVIF1Data(const uint8_t *data, uint32_t sizeBytes)
         }
         else if (opcode == VIF_MPG)
         {
+            vu1AsyncWait(); // MPG waits for the program to end
             uint32_t destAddr = (uint32_t)imm * 8u;
             const uint32_t instructionCount = (num == 0u) ? 256u : static_cast<uint32_t>(num);
             const uint32_t mpgBytes = instructionCount * 8u;
