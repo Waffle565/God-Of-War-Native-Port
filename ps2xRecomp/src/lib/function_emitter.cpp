@@ -7,6 +7,7 @@
 #include "ps2recomp/types.h"
 
 #include <algorithm>
+#include <cctype>
 #include <sstream>
 #include <stdexcept>
 #include <unordered_set>
@@ -23,6 +24,40 @@ namespace ps2recomp
             inst.opcode = OPCODE_SPECIAL;
             inst.function = SPECIAL_SLL;
             return inst;
+        }
+
+        // GOW-Port: which translated instructions need their `ctx->pc = <address>` store. The PC is read only by the
+        // runtime (calls, exceptions, dispatch, checkpoints), and every branch, call and checkpoint the emitter writes
+        // stores its own PC first. So:
+        //  - NeedsPc: the instruction calls the runtime itself or touches ctx->pc (syscalls, overflow traps, COP0,
+        //    MMIO services, multi-line constructs): unchanged.
+        //  - GuestMemory: its only way into the runtime is a guest memory access macro (READn/WRITEn), whose
+        //    special-address path publishes ps2_gen_pc (ps2_runtime_macros.h): emitted in a block declaring it.
+        //  - Pure: register/FPU/VU0 arithmetic and plain RAM accesses: no PC store at all.
+        // Before, a PC store stayed in front of every load/store (the slow path could read it) and kept the previous
+        // instruction's store alive as well: on AArch64 a mov/movk/str per guest instruction around every access.
+        enum class PcUse { NeedsPc, GuestMemory, Pure };
+
+        PcUse classifyPcUse(const std::string &body)
+        {
+            if (body.find("runtime") != std::string::npos || body.find("ctx->pc") != std::string::npos ||
+                body.find("throw") != std::string::npos || body.find('\n') != std::string::npos)
+            {
+                return PcUse::NeedsPc;
+            }
+            for (const char *macro : {"READ8(", "READ16(", "READ32(", "READ64(", "READ128(",
+                                      "WRITE8(", "WRITE16(", "WRITE32(", "WRITE64(", "WRITE128("})
+            {
+                for (size_t at = body.find(macro); at != std::string::npos; at = body.find(macro, at + 1))
+                {
+                    // whole macro name only (FAST_READ32 is a plain RAM access, it does not count)
+                    if (at == 0 || !(std::isalnum(static_cast<unsigned char>(body[at - 1])) || body[at - 1] == '_'))
+                    {
+                        return PcUse::GuestMemory;
+                    }
+                }
+            }
+            return PcUse::Pure;
         }
     }
 
@@ -200,10 +235,23 @@ namespace ps2recomp
                         continue;
                     }
 
-                    ss << "    ctx->pc = 0x" << std::hex << inst.address << "u;\n"
-                       << std::dec;
                     const MemoryAccessHint memoryHint = resolveMemoryAccessHint(inst, constantRegisters);
-                    ss << "    " << cg.translateInstruction(inst, memoryHint);
+                    const std::string body = cg.translateInstruction(inst, memoryHint);
+                    switch (classifyPcUse(body))
+                    {
+                    case PcUse::GuestMemory:
+                        ss << "    { constexpr uint32_t ps2_gen_pc = 0x" << std::hex << inst.address << std::dec
+                           << "u; " << body << " }";
+                        break;
+                    case PcUse::Pure:
+                        ss << "    " << body;
+                        break;
+                    case PcUse::NeedsPc:
+                        ss << "    ctx->pc = 0x" << std::hex << inst.address << "u;\n"
+                           << std::dec;
+                        ss << "    " << body;
+                        break;
+                    }
                     if (inst.isMmio)
                     {
                         ss << " // MMIO: 0x" << std::hex << inst.mmioAddress << std::dec;

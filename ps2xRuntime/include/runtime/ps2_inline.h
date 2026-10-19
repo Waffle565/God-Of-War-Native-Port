@@ -7,9 +7,11 @@
 #if defined(_MSC_VER)
 #define PS2_FORCEINLINE __forceinline
 #define PS2_NOINLINE __declspec(noinline)
+#define PS2_LIKELY(x) (x)
 #else
 #define PS2_FORCEINLINE inline __attribute__((always_inline))
 #define PS2_NOINLINE __attribute__((noinline))
+#define PS2_LIKELY(x) __builtin_expect(!!(x), 1)
 #endif
 
 #endif // PS2_INLINE_H
