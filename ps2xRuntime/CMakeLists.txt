@@ -459,6 +459,7 @@ add_library(ps2_runtime STATIC
 
 src/lib/gs/gpu/gs_texture_store.cpp
     src/lib/ps2_iop_host.cpp
+    src/lib/ps2_iop_thread.cpp
     src/lib/ps2_memory.cpp
     src/lib/ps2_pad.cpp
     src/lib/ps2_audio_device.cpp # GOW-Port: sound output on a chosen device

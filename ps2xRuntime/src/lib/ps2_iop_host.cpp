@@ -6,6 +6,7 @@
 #include "runtime/ps2_memory.h"
 #include "Kernel/Stubs/MemoryCard.h"
 #include "Kernel/Syscalls/Common.h"
+#include "ps2_iop_thread.h"
 
 #include <algorithm>
 #include <cstring>
@@ -103,7 +104,8 @@ PS2IopHostAdapter::CallScope PS2IopHostAdapter::enterCall(R5900Context *context,
 bool PS2IopHostAdapter::guestRange(uint32_t address, size_t size, uint8_t *&begin) const
 {
     begin = nullptr;
-    uint8_t *const rdram = m_activeRdram
+    // GOW-Port: on the IOP thread the EE's call scope (m_activeRdram) belongs to the EE thread
+    uint8_t *const rdram = m_activeRdram && !PS2IopThread::onIopThread()
                                ? m_activeRdram
                                : m_runtime.memory().getRDRAM();
     if (!rdram)
@@ -158,6 +160,15 @@ bool PS2IopHostAdapter::writeGuest(uint32_t address, const void *source, size_t 
     {
         return false;
     }
+    if (size != 0 && PS2IopThread::onIopThread())
+    {
+        // GOW-Port: the IOP runs on its own thread: the write into EE RAM (IOP-side SIF DMA) lands at the EE's next
+        // checkpoint, in order with the IOP's other effects on the EE (docs/iop-thread.md)
+        std::vector<uint8_t> data(static_cast<const uint8_t *>(source), static_cast<const uint8_t *>(source) + size);
+        m_runtime.iopThread()->defer([this, address, data = std::move(data)]
+                                     { (void)writeGuest(address, data.data(), data.size()); });
+        return true;
+    }
     if (size != 0)
     {
         uint8_t *const rdram = m_activeRdram ? m_activeRdram : m_runtime.memory().getRDRAM();
@@ -173,6 +184,11 @@ bool PS2IopHostAdapter::zeroGuest(uint32_t address, size_t size)
     if (!guestRange(address, size, destination))
     {
         return false;
+    }
+    if (size != 0 && PS2IopThread::onIopThread())
+    {
+        m_runtime.iopThread()->defer([this, address, size] { (void)zeroGuest(address, size); });
+        return true;
     }
     if (size != 0)
     {
@@ -507,6 +523,16 @@ bool PS2IopHostAdapter::sendSifCommand(uint32_t commandId,
                                        const void *packet,
                                        size_t packetSize)
 {
+    if (PS2IopThread::onIopThread())
+    {
+        // GOW-Port: IOP -> EE SIF command from the IOP thread: dispatched by the EE thread at its next checkpoint
+        if (!packet || packetSize < 16u || packetSize > 112u)
+            return false;
+        std::vector<uint8_t> data(static_cast<const uint8_t *>(packet), static_cast<const uint8_t *>(packet) + packetSize);
+        m_runtime.iopThread()->defer([this, commandId, data = std::move(data)]
+                                     { (void)sendSifCommand(commandId, data.data(), data.size()); });
+        return true;
+    }
     uint8_t *const rdram = m_activeRdram
                                ? m_activeRdram
                                : m_runtime.memory().getRDRAM();

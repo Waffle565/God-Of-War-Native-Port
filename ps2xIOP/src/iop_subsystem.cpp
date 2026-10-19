@@ -186,6 +186,16 @@ namespace ps2x::iop
         m_impl->emulator.runPendingEeCycles();
     }
 
+    uint64_t IopSubsystem::takePendingIopCycles() noexcept
+    {
+        return m_impl->emulator.takePendingIopCycles();
+    }
+
+    void IopSubsystem::runIopCycles(uint64_t iopCycles) noexcept
+    {
+        m_impl->emulator.runIopCycles(iopCycles);
+    }
+
     RpcAbi IopSubsystem::selectRpcAbi(const RpcAbiRequest &request) const
     {
         for (const auto &service : m_impl->coreServices)

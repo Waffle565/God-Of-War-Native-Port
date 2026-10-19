@@ -176,6 +176,10 @@ void EeScheduler::run()
             GuestThread *next = selectReady();
             if (!next && m_pendingInvocations.empty())
             {
+                // GOW-Port: with the IOP on its own thread, the batches inline mode would already have run (and the
+                // SIF commands they send) are settled before the EE decides to sleep (docs/iop-thread.md)
+                if (m_runtime.syncIop() && !m_pendingInvocations.empty())
+                    continue;
                 copyMainContextToRuntime();
                 publishIdleDebugContext();
                 publishSnapshot();

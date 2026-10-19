@@ -1149,10 +1149,20 @@ namespace ps2x::iop::detail
 
     void IopEmulator::runPendingEeCycles() noexcept
     {
+        runIopCycles(takePendingIopCycles());
+    }
+
+    uint64_t IopEmulator::takePendingIopCycles() noexcept
+    {
         const uint64_t cycles = m_impl->pendingIopCycles;
         m_impl->pendingIopCycles = 0;
-        if (cycles != 0u)
-            m_impl->runCycles(cycles);
+        return cycles;
+    }
+
+    void IopEmulator::runIopCycles(uint64_t iopCycles) noexcept
+    {
+        if (iopCycles != 0u)
+            m_impl->runCycles(iopCycles);
     }
 
     RpcResult IopEmulator::handleRpc(const RpcRequest &request)
