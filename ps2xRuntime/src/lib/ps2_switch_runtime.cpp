@@ -223,6 +223,10 @@ extern "C"
         // bot fight: 22.6-26 fps vs 26-31 after the heavy part; docs/switch-deko3d.md "Draw count"); env.txt
         // GOW_IOP_THREAD=1 turns it on
         setenv("GOW_IOP_THREAD", "0", 0);
+        // VU1 native blocks without traces and direct chaining: on the A57 the replay benchmark is ~3 % faster without
+        // them (116.6 vs 119.5-121.3 ms, docs/vu1-hle.md "Data-parallel vertex loops"); env.txt =1 turns them on
+        setenv("GOW_VU1N_TRACES", "0", 0);
+        setenv("GOW_VU1N_DIRECT", "0", 0);
         // speed lines in every log (a few lines every 5 s), so a log from the console says where the time goes
         setenv("GOW_PERF_DIAG", "1", 0);
         setenv("GOW_PERF_FRAME_PC", "0x001837B8", 0);
