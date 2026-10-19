@@ -3348,7 +3348,14 @@ PresentationFrame GSHwBackend::Present(const GSPresentationRequest &request)
     d.dumpAfterSkip = false;
     d.frameBatch = 0;
     d.reportStats();
-    if (request.asyncReadback)
+    // GOW-Port: deko3d (gs_dk.cpp) presents every published frame onto the swapchain; an unchanged one (same display
+    // registers and displayed targets) keeps the last image on screen instead of composing and presenting it again.
+#if defined(PS2X_DK)
+    const bool skipUnchanged = true;
+#else
+    const bool skipUnchanged = request.asyncReadback;
+#endif
+    if (skipUnchanged)
     {
         const auto shown = [&d](uint64_t dispfb) -> uint64_t
         {
@@ -3360,7 +3367,11 @@ PresentationFrame GSHwBackend::Present(const GSPresentationRequest &request)
         if (std::memcmp(key, d.readbackKey, sizeof(key)) == 0)
         {
             presentTimer.full = false;
+#if defined(PS2X_DK)
+            return PresentationFrame{};
+#else
             return d.collectReadback(nullptr);
+#endif
         }
         std::memcpy(d.readbackKey, key, sizeof(key));
     }

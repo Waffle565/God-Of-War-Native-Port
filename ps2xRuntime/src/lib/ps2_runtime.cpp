@@ -905,6 +905,7 @@ bool PS2Runtime::initialize(const char *title)
         // GOW-Port: deko3d renderer (gs_dk.cpp): the GS thread owns the screen (its swapchain on the default window),
         // so raylib opens no window; the pad is read through libnx HID (ps2_pad.cpp).
         (void)title;
+        std::fprintf(stderr, "[run] deko3d build: no raylib window\n");
 #else
         InitWindow(1280, 720, title);
 #endif

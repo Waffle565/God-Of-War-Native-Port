@@ -170,11 +170,11 @@ namespace
         DkMemBlock readMem = nullptr; // synchronous readbacks
         uint32_t readSize = 0;
 
-        std::vector<Texture> textures{1};
+        std::deque<Texture> textures{1}; // a deque: a DkImageView points at its DkImage, so textures must not move
         std::vector<GLuint> freeTextures;
         std::vector<Buffer> buffers{1};
         std::vector<Shader> shaders{1};
-        std::vector<Program> programs{1};
+        std::deque<Program> programs{1}; // DkShader objects are referenced while bound
         std::vector<Vao> vaos{1};
         std::vector<Fbo> fbos{1};
         std::deque<Garbage> garbage;
@@ -778,8 +778,8 @@ namespace
     }
 
     // ======== the GL entry points ======================================================================================
-    template <typename T>
-    GLuint allocate(std::vector<T> &list)
+    template <typename List>
+    GLuint allocate(List &list)
     {
         list.emplace_back();
         return static_cast<GLuint>(list.size() - 1u);
@@ -1418,7 +1418,11 @@ namespace
         ensureScaleProgram();
         bindSets();
         barriers();
-        const int slot = dkQueueAcquireImage(s->queue, s->swapchain);
+        // the GPU, not this thread, waits for the image to come back from the display
+        int slot = 0;
+        DkFence acquired{};
+        dkSwapchainAcquireImage(s->swapchain, &slot, &acquired);
+        dkCmdBufWaitFence(s->cmd, &acquired);
         dkCmdBufBarrier(s->cmd, DkBarrier_Fragments, DkInvalidateFlags_Image);
         DkImageView view;
         dkImageViewDefaults(&view, &s->swapImages[slot]);
@@ -1578,8 +1582,16 @@ namespace
         a.graphics = true;
     }
 
+    // start-up checkpoints (a fault in a guest-less thread is silent in Citron)
+    void step(const char *what)
+    {
+        std::fprintf(stderr, "[gs-dk] init: %s\n", what);
+        std::fflush(stderr);
+    }
+
     bool initDevice(std::string &error)
     {
+        step("device");
         s = new State();
         DkDeviceMaker dm;
         dkDeviceMakerDefaults(&dm);
@@ -1591,11 +1603,14 @@ namespace
             error = "dkDeviceCreate failed";
             return false;
         }
+        step("queue");
         DkQueueMaker qm;
         dkQueueMakerDefaults(&qm, s->device);
-        qm.flags = DkQueueFlags_Graphics | DkQueueFlags_Compute | DkQueueFlags_HighPrio;
+        qm.flags = DkQueueFlags_Graphics | (std::getenv("GOW_DK_COMPUTE") ? DkQueueFlags_Compute : 0u); // compute: only the RAM-frame pack, unused here
         s->queue = dkQueueCreate(&qm);
+        step("queue created");
         s->cmdMem = makeMem(kCmdChunk * kCmdChunks, DkMemBlockFlags_CpuUncached | DkMemBlockFlags_GpuCached);
+        step("command memory");
         DkCmdBufMaker cm;
         dkCmdBufMakerDefaults(&cm, s->device);
         cm.cbAddMem = addMemory;
@@ -1610,6 +1625,7 @@ namespace
         s->chunksThisList = 1;
         dkCmdBufAddMemory(s->cmd, s->cmdMem, 0, kCmdChunk);
 
+        step("descriptors");
         const uint32_t imageBytes = kImageSlots * sizeof(DkImageDescriptor), samplerBytes = kSamplerSlots * sizeof(DkSamplerDescriptor);
         s->descMem = makeMem(imageBytes + samplerBytes, DkMemBlockFlags_CpuUncached | DkMemBlockFlags_GpuCached);
         s->imageDescs = static_cast<DkImageDescriptor *>(dkMemBlockGetCpuAddr(s->descMem));
@@ -1628,6 +1644,7 @@ namespace
             dkSamplerDescriptorInitialize(&s->samplerDescs[i], &sampler);
         }
 
+        step("memory");
         s->codeSize = 8u << 20;
         s->codeMem = makeMem(s->codeSize, DkMemBlockFlags_CpuUncached | DkMemBlockFlags_GpuCached | DkMemBlockFlags_Code);
         s->uboSize = 1u << 20;
@@ -1643,6 +1660,7 @@ namespace
         for (unsigned i = 0; i < GSDK::kShaderCount; ++i)
             s->binaries[GSDK::kShaders[i].hash] = &GSDK::kShaders[i];
 
+        step("dummy texture");
         // texture 0: a 1x1 dummy for unbound samplers
         Format f{DkImageFormat_RGBA8_Unorm, 4, false, false};
         allocImage(s->textures[0], 1, 1, f);
@@ -1651,6 +1669,7 @@ namespace
 
         const char *flip = std::getenv("GOW_DK_PRESENT_FLIP");
         s->flipPresent = !(flip && *flip == '0');
+        step("swapchain");
         if (!initSwapchain())
         {
             error = "deko3d swapchain creation failed";
