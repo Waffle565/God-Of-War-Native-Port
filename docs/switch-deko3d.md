@@ -78,3 +78,28 @@ game kept reading an old `env.txt` with scale 1; the "1.6" figures before 2026-1
   EE. The renderer is no longer what keeps the game under 60.
 - Remaining renderer work: the CLUT-from-render-target readback (a GPU round trip, cached per target version) and
   GPU time at 1.6x (fill: the bicubic pass and the 1.6x targets).
+
+## The EE thread's core (agent/sw-ee4, 2026-10-19)
+Gameplay on the console (log `port/switch/logs/20261019_s16`, ship fight, ~21 fps), per 5 s:
+- core 1 runs the EE thread and the GS frontend (`GSStage`, one priority step above it): EE game code `ee_ms` ~2.9 s +
+  IOP and sound `iop_ms` ~1.2 s (both on the EE thread) + GS frontend `gs_ms` ~0.9 s = **core 1 is full**; the EE
+  thread still sleeps ~0.9 s (`guest_wait_ms`), waiting at the frame's sync points on the VU1 worker (core 2, ~4.0 s
+  busy). VU1 and core 1 limit together: a faster EE alone turns into more waiting.
+- The IOP cost is per wall-clock second (the game runs at full speed with fewer frames, `gow-speed` 0.98), so at 60 fps
+  it stays ~1.2 s while the EE and the GS frontend triple. Split on PC (`PS2X_IOP_NATIVE_STATS=1`, native IRX code):
+  per 5 s the IRX code ~55 ms, sound mixing ~80-170 ms, services ~20 ms and ~50 ms of per-call overhead (~72000
+  `runCycles` calls per second, one per 512 IOP cycles). A batch of 2048 IOP cycles cut the call overhead to a third
+  but the memory card load then never finished (zone gate slots 1-4): kept at 512.
+- `GOW_CORE_<thread>=<0-2>` in env.txt overrides a thread's core (ThreadNaming.h): `GOW_CORE_GSStage=0` moves the GS
+  frontend next to the deko3d backend on core 0, which deko3d made light, and leaves core 1 to the EE and the IOP.
+  Untested on the console.
+- EE generated code (devkitA64 -O2, instructions): 0x162F18 50133 -> 46039 (-8.2 %), 0x111760 52480 -> 50152,
+  0x158DA8 4688 -> 4441, 0x1679F8 13655 -> 13226, 0x158020 5271 -> 5203, 0x1658F8 11143 -> 11385: slow-path lambda
+  by value (no rdram/ctx reloads from the stack) and no PC/delay-slot stores the runtime cannot read
+  (docs/runtime-changes.md). On PC, where those stores are one instruction each, the change is within noise.
+- Looked at and left: `__restrict` on rdram/ctx (no gain with the lambda fixed either); direct calls instead of
+  `dispatchGuestBranch` for static JAL (the table lookup is already a subtract and a shift; the rest is the debug ring,
+  history and two statics); typed (non-memcpy) guest accesses (ctx->r is a vector of 64-bit lanes, so 64/128-bit
+  accesses would still alias it). The next big EE lever is keeping guest registers in C++ locals inside a function
+  (like the VU1 generator's `--locals`): every guest instruction still loads its operands from and stores its result to
+  `ctx`.
