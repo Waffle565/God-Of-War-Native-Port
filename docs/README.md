@@ -28,7 +28,7 @@ The user wants the game **totally playable**; work continues until then. Game da
 | [runtime-changes.md](runtime-changes.md) | Every change made to the EE runtime (ps2xRuntime) and recompiler, and why. |
 | [iop-changes.md](iop-changes.md) | Every change made to the IOP emulator (ps2xIOP), and why. |
 | [native-port.md](native-port.md) | Inventory of every emulated layer, its native replacement, measured cost and the order of work. |
-| [vu1-native-flags.md](vu1-native-flags.md) | VU1 native blocks: MAC/clip flag latency across blocks, the character-shadow cull bug, the opt-in exact mode and its cost. |
+| [vu1-native-flags.md](vu1-native-flags.md) | VU1 native blocks: MAC/clip flag latency across blocks, the character-shadow cull bug, the opt-in exact mode and its cost; VU1 speed on the Switch (console replay benchmark, what was measured, why parallel VU1 runs do not pay). |
 | [visual-audit.md](visual-audit.md) | Suspected rendering defects found in the zone captures (vs PCSX2), with the likely GS cause. |
 | [fmv.md](fmv.md) | Movies: libmpeg2 decoder, how the game plays a movie, what is still open. |
 | [sound.md](sound.md) | Native sound engine: the LIBSD API boundary, SoundEngine, what is mixed. |

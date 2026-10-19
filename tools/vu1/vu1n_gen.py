@@ -120,9 +120,10 @@ class Regs:
         self._use(('f', r))
         return f"F{r}"
 
-    def fn(self, r, clean=frozenset()):
-        """operand view (Inf/NaN -> +-FLT_MAX) of VF r; vf0 and clean registers are their own view"""
-        if r == 0 or r in clean:
+    def fn(self, r, clean=None, lanes=15):
+        """operand view (Inf/NaN -> +-FLT_MAX) of VF r. vf0 is its own view, and so is a register whose lanes the
+        operation uses (lanes: SSE order) are all clean (clean: {vf: SSE lane mask known finite})"""
+        if r == 0 or (clean and (clean.get(r, 0) & lanes) == lanes):
             return self.f(r)
         if not self.local:
             return f"vu1n::ldn(s, {r})"
@@ -304,7 +305,7 @@ def upper_info(u):
     return {x for x in w if x}, r, writes_mac, reads_q
 
 
-def emit_upper(u, pc, idx, mac_var, clip_var, prev_clip, clean=frozenset()):
+def emit_upper(u, pc, idx, mac_var, clip_var, prev_clip, clean=None):
     kind, src, toacc, bc = classify(u)
     dest = (u >> 21) & 0xF
     ft, fs, fd = (u >> 16) & 31, (u >> 11) & 31, (u >> 6) & 31
@@ -329,27 +330,29 @@ def emit_upper(u, pc, idx, mac_var, clip_var, prev_clip, clean=frozenset()):
             return L
         if not RG.local:
             return [f"vu1n::ftoi<{src}, {m}>(s, {fs}, {ft});"]
-        return [RG.setf(ft, m, f"vu1n::ftoiv<{src}>({RG.fn(fs)})")]
+        return [RG.setf(ft, m, f"vu1n::ftoiv<{src}>({RG.fn(fs, clean, m)})")]
     if kind == 'abs':
         if not ft:
             return L
         if not RG.local:
             return [f"vu1n::absOp<{m}>(s, {fs}, {ft});"]
-        return [RG.setf(ft, m, f"vu1n::absv({RG.fn(fs)})")]
+        return [RG.setf(ft, m, f"vu1n::absv({RG.fn(fs, clean, m)})")]
     if kind in ('opmsub', 'opmula', 'other'):
         assert not RG.local
         return [f"VU1NativeAccess::callUpper(n, {pc}u, 0x{u:08x}u);"]
-    def opnd(r):
-        return RG.fn(r, clean)
-    a = opnd(fs)
+    # only the DEST lanes of a result are kept and flagged, and a broadcast reads one lane: those are the lanes an
+    # operand needs normalised
+    def opnd(r, lanes):
+        return RG.fn(r, clean, lanes)
+    a = opnd(fs, m)
     if src == 'bc':
-        b = f"vu1n::bc<{bc}>({opnd(ft)})"
+        b = f"vu1n::bc<{bc}>({opnd(ft, 1 << bc)})"
     elif src == 'q':
         b = f"_mm_set1_ps({RG.q()})"
     elif src == 'i':
         b = f"_mm_set1_ps({RG.ireg()})"
     else:
-        b = opnd(ft)
+        b = opnd(ft, m)
     acc = RG.acc() if kind in ('madd', 'msub') else None
     if kind == 'add':
         r = f"_mm_add_ps({a}, {b})"
@@ -719,10 +722,13 @@ def gen_block(pc0, pairs, tail_out=None, selfname=None):
 
     lines = []
     branch_targets = []         # constant branch target of the block's branch (self-loops), none for JR / JALR
-    clean_regs = set()          # vf registers known to hold normalised (finite) values: FMAC results of this block
+    # vf lanes known to hold finite values (their operand view is the raw value): {vf: SSE lane mask}. Set by the
+    # results of this block that cannot be Inf/NaN (clamped FMAC results, MAX/MINI of normalised operands, ITOF, ABS),
+    # cleared by any other write. The block starts (and a self-loop repeats) with nothing known.
+    clean_regs = {}
     for i, (l, u) in enumerate(pairs):
         pc = pc0 + 8 * i
-        clean_i = frozenset(clean_regs - infos[i]['vfw'])
+        clean_i = {r: lm for r, lm in clean_regs.items() if r not in infos[i]['vfw']}
         li, (uw, ur, umac, uq) = infos[i], uinfo[i]
         iBit = bool(u >> 31)
         lower_first = False
@@ -803,10 +809,16 @@ def gen_block(pc0, pairs, tail_out=None, selfname=None):
         else:
             lines.extend(up)
             lines.extend(lo)
-        clean_regs = set(clean_i)
-        kind_u = classify(u)[0]
-        if kind_u in ('add', 'sub', 'mul', 'madd', 'msub', 'max', 'mini') and ((u >> 21) & 0xF) == 0xF and not classify(u)[2]:
-            clean_regs |= {x for x in uw}
+        clean_regs = dict(clean_i)
+        kind_u, src_u, toacc_u, _ = classify(u)
+        m_u = REV4[(u >> 21) & 0xF]
+        finite = (kind_u in ('add', 'sub', 'mul', 'madd', 'msub') or kind_u in ('itof', 'abs')
+                  or (kind_u in ('max', 'mini') and src_u in ('bc', 'v')))
+        for x in uw:
+            if finite and x not in li['vfw']:
+                clean_regs[x] = clean_regs.get(x, 0) | m_u
+            else:
+                clean_regs.pop(x, None)
         # D/T halt bits
         if (u >> 28) & 1:
             lines.append("if (s.dBitEnabled) { " + " ".join(flush(i) + RG.writeback()) + f" s.stoppedByD = true; return kVu1nEnded | {(pc + 8) & 0x3FFF}u; }}")

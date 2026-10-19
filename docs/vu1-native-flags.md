@@ -107,3 +107,46 @@ Diagnostics:
 - `GOW_VU1N_VERIFY` (`GOW_VU1N_DUMP=1` writes the run's micro memory).
 - `GOW_VU1N_DIAG=1`: native pairs, misses and native entries per 5 s.
 - RT dumps also write alpha (`_a.pgm`).
+
+## VU1 on the console (Switch, 2026-10-19, ext agent/sw-vu1b)
+In gameplay (ship deck, deko3d build) the VU1 thread (`GSWorker`, core 2) is busy ~4.0 s of every 5 s at ~20 fps:
+VU1 is the limit, then the EE (~2.9 s). Everything runs native (`GOW_VU1N_DIAG`: no misses, nothing interpreted),
+~7.4 pairs per block, 17-18 ns per VU1 cycle (`GOW_VU1_STATS`).
+
+**Measuring on the A57 itself.** qemu instruction counts (tools/vu1_harness `icount.sh`) overstate gains about
+threefold on the real core, so changes are timed on the console with the replay benchmark:
+- record runs in game: env.txt `GOW_VU1N_RECORD=sdmc:/switch/gow/vu1ship.rec GOW_VU1N_RECORD_SKIP=1400000
+  GOW_VU1N_RECORD_STRIDE=60 GOW_VU1N_RECORD_N=2000` (ship gameplay; `STRIDE=1` for consecutive runs), pull it over MTP;
+- time a build: env.txt `GOW_VU1N_REPLAY=sdmc:/switch/gow/vu1ship.rec GOW_VU1N_REPLAY_REPS=4`; at the first VU1 run
+  the log gets `[vu1n-replay] timing: <ms> for 6000 warm runs` and `2000 records, 0 differ` (hashes of the build that
+  recorded). Run-to-run noise ~0.5 %. Records hold game data: keep them out of git.
+- bit-exactness: the harness replays the console recordings and the PC zone recording (`game.rec`) on x86 and
+  aarch64 builds against an x86 reference dump (`dumpdiff.py`).
+
+| console replay, 2000 ship records x 3 warm passes | ms | |
+|---|---|---|
+| blocks generated without `--locals` (what the deko3d builds of 2026-10-19 morning had: `VU1_PREGEN` defaulted to build-kl's 2026-10-13 output) | 170.5 | |
+| `--locals` (registers in locals, in-place self-loops) | 155.9 | -8.6 % (qemu predicted -26 %) |
+| + per-lane clean operands (below) | 152.2 | -2.4 %, bit-exact, kept |
+| + clamp behind a predicted branch (`clampr`) | 160.0 | slower: dropped |
+| probe: no flag rings / block history / FDIV timing (wrong flags) | 140.6 | upper bound of the cycle-model bookkeeping: -7.6 % |
+| probe: no operand normalisation, no clamp, no wide MADD | 108.2 | -29 %, but not exact (below) |
+
+- In game: 18.2 -> 16.9 ns per VU1 cycle with `--locals`; gameplay stays ~20-21 fps (VU1 still saturated).
+  `switch/build.sh` now refuses pregenerated blocks without `--locals` (`ALLOW_OLD_VU1N=1` overrides).
+- **Per-lane clean operands** (`vu1n_gen.py`): the operand view `nrm()` is skipped when every lane the operation uses
+  (its DEST lanes, or the broadcast lane) was last written in the block by a result that cannot be Inf/NaN: clamped
+  FMAC results, MAX/MINI of normalised operands, ITOF, ABS. Before, only full-DEST FMAC results counted, and a later
+  FTOI (integer bits) into such a register did not clear it. 7503 -> 6993 `nrm` calls. Bit-exact on all recordings
+  (PC zone walk 1832, ship 2000, consecutive 3000; locals and memory forms).
+- **Exact float semantics cost ~29 %**, but cannot go: without them 1 of 2000 ship runs differs (vertex values and
+  clip flags of one batch), yet 23-27 % of the PC Olympus runs do (each of operand normalisation, clamp and wide MADD
+  matters there).
+- **Running VU1 programs in parallel does not pay.** Each MSCAL resets the pipeline state (`resetScheduler`), so
+  run k+1 depends on run k only through registers and data memory. Replaying 3000 consecutive ship runs: between
+  runs only the pc changes (registers flow from one program into the next), and started with the registers of run
+  k's start instead of its end, only 343 of 2999 runs give the same output (with run k's memory writes undone instead:
+  2647). Register speculation would fail ~9 times in 10. VIF unpack overlapping VU1 (as the hardware does) is worth at
+  most the ~15 % of `GSWorker` the VIF takes on PC.
+- Left: the A57 time per VU1 cycle is spread over the float emulation (~30 %), the block bookkeeping (~8 %) and the
+  arithmetic itself; no single change found here gives the ~2.4x VU1 needs for 60 fps.
