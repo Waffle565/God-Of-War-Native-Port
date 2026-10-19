@@ -27,6 +27,14 @@ def main(path):
             print(' | '.join(f.get(k, '-') for k in ('t', 'guest_flip_hz', 'host_hz', 'ee_ms', 'vu_ms', 'gs_ms',
                                                     'guest_wait_ms', 'gsq_wait_ms')))
 
+    split = [fields(l) for l in text if l.startswith('[gsw-split]')]
+    if split:
+        print('\n## [gsw-split] GS worker / VU1 thread (per window, ms; vif_ms = job - vu without PS2X_VU1_ASYNC)')
+        print('job_ms | vu_ms | kick_ms | vif_ms | runs | kicks | jobs | async_wait_ms')
+        for f in split:
+            print(' | '.join(f.get(k, '-') for k in ('job_ms', 'vu_ms', 'kick_ms', 'vif_ms', 'runs', 'kicks', 'jobs',
+                                                    'async_wait_ms')))
+
     gl = [l for l in text if l.startswith('[gs-gl] window')]
     if gl:
         print('\n## [gs-gl] GL thread, ms per op kind summed over the log')

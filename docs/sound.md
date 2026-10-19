@@ -52,6 +52,20 @@ model: the SPU2 register-level model and the IOP's SPU DMA channels were removed
   - Checked 2026-10-19: zones gate 5/5 ok, savetest 129 pages, directory intact, audio stats (missing/dropped only in
     the load windows, same as inline), tools/movies.py SEMO01 identical to inline (1410 pictures at 30/s, 46.0 s audio, A/V drift 0.05 s, no
     silence, clipping, repeats or drops).
+  - Console (2026-10-19, ext agent/sw-vu1-par 97a7cfa = sw-ee5 merged, `PLAY=1` bot fight, logs
+    `port/switch/logs/20261019_par_snd*`, `PS2X_IOP_NATIVE_STATS=1`, mean of 20 gameplay windows, ms per 5 s on the
+    EE thread / core 1):
+
+    | | IOP total | cpu | sound | mixer thread (core 0) | waits | samples on the thread | fps (16 windows) |
+    |---|---|---|---|---|---|---|---|
+    | `GOW_SOUND_THREAD=0` (inline) | 1183 | 355 | 634 | 0 | 0 | 0 | 22.5 |
+    | batch 128 (default) | 1178 | 955 | 33 | 256 | 169 | ~148k of 240k | 22.5 |
+    | batch 64 | 1159 | 689 | 291 | 296 | 99 | ~189k | 22.3 |
+    | batch 32 | 1097 | 583 | 343 | 335 | 67 | ~206k | 24.0 |
+
+    On the A57 the IOP time on core 1 barely moves (-0 to -7 %): what the thread takes is replaced by inline mixing
+    at the driver's sync() calls (`cpu=`) and by waits for a batch being mixed (~700-950 waits per 5 s at batch 128). Batch 32 is the best of the three (-86 ms per 5 s); fps differences are within the run-to-run noise
+    (the bot fight varies by +-2 fps).
 - Sample clock = the IOP cycles the EE granted (`IopEmulator::runCycles`), each call clamped to its grant: IOP work
   outside runCycles (EE-side RPC calls into IOP servers; a dbcman RPC at 0x12BCC costs ~10 M IOP cycles/s on the
   title screen and menus) and overshoot inside it move the IOP clock ahead of the EE but produce no samples.
