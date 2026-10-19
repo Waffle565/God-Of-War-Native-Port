@@ -20,6 +20,15 @@ BOOT_ELF="${BOOT_ELF:-sdmc:/switch/gow/disc-usa/SCUS_973.99}"
 
 [ -f "$DEVKITPRO/cmake/Switch.cmake" ] || { echo "error: missing $DEVKITPRO/cmake/Switch.cmake (switch-dev)" >&2; exit 1; }
 [ -d "$VU1_PREGEN/vu1_generado" ] || echo "warning: no pregenerated VU1 code in $VU1_PREGEN (VU1 runs on the interpreter)" >&2
+# The native blocks must come from vu1n_gen.py --locals (registers in locals, in-place self-loops; ~26 % less VU1 work on
+# the A57, docs/switch.md "VU1 on the A57"). A PC build folder configured before that flag holds the older form, which
+# still runs but slower: the deko3d console builds of 2026-10-19 morning used build-kl's from 2026-10-13 that way.
+if [ -d "$VU1_PREGEN/vu1n_generado" ] && ! grep -q "chainTo" "$VU1_PREGEN"/vu1n_generado/vu1n_part*.cpp; then
+    if [ "${ALLOW_OLD_VU1N:-0}" != "1" ]; then
+        echo "error: $VU1_PREGEN/vu1n_generado was not generated with --locals (regenerate: python -I tools/vu1/vu1n_gen.py <dir>/vu1n_generado port/vu1_micro --heads port/vu1n_heads.txt --parts 6 --locals; ALLOW_OLD_VU1N=1 builds anyway)" >&2
+        exit 1
+    fi
+fi
 
 export DEVKITPRO DEVKITA64="$DEVKITPRO/devkitA64"
 export PATH="$DEVKITPRO/tools/bin:$DEVKITA64/bin:$PATH"
