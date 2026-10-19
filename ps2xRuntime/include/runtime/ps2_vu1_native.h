@@ -214,6 +214,8 @@ struct VU1Interpreter::NativeState
     // marker that blocks run speculatively: no timing cache updates, no exact-engine callouts (specFail instead; limit is
     // then set so chainTo hands every block back to the helper's dispatch loop)
     struct VU1Split *split = nullptr;
+    // GOW_VU1_HLE (ps2_vu1_hle.inl): which dispatch pcs start a plain-float vertex-loop kernel (null: off)
+    struct VU1HleState *hle = nullptr;
     int splitMode = -1; // -1 not read yet, 0 off, 1 on (GOW_VU1_SPLIT)
     bool specMode = false, specFail = false;
     uint16_t splitLast[2048] = {}; // per slot: VU cycles of its last dispatch (saturated)

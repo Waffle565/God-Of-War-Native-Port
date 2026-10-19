@@ -5,6 +5,7 @@
 #include <unordered_map>
 
 #include "ps2_vu1_split.inl" // GOW_VU1_SPLIT: data-parallel vertex loops (VU1Split, used by runNative below)
+#include "ps2_vu1_hle.inl"   // GOW_VU1_HLE: plain-float kernels for the hot vertex loops (used by runNative below)
 
 // GOW_VU1N_BLOCKPROF=<file> (with GOW_VU1N_REPLAY): per dispatched block pc, runs and VU cycles of the warm replay
 // passes, written at the end of the replay ("pc runs cycles"); finds the hot paths of the microprograms (docs/vu1-hle.md)
@@ -18,6 +19,11 @@ static std::unordered_map<uint32_t, uint64_t> *g_vu1nEdgeProf = nullptr;
 // returns from (also the second block of a two-block cycle, which the "e" lines attribute to the dispatched one) ends in
 // a JR / JALR at that pc; vu1n_gen.py chains to the most frequent targets of each site (docs/vu1-native-flags.md "JR")
 static std::unordered_map<uint32_t, uint64_t> *g_vu1nJrProf = nullptr;
+// with GOW_VU1N_BLOCKPROF: per dispatched block's code (FNV-1a of its pairs, without the pc: the same code loaded at
+// another address counts together), runs and VU cycles ("k <code hash> <pc> <pairs> <runs> <cycles>"): finds the hot
+// loops of the vertex modules, which the game loads at different addresses (docs/vu1-gpu.md)
+struct VU1CodeProf { uint32_t pc = 0, pairs = 0; uint64_t runs = 0, cycles = 0; };
+static std::unordered_map<uint64_t, VU1CodeProf> *g_vu1nCodeProf = nullptr;
 
 namespace
 {
@@ -897,6 +903,8 @@ bool VU1Interpreter::runNative(StepContext &context)
     if (!m_native)
         m_native = new NativeState();
     NativeState &ns = *m_native;
+    if (!ns.hle && vu1hle::enabled())
+        ns.hle = new VU1HleState();
     if (!ns.enabled)
         return false;
     if (m_state.branchPending || m_state.ebit || m_state.haltAfterDelaySlot || m_stopRequested)
@@ -907,6 +915,11 @@ bool VU1Interpreter::runNative(StepContext &context)
     {
         ns.generation = generation;
         VU1NativeAccess::codeChanged(ns, context.vuCode);
+        if (ns.hle) // kernels are matched again against the new code (VU1HleState::tried)
+        {
+            std::memset(ns.hle->tried, 0, sizeof(ns.hle->tried));
+            std::memset(ns.hle->kernel, 0, sizeof(ns.hle->kernel));
+        }
     }
 
     const uint64_t savedFpMode = vu_fpmode::get();
@@ -985,6 +998,50 @@ bool VU1Interpreter::runNative(StepContext &context)
             ++ns.count;
             ns.trace.push_back(pc);
         }
+        if (ns.hle && !bisecting) // GOW_VU1_HLE: a hot vertex loop runs as a plain-float kernel (ps2_vu1_hle.inl)
+        {
+            VU1HleState &hs = *ns.hle;
+            if (!hs.tried[pc >> 3])
+            {
+                hs.tried[pc >> 3] = 1u;
+                for (uint32_t k = 0; k < vu1hle::kKernelCount && !hs.kernel[pc >> 3]; ++k)
+                {
+                    if (!((vu1hle::kernelMask() >> k) & 1u))
+                        continue;
+                    const vu1hle::Kernel &kn = vu1hle::kKernels[k];
+                    for (uint32_t e = 0; e < 2; ++e)
+                    {
+                        const uint32_t off = kn.entryOff[e];
+                        if (off == ~0u || pc < off || pc - off + kn.regionPairs * 8u > context.codeSize)
+                            continue;
+                        if (vu1hle::fnv(context.vuCode + (pc - off), kn.regionPairs * 8u) == kn.regionHash)
+                        {
+                            hs.kernel[pc >> 3] = static_cast<uint8_t>(((k + 1u) << 1) | e);
+                            break;
+                        }
+                    }
+                }
+            }
+            if (const uint32_t kv = hs.kernel[pc >> 3])
+            {
+                const uint32_t k = (kv >> 1) - 1u, e = kv & 1u;
+                const vu1hle::Kernel &kn = vu1hle::kKernels[k];
+                vu1hle::Ctx hc{m_state, context.vuData, m_cycle, context.budgetEnd, pc - kn.entryOff[e]};
+                const uint64_t c0 = m_cycle;
+                const uint32_t r = kn.fn(hc, e);
+                if (r != vu1hle::kDecline)
+                {
+                    vu1hle::stats().calls[k].fetch_add(1u, std::memory_order_relaxed);
+                    vu1hle::stats().cycles[k].fetch_add(m_cycle - c0, std::memory_order_relaxed);
+                    // the passes ran without the cycle model: nothing is in flight any more at the kernel's end
+                    ns.histCount = 0u;
+                    ns.arraysReadyBy = 0u;
+                    m_state.pc = r & 0x3FFFu;
+                    ++blocks;
+                    continue;
+                }
+            }
+        }
         if (split)
             ctx.budgetEnd = split->before(*this, sl, context.budgetEnd);
         const uint64_t start = m_cycle;
@@ -1006,7 +1063,47 @@ bool VU1Interpreter::runNative(StepContext &context)
             t.start = start;
             ctx.tail = &t;
         }
+        // GOW_VU1N_PEEK=<code hash hex>[:n]: registers and data memory around vi2 / vi3 before and after the first n
+        // dispatches of the block with that code (the "k" hash of GOW_VU1N_BLOCKPROF): reading a vertex loop's layout
+        static const char *peekEnv = std::getenv("GOW_VU1N_PEEK");
+        static uint64_t peekKey = peekEnv ? std::strtoull(peekEnv, nullptr, 16) : 0u;
+        static int peekLeft = peekEnv && std::strchr(peekEnv, ':') ? std::atoi(std::strchr(peekEnv, ':') + 1) : 2;
+        bool peekThis = false;
+        if (peekKey && peekLeft > 0 && pc + sl.pairs * 8u <= context.codeSize)
+        {
+            uint64_t h = 1469598103934665603ull;
+            for (uint32_t b = 0; b < sl.pairs * 8u; ++b)
+                h = (h ^ context.vuCode[pc + b]) * 1099511628211ull;
+            peekThis = h == peekKey;
+        }
+        int peekBase[2] = {m_state.vi[2], m_state.vi[3]};
+        const auto peek = [&](const char *when) {
+            std::fprintf(stderr, "[vu1n-peek] %s pc=%x cycle=%llu vi:", when, pc, static_cast<unsigned long long>(m_cycle));
+            for (int r = 1; r < 16; ++r)
+                std::fprintf(stderr, " %d=%d", r, m_state.vi[r] & 0xFFFF);
+            std::fprintf(stderr, "\n");
+            for (int r = 0; r < 32; ++r)
+                std::fprintf(stderr, "[vu1n-peek]   vf%d %g %g %g %g\n", r, m_state.vf[r][0], m_state.vf[r][1], m_state.vf[r][2], m_state.vf[r][3]);
+            for (int base : {0, 1})
+                for (int q = -4; q < 28; ++q)
+                {
+                    const uint32_t a = ((peekBase[base] + q) & 0x3FF) * 16u;
+                    uint32_t w[4];
+                    std::memcpy(w, context.vuData + a, 16);
+                    float f[4];
+                    std::memcpy(f, w, 16);
+                    std::fprintf(stderr, "[vu1n-peek]   vi%d%+d @%d: %08x %08x %08x %08x | %g %g %g %g\n", base + 2, q, a / 16, w[0], w[1], w[2],
+                                 w[3], f[0], f[1], f[2], f[3]);
+                }
+        };
+        if (peekThis)
+            peek("before");
         const uint32_t result = fn(ctx);
+        if (peekThis)
+        {
+            peek("after");
+            --peekLeft;
+        }
         if (g_vu1nBlockProf) // GOW_VU1N_BLOCKPROF (replay): VU cycles per dispatched block pc, chained blocks included
         {
             auto &e = (*g_vu1nBlockProf)[pc];
@@ -1015,6 +1112,17 @@ bool VU1Interpreter::runNative(StepContext &context)
             if (g_vu1nEdgeProf && blocks != 0u)
                 ++(*g_vu1nEdgeProf)[(edgeFrom << 16) | pc];
             edgeFrom = pc;
+            if (g_vu1nCodeProf && sl.pairs != 0u && pc + sl.pairs * 8u <= context.codeSize)
+            {
+                uint64_t h = 1469598103934665603ull;
+                for (uint32_t b = 0; b < sl.pairs * 8u; ++b)
+                    h = (h ^ context.vuCode[pc + b]) * 1099511628211ull;
+                VU1CodeProf &cp = (*g_vu1nCodeProf)[h];
+                cp.pc = pc;
+                cp.pairs = sl.pairs;
+                ++cp.runs;
+                cp.cycles += m_cycle - start;
+            }
             const NativeState::Slot *ls = static_cast<const NativeState::Slot *>(ctx.slot);
             if (g_vu1nJrProf && ls >= ns.slots && ls < ns.slots + 2048 && ls->pairs >= 2u && !(result & kVu1nEnded))
             {
@@ -1067,6 +1175,8 @@ bool VU1Interpreter::runNative(StepContext &context)
         ns.exitCycle = m_cycle;
     }
     vu_fpmode::set(savedFpMode);
+    if (ns.hle)
+        vu1hle::report();
     if (ns.diag)
     {
         static auto last = std::chrono::steady_clock::now();
@@ -1247,7 +1357,8 @@ void VU1NativeAccess::recordReplay(VU1Interpreter &vu, void *contextPtr, uint32_
                 if (rep == 1u && !g_vu1nBlockProf && std::getenv("GOW_VU1N_BLOCKPROF"))
                     g_vu1nBlockProf = new std::unordered_map<uint32_t, std::pair<uint64_t, uint64_t>>(),
                     g_vu1nEdgeProf = new std::unordered_map<uint32_t, uint64_t>(),
-                    g_vu1nJrProf = new std::unordered_map<uint32_t, uint64_t>();
+                    g_vu1nJrProf = new std::unordered_map<uint32_t, uint64_t>(),
+                    g_vu1nCodeProf = new std::unordered_map<uint64_t, VU1CodeProf>();
                 g_vu1nTraceThis = rep == 1u && std::getenv("GOW_VU1N_TRACEREC") &&
                                   total == static_cast<unsigned>(std::atoi(std::getenv("GOW_VU1N_TRACEREC")));
                 std::memcpy(scratch->data, rec->data, sizeof(rec->data));
@@ -1404,6 +1515,10 @@ void VU1NativeAccess::recordReplay(VU1Interpreter &vu, void *contextPtr, uint32_
                     std::fprintf(bp, "e %x %x %llu\n", kv.first >> 16, kv.first & 0xFFFFu, static_cast<unsigned long long>(kv.second));
                 for (const auto &kv : *g_vu1nJrProf)
                     std::fprintf(bp, "j %x %x %llu\n", kv.first >> 16, kv.first & 0xFFFFu, static_cast<unsigned long long>(kv.second));
+                for (const auto &kv : *g_vu1nCodeProf)
+                    std::fprintf(bp, "k %016llx %x %u %llu %llu\n", static_cast<unsigned long long>(kv.first), kv.second.pc,
+                                 kv.second.pairs, static_cast<unsigned long long>(kv.second.runs),
+                                 static_cast<unsigned long long>(kv.second.cycles));
                 std::fclose(bp);
             }
             delete g_vu1nBlockProf;
@@ -1412,6 +1527,8 @@ void VU1NativeAccess::recordReplay(VU1Interpreter &vu, void *contextPtr, uint32_
             g_vu1nEdgeProf = nullptr;
             delete g_vu1nJrProf;
             g_vu1nJrProf = nullptr;
+            delete g_vu1nCodeProf;
+            g_vu1nCodeProf = nullptr;
         }
         std::fclose(f);
         if (vu.m_native->split)
@@ -1419,6 +1536,8 @@ void VU1NativeAccess::recordReplay(VU1Interpreter &vu, void *contextPtr, uint32_
         vu = saved;
         vu.m_native->generation = ~0ull - 1u;
         std::fprintf(stderr, "[vu1n-replay] %u records, %u differ (warm passes: %u differ)\n", total, differ, warmDiffer);
+        if (vu1hle::enabled())
+            vu1hle::report(true);
         return;
     }
     static const unsigned limit = std::getenv("GOW_VU1N_RECORD_N") ? static_cast<unsigned>(std::atoi(std::getenv("GOW_VU1N_RECORD_N"))) : 4000u;
