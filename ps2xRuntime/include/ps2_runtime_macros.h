@@ -525,8 +525,12 @@ inline constexpr uint32_t ps2_gen_pc = 0xFFFFFFFFu;
             ctx->pc = ps2_gen_pc;                \
     } while (0)
 
+// The slow path is a lambda handed to Ps2ReadSpecial; captured by value, the addresses of rdram, ctx and runtime do
+// not escape. Captured by reference they had to live on the stack, and every guest store through rdram (a char
+// access, which may alias anything) made the generated code reload them: one stack load per access on AArch64
+// (devkitA64 -O2 code of the hottest EE function -6 %).
 #define PS2_READ_SPECIAL(T, N, _addr) \
-    Ps2ReadSpecial<T>(_addr, [&]() -> T { PS2_PUBLISH_GEN_PC(); return runtime->Load##N(rdram, ctx, _addr); })
+    Ps2ReadSpecial<T>(_addr, [rdram, ctx, runtime, _addr]() -> T { PS2_PUBLISH_GEN_PC(); return runtime->Load##N(rdram, ctx, _addr); })
 
 #define PS2_STORE_SPECIAL(T, N, _addr, val)                               \
     do                                                                    \

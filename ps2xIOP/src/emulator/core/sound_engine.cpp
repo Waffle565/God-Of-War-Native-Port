@@ -582,14 +582,14 @@ namespace ps2x::iop::detail
             coreOut[core][1] = right;
         }
         // core 0 through its master volume, added to core 1's dry output, all through core 1's master volume
-        // (simplified MMIX routing)
-        std::lock_guard<std::mutex> lock(m_outputMutex);
+        // (simplified MMIX routing). Collected in m_mixed: advanceTo() hands a whole batch to the output under one
+        // lock (it was one lock per sample, 48000 per second on the EE thread).
         const int32_t master[2][2] = {{volumeOf(m_cores[0].mvolL), volumeOf(m_cores[0].mvolR)},
                                       {volumeOf(m_cores[1].mvolL), volumeOf(m_cores[1].mvolR)}};
         for (uint32_t side = 0; side < 2u; ++side)
         {
             const int32_t core0 = (coreOut[0][side] * master[0][side]) >> 14;
-            m_output.push_back(clamp16(((core0 + coreOut[1][side]) * master[1][side]) >> 14));
+            m_mixed.push_back(clamp16(((core0 + coreOut[1][side]) * master[1][side]) >> 14));
         }
         // GOW_SND_VOICEDUMP=1: while a core input stream (a movie) plays, once per second for its first 10 seconds, every
         // voice that is still sounding (active, pitch and envelope non-zero) with its volumes and sample addresses
@@ -620,7 +620,7 @@ namespace ps2x::iop::detail
         if (raw)
         {
             static std::vector<int16_t> pending;
-            pending.insert(pending.end(), m_output.end() - 2, m_output.end());
+            pending.insert(pending.end(), m_mixed.end() - 2, m_mixed.end());
             if (pending.size() >= 8192u)
             {
                 std::fwrite(pending.data(), sizeof(int16_t), pending.size(), raw);
@@ -628,8 +628,6 @@ namespace ps2x::iop::detail
                 pending.clear();
             }
         }
-        if (m_output.size() > kMaxBufferedFrames * 2u)
-            m_output.erase(m_output.begin(), m_output.begin() + static_cast<std::ptrdiff_t>(m_output.size() / 2u & ~size_t{1}));
     }
 
     void SoundEngine::advanceTo(uint64_t iopCycle)
@@ -638,9 +636,16 @@ namespace ps2x::iop::detail
             return;
         const uint64_t samples = (iopCycle - m_lastCycle) / CyclesPerSample;
         m_maxAdvance = std::max<uint64_t>(m_maxAdvance, iopCycle - m_lastCycle);
+        if (samples == 0u)
+            return;
+        m_mixed.clear();
         for (uint64_t i = 0; i < samples; ++i)
             step();
         m_lastCycle += samples * CyclesPerSample;
+        std::lock_guard<std::mutex> lock(m_outputMutex);
+        m_output.insert(m_output.end(), m_mixed.begin(), m_mixed.end());
+        if (m_output.size() > kMaxBufferedFrames * 2u)
+            m_output.erase(m_output.begin(), m_output.begin() + static_cast<std::ptrdiff_t>(m_output.size() / 2u & ~size_t{1}));
     }
 
     size_t SoundEngine::pendingFrames() const

@@ -51,6 +51,7 @@ namespace ps2recomp
         bool hasRealDelaySlot() const;
         bool isLikelyBranch() const;
         bool isCallLikeEdge() const;
+        bool conditionalBranch() const;
         bool isInternalTarget(uint32_t target) const;
         std::vector<uint32_t> resolvedLocalIndirectTargets() const;
 

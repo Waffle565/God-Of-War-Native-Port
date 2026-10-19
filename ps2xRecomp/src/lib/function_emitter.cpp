@@ -1,5 +1,6 @@
 #include "ps2recomp/Emitters/function_emitter.h"
 #include "ps2recomp/code_generator.h"
+#include "ps2recomp/codegen_helpers.h"
 #include "ps2recomp/gif_dma_kick_analyzer.h"
 #include "ps2recomp/instructions.h"
 #include "ps2recomp/r5900_decoder.h"
@@ -26,39 +27,8 @@ namespace ps2recomp
             return inst;
         }
 
-        // GOW-Port: which translated instructions need their `ctx->pc = <address>` store. The PC is read only by the
-        // runtime (calls, exceptions, dispatch, checkpoints), and every branch, call and checkpoint the emitter writes
-        // stores its own PC first. So:
-        //  - NeedsPc: the instruction calls the runtime itself or touches ctx->pc (syscalls, overflow traps, COP0,
-        //    MMIO services, multi-line constructs): unchanged.
-        //  - GuestMemory: its only way into the runtime is a guest memory access macro (READn/WRITEn), whose
-        //    special-address path publishes ps2_gen_pc (ps2_runtime_macros.h): emitted in a block declaring it.
-        //  - Pure: register/FPU/VU0 arithmetic and plain RAM accesses: no PC store at all.
-        // Before, a PC store stayed in front of every load/store (the slow path could read it) and kept the previous
-        // instruction's store alive as well: on AArch64 a mov/movk/str per guest instruction around every access.
-        enum class PcUse { NeedsPc, GuestMemory, Pure };
-
-        PcUse classifyPcUse(const std::string &body)
-        {
-            if (body.find("runtime") != std::string::npos || body.find("ctx->pc") != std::string::npos ||
-                body.find("throw") != std::string::npos || body.find('\n') != std::string::npos)
-            {
-                return PcUse::NeedsPc;
-            }
-            for (const char *macro : {"READ8(", "READ16(", "READ32(", "READ64(", "READ128(",
-                                      "WRITE8(", "WRITE16(", "WRITE32(", "WRITE64(", "WRITE128("})
-            {
-                for (size_t at = body.find(macro); at != std::string::npos; at = body.find(macro, at + 1))
-                {
-                    // whole macro name only (FAST_READ32 is a plain RAM access, it does not count)
-                    if (at == 0 || !(std::isalnum(static_cast<unsigned char>(body[at - 1])) || body[at - 1] == '_'))
-                    {
-                        return PcUse::GuestMemory;
-                    }
-                }
-            }
-            return PcUse::Pure;
-        }
+        using codegen::PcUse;
+        using codegen::classifyPcUse;
     }
 
     FunctionEmitter::FunctionEmitter(CodeGenerator &codeGenerator)
