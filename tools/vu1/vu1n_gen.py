@@ -24,6 +24,8 @@ LOCALS = False   # --locals: register file in C++ locals (Regs) and self-loops; 
 # from one function per group of blocks (GCC spilled the vector registers across the large functions) or by tail calls
 # (chainTo costs about what runNative's dispatch does): no gain on the A57 (docs/switch.md).
 LOOPS = True
+# two-block cycles (needs LOCALS and LOOPS): gen_cycle. --no-cycles turns it off (A/B measurements).
+CYCLES = True
 
 
 def fnv_block(pc, words):
@@ -101,6 +103,10 @@ class Regs:
         self.need = []        # read before written: loaded at block entry (in first-use order)
         self.defined = []     # every register the block touches
         self.dirty = []       # written so far (stored back at an exit)
+        # loop functions (self-loops, gen_cycle): VF registers the function never writes; their operand view (nrm) is
+        # computed once at entry (N<r>) instead of at every use in every pass (the matrix rows of the vertex loops)
+        self.inv = set()
+        self.nused = []
 
     def _use(self, key):
         if key not in self.defined:
@@ -127,6 +133,11 @@ class Regs:
             return self.f(r)
         if not self.local:
             return f"vu1n::ldn(s, {r})"
+        if r in self.inv:
+            self.f(r)
+            if r not in self.nused:
+                self.nused.append(r)
+            return f"N{r}"
         return f"vu1n::nrm({self.f(r)})"
 
     def setf(self, r, m, expr):
@@ -212,6 +223,8 @@ class Regs:
                 out.append("float QR" + (" = s.q;" if load else " = 0.0f;"))
             else:
                 out.append("float IR" + (" = s.i;" if load else " = 0.0f;"))
+        for r in self.nused:
+            out.append(f"const __m128 N{r} = vu1n::nrm(F{r});")
         return out
 
     def writeback(self):
@@ -368,12 +381,18 @@ def emit_upper(u, pc, idx, mac_var, clip_var, prev_clip, clean=None):
         r = f"_mm_max_ps({a}, {b})"
     else:
         r = f"_mm_min_ps({a}, {b})"
-    out = [f"__m128 r{idx} = {r};"]
-    if kind in ('add', 'sub', 'mul', 'madd', 'msub') and mac_var:
-        out.append(f"const uint32_t {mac_var} = vu1n::macVal<{m}>(r{idx});")
-        out.append(f"const __m128 q{idx} = r{idx};  // unclamped: flags computed later if it outlives the block")
-    if kind not in ('max', 'min', 'mini'):
-        out.append(f"r{idx} = vu1n::clampv(r{idx});")
+    if kind in ('madd', 'msub'):
+        # maddc: clamps only on its wide path (the fast path's result is already in range); q = the unclamped result
+        out = [f"__m128 q{idx};", f"__m128 r{idx} = vu1n::maddc<{'true' if kind == 'msub' else 'false'}>({acc}, {a}, {b}, q{idx});"]
+        if mac_var:
+            out.append(f"const uint32_t {mac_var} = vu1n::macVal<{m}>(q{idx});")
+    else:
+        out = [f"__m128 r{idx} = {r};"]
+        if kind in ('add', 'sub', 'mul') and mac_var:
+            out.append(f"const uint32_t {mac_var} = vu1n::macVal<{m}>(r{idx});")
+            out.append(f"const __m128 q{idx} = r{idx};  // unclamped: flags computed later if it outlives the block")
+        if kind not in ('max', 'min', 'mini'):
+            out.append(f"r{idx} = vu1n::clampv(r{idx});")
     if toacc:
         out.append(RG.setacc(m, f"r{idx}"))
     elif fd:
@@ -616,9 +635,11 @@ def emit_lower(l, pc, upper, bkp, mac_expr, clip_expr, clip_var):
     return [f"VU1NativeAccess::callLower(n, {pc}u, 0x{l:08x}u, 0x{upper:08x}u);"]
 
 
-def gen_block(pc0, pairs, tail_out=None, selfname=None):
+def gen_block(pc0, pairs, tail_out=None, selfname=None, regs=None, pieces=None):
     """tail_out: list that receives the block's VU1TailDesc (mac pairs, mac masks, clip pairs) when it has one.
     selfname: the block's own function name when it may repeat itself in place (self-loop, see the exit below).
+    regs / pieces (gen_cycle): generate with that register file and return only the body lines and the exit expression
+    in pieces (lines, nx, end_pc) instead of a whole function.
     C++ body for a block, or None if the block uses something the native backend does not support."""
     n = len(pairs)
     infos = [lower_info(l) if not (u >> 31) else lower_info(0) for (l, u) in pairs]
@@ -640,7 +661,19 @@ def gen_block(pc0, pairs, tail_out=None, selfname=None):
     global RG
     calls_out = any((not (u >> 31) and infos[i]['calls_out']) or classify(u)[0] in ('opmsub', 'opmula', 'other')
                     for i, (l, u) in enumerate(pairs))
-    RG = Regs(LOCALS and not calls_out)
+    if regs is not None:
+        if calls_out:
+            return None
+        RG = regs
+    else:
+        inv = set()
+        if selfname and LOCALS and not calls_out:
+            # a block that may repeat itself: the VF registers it never writes get their operand view once (Regs.inv)
+            pre = Regs(True)
+            if gen_block(pc0, pairs, [], None, regs=pre, pieces={}) == 'pieces':
+                inv = {k[1] for k in pre.defined if k[0] == 'f' and k not in pre.dirty and k[1] != 0}
+        RG = Regs(LOCALS and not calls_out)
+        RG.inv = inv
     # Flag model of the exact engine: an FMAC / CLIP / FCSET issued at pair j becomes visible to flag readers 4 cycles later
     # (kFmacLatency, on the exact engine's stall-model cycles n.cyc, computed at block entry from the pipeline state the
     # previous block left). Flags older than the block come from the exact engine's
@@ -828,9 +861,14 @@ def gen_block(pc0, pairs, tail_out=None, selfname=None):
     ebit = any((u >> 30) & 1 for (l, u) in pairs)
     lines.extend(flush_final(n - 1))
     if ebit:
+        if pieces is not None:
+            return None
         return RG.decls() + lines + RG.writeback() + [f"return kVu1nEnded | {end_pc}u;"]
     # exit: a branch back to the block's own start repeats it with the registers still in locals, when chainTo agrees
     nx = f"taken ? target : {end_pc}u" if last_is_branch_block else f"{end_pc}u"
+    if pieces is not None:
+        pieces.update(lines=lines, nx=nx, end_pc=end_pc)
+        return 'pieces'
     self_loop = bool(selfname) and RG.local and (pc0 in branch_targets or (not last_is_branch_block and end_pc == pc0))
     out = RG.decls()
     if not self_loop:
@@ -843,6 +881,67 @@ def gen_block(pc0, pairs, tail_out=None, selfname=None):
     exit_lines += ["    if (lg == 1u)", "        continue;", "}"]
     exit_lines += RG.writeback() + ["return nx | (lg ? kVu1nFinished : 0u);"]
     return out + ["for (;;)", "{"] + ["    " + ln for ln in lines + exit_lines] + ["}"]
+
+
+def branch_target(pc0, pairs):
+    """static taken target of a block ending in B / BAL / a conditional branch (None for JR / JALR or no branch)"""
+    n = len(pairs)
+    if n < 2 or not is_branch(*pairs[n - 2]):
+        return None
+    l, _ = pairs[n - 2]
+    op = l >> 25
+    if op in (0x24, 0x25):
+        return None
+    return (pc0 + 8 * (n - 2) + 8 + sx(l & 0x7FF, 11) * 8) & 0x3FFF
+
+
+def gen_cycle(pc_a, pairs_a, pc_b, pairs_b, name_a, name_b):
+    """Two blocks that branch to each other (a loop unrolled into two blocks, e.g. the vertex loop at 0x2840/0x2898 of
+    the main renderer, docs/vu1-hle.md): one function for A that goes on into B and back while chainTo agrees, the
+    registers of both in locals the whole time. Before, every pass through the loop left through runNative twice (each
+    block loading and storing its ~20 registers). Exits: like the single blocks (writeback, next pc). Returns the body
+    lines or None (falls back to A's own function)."""
+    if not (LOCALS and LOOPS):
+        return None
+    # pass 1: the registers either block touches; pass 2: generated with all of them loaded at entry and stored at every
+    # exit (an exit after A has to store what B wrote in earlier passes)
+    union = Regs(True)
+    for pc, pairs in ((pc_a, pairs_a), (pc_b, pairs_b)):
+        p = {}
+        if gen_block(pc, pairs, [], None, regs=union, pieces=p) != 'pieces':
+            return None
+    seeded = Regs(True)
+    seeded.defined = list(union.defined)
+    seeded.need = list(union.defined)
+    seeded.dirty = list(union.dirty)
+    seeded.inv = {k[1] for k in union.defined if k[0] == 'f' and k not in union.dirty and k[1] != 0}
+    pa, pb = {}, {}
+    if gen_block(pc_a, pairs_a, [], None, regs=seeded, pieces=pa) != 'pieces':
+        return None
+    if gen_block(pc_b, pairs_b, [], None, regs=seeded, pieces=pb) != 'pieces':
+        return None
+    q_dirty = ('q',) in seeded.dirty
+    wb = seeded.writeback()
+
+    def chain(pc, fn, then):
+        out = ["    s.q = QR; // FDIV timing (scalarStart) reads it"] if q_dirty else []
+        out += [f"    lg = VU1NativeAccess::chainTo(n, {pc}u, {fn});"]
+        out += ["    QR = s.q;"] if q_dirty else []
+        out += ["    if (lg == 1u)", f"        {then};"]
+        return out
+
+    def exit_of(p, own_pc, own_fn, own_then, other_pc, other_fn, other_then):
+        out = [f"const uint32_t nx = {p['nx']};", "uint32_t lg = 0u;"]
+        out += [f"if (nx == {other_pc}u)", "{"] + chain(other_pc, other_fn, other_then) + ["}"]
+        out += [f"else if (nx == {own_pc}u)", "{"] + chain(own_pc, own_fn, own_then) + ["}"]
+        return out + wb + ["return nx | (lg ? kVu1nFinished : 0u);"]
+
+    body = seeded.decls() + ["for (;;)", "{", "    {"]
+    body += ["        " + ln for ln in pa['lines'] + exit_of(pa, pc_a, name_a, "continue", pc_b, name_b, "goto cycleB")]
+    body += ["    }", "cycleB:", "    {"]
+    body += ["        " + ln for ln in pb['lines'] + exit_of(pb, pc_b, name_b, "goto cycleB", pc_a, name_a, "continue")]
+    body += ["    }", "}"]
+    return body
 
 
 def main():
@@ -859,6 +958,10 @@ def main():
         elif args[i] == '--locals':
             global LOCALS
             LOCALS = True
+            i += 1
+        elif args[i] == '--no-cycles':
+            global CYCLES
+            CYCLES = False
             i += 1
         elif args[i] == '--parts':
             parts = int(args[i + 1])
@@ -880,6 +983,8 @@ def main():
                 extra.add(int(line, 16) & 0x3FF8)
     blocks = {}
     unsupported = 0
+    fused = {}            # A's key -> B's function name (gen_cycle)
+    extern_names = set()  # B functions called by name from another block's function: not static, declared before use
     for f in inputs:
         code = open(f, 'rb').read()
         if len(code) != CODE_SIZE:
@@ -895,35 +1000,66 @@ def main():
             name = f"b{pc:04x}_{key & 0xFFFFFFFF:08x}"
             tail = []
             body = gen_block(pc, pairs, tail, name if LOOPS and LOCALS else None)
-            blocks[key] = (pc, len(pairs), body, tail[0] if tail else None)
+            # bit 16 of the registration: the block itself reads flags written before it (decided on its own code, also
+            # when gen_cycle replaces the body below)
+            reads_entry = body is not None and any("macAt(" in ln or "clipAt(" in ln for ln in body)
+            blocks[key] = (pc, len(pairs), body, tail[0] if tail else None, reads_entry)
             if body is None:
                 unsupported += 1
+        # two-block cycles (A branches to B, B back to A): A's function runs both (gen_cycle)
+        if CYCLES:
+            for pc in sorted(heads_of(code, extra)):
+                pairs = extent(code, pc)
+                tgt = branch_target(pc, pairs) if pairs else None
+                if tgt is None or tgt == pc:
+                    continue
+                pairs_b = extent(code, tgt)
+                if not pairs_b or branch_target(tgt, pairs_b) != pc:
+                    continue
+                key = fnv_block(pc, [w for pr in pairs for w in pr])
+                key_b = fnv_block(tgt, [w for pr in pairs_b for w in pr])
+                if key in fused or key not in blocks or key_b not in blocks or blocks[key][2] is None or blocks[key_b][2] is None:
+                    continue
+                name = f"b{pc:04x}_{key & 0xFFFFFFFF:08x}"
+                name_b = f"b{tgt:04x}_{key_b & 0xFFFFFFFF:08x}"
+                body = gen_cycle(pc, pairs, tgt, pairs_b, name, name_b)
+                if body is None:
+                    continue
+                fused[key] = name_b
+                extern_names.add(name_b)
+                p, npairs, _, tail, reads_entry = blocks[key]
+                blocks[key] = (p, npairs, body, tail, reads_entry)
     os.makedirs(out, exist_ok=True)
     texts = [[] for _ in range(parts)]
     regs = [[] for _ in range(parts)]
     count = 0
-    for key, (pc, npairs, body, tail) in sorted(blocks.items()):
+    for key, (pc, npairs, body, tail, reads_entry) in sorted(blocks.items()):
         if body is None:
             continue
         name = f"b{pc:04x}_{key & 0xFFFFFFFF:08x}"
         part = count % parts
         count += 1
         t = []
+        if key in fused:
+            t.append(f"uint32_t {fused[key]}(VU1NativeCtx &n);")
         if tail:
             mp, mm, cp = (list(x) + [0] * (3 - len(x)) for x in tail)
             t.append(f"static const VU1TailDesc {name}_tail = {{{len(tail[0])}, {len(tail[2])}, {{{mp[0]}, {mp[1]}, {mp[2]}}}, "
                      f"{{{mm[0]}, {mm[1]}, {mm[2]}}}, {{{cp[0]}, {cp[1]}, {cp[2]}}}}};")
-        t += [f"static uint32_t {name}(VU1NativeCtx &n)", "{", "    VU1State &s = *n.s;"]
+        t += [f"{'' if name in extern_names else 'static '}uint32_t {name}(VU1NativeCtx &n)", "{", "    VU1State &s = *n.s;"]
         t += ["    " + ln for ln in body]
         t += ["}", ""]
         texts[part].append("\n".join(t))
         # bit 16: the block reads flags written before it; only such blocks need exact entry timing (see runNative)
-        reads_entry = any("macAt(" in ln or "clipAt(" in ln for ln in body)
         regs[part].append(f"    vu1nRegisterBlock(0x{key:016x}ull, {name}, {npairs | (0x10000 if reads_entry else 0)}u, "
                           f"{'&' + name + '_tail' if tail else 'nullptr'});")
     header = ('// Generated by tools/vu1/vu1n_gen.py from the game\'s VU1 microcode. Do not publish.\n'
               '#include "runtime/ps2_vu1_native.h"\n#include <cmath>\n\n'
-              '#if defined(_MSC_VER)\n#pragma float_control(precise, on, push)\n#pragma fp_contract(off)\n#endif\n\n')
+              '#if defined(_MSC_VER)\n#pragma float_control(precise, on, push)\n#pragma fp_contract(off)\n#endif\n\n'
+              '#ifndef VU1N_HAS_MADDC // runtimes before agent/sw-vu1-hle: same result, clamp always\n'
+              'namespace vu1n\n{\n    template <bool Sub>\n'
+              '    inline __m128 maddc(__m128 acc, __m128 a, __m128 b, __m128 &raw)\n    {\n'
+              '        raw = madd<Sub>(acc, a, b);\n        return clampv(raw);\n    }\n}\n#endif\n\n')
     footer = '\n#if defined(_MSC_VER)\n#pragma float_control(pop)\n#endif\n'
     for k in range(parts):
         body = header + "\n".join(texts[k]) + "\nnamespace\n{\n    const bool g_registered = []\n    {\n" + "\n".join(regs[k]) + "\n        return true;\n    }();\n}\n" + footer
