@@ -11,7 +11,9 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <condition_variable>
 #include <mutex>
+#include <thread>
 #include <vector>
 
 namespace ps2x::iop::detail
@@ -24,6 +26,9 @@ namespace ps2x::iop::detail
         static constexpr uint32_t CyclesPerSample = 768u;  // IOP 36.864 MHz / 48 kHz
 
         SoundEngine();
+        ~SoundEngine();
+        SoundEngine(const SoundEngine &) = delete;
+        SoundEngine &operator=(const SoundEngine &) = delete;
         void reset();
 
         // ---- LIBSD API (entry codes as libsd: (id << 8) | (voice << 1) | core; master volumes have bit 7 set) ----
@@ -54,7 +59,7 @@ namespace ps2x::iop::detail
         };
         void startStream(uint32_t core, const uint8_t *ring, uint32_t size, bool loop);
         void stopStream(uint32_t core);
-        [[nodiscard]] uint32_t streamPosition(uint32_t core) const { m_lastPollCycle = m_lastCycle; return m_stream[core & 1u].position; }
+        [[nodiscard]] uint32_t streamPosition(uint32_t core) const { sync(); m_lastPollCycle = m_lastCycle; return m_stream[core & 1u].position; }
         [[nodiscard]] bool takeStreamHalf(uint32_t core) noexcept; // a half was consumed since the last call
 
         // time: one stereo sample every CyclesPerSample IOP cycles
@@ -104,6 +109,24 @@ namespace ps2x::iop::detail
         static uint32_t naxOf(const Voice &v) noexcept;
         void streamSample(uint32_t core, int32_t &left, int32_t &right);
         void step();
+        void mixTo(uint64_t iopCycle);
+
+        // GOW-Port: mixing on its own thread ("SoundMix", docs/sound.md "Mixer thread"). advanceTo() only records the
+        // cycle to mix up to; the worker mixes there. Every other call first waits until the worker has caught up
+        // (sync), so each register write or read lands after exactly the samples it did when mixing ran inline on the
+        // IOP thread: the output is sample-identical, and the mixing overlaps with the EE between the driver's calls.
+        // While a core input stream (a movie) plays, the IOP fills its ring outside these calls, so advanceTo() mixes
+        // inline then. GOW_SOUND_THREAD=0: always inline.
+        void sync() const;
+        void workerLoop();
+        mutable std::mutex m_jobMutex;
+        mutable std::condition_variable m_jobCv;
+        uint64_t m_jobTarget = 0; // the latest advanceTo() cycle not yet handed to mixTo()
+        bool m_jobPending = false;
+        bool m_jobRunning = false;
+        bool m_stop = false;
+        bool m_async = false;
+        std::thread m_worker;
 
         std::vector<uint16_t> m_ram;
         std::array<Core, 2> m_cores{};
