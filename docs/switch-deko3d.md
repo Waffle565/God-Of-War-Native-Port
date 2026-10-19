@@ -92,7 +92,10 @@ Gameplay on the console (log `port/switch/logs/20261019_s16`, ship fight, ~21 fp
   but the memory card load then never finished (zone gate slots 1-4): kept at 512.
 - `GOW_CORE_<thread>=<0-2>` in env.txt overrides a thread's core (ThreadNaming.h): `GOW_CORE_GSStage=0` moves the GS
   frontend next to the deko3d backend on core 0, which deko3d made light, and leaves core 1 to the EE and the IOP.
-  Untested on the console.
+  On the console it helps the title menu a little but not fights: there the deko3d thread fills core 0 (167-211k
+  draws per 5 s) and the stage blocks on its queue; same build, same bot fight: 25.4-27.6 fps by default, 20.6-22.0
+  with the stage on core 0 (docs/vu1-hle.md "The VU1 thread on the console"). The default stays. `VU1Run` (the
+  `PS2X_VU1_ASYNC` thread) defaults to core 2.
 - Gate (PC build of ext agent/sw-ee4 2b8d20f, regenerated code): port/swee4/gate/20261019_072605 zones 0-4 60 fps,
   speed 1.00, no capture flagged against port/swvu1/gate/20261019_015639; savetest 129 pages, card directory intact.
 - EE generated code (devkitA64 -O2, instructions): 0x162F18 50133 -> 46039 (-8.2 %), 0x111760 52480 -> 50152,
@@ -112,4 +115,6 @@ Gameplay on the console (log `port/switch/logs/20261019_s16`, ship fight, ~21 fp
   slots: no cheaper than `ctx`. Not pursued; the EE side is better served by moving work off core 1.
 - Sound mixing off core 1 (sw-ee5): the IOP's sound engine mixes on its own `SoundMix` thread, core 0 on the Switch
   (docs/sound.md "Mixer thread"). Of the IOP's ~1.2 s per 5 s on core 1, the mixing part leaves; the IRX code and
-  the services stay on the EE thread.
+  the services stay on the EE thread. PC: about 64 % of the mixing moves to the thread (IOP time on the EE thread
+  -16 % mean over the zones gate, -25 % in slot 2); the rest is mixed at the driver's calls. Not yet measured on the
+  console; if the wakes are cheap there, a smaller `GOW_SOUND_BATCH` moves more.

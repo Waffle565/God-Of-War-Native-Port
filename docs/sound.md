@@ -31,13 +31,27 @@ model: the SPU2 register-level model and the IOP's SPU DMA channels were removed
   handler `handler(channel, arg)` (989snd 0x78bc: releases its transfer lock and wakes the waiting thread) 512 IOP cycles
   later through `IopNativeServices::callGuestLater`, as the DMA interrupt did. VoiceTransStatus returns 1.
 - One stereo sample per 768 IOP cycles (`advanceTo`), drained by the host audio thread (`drainOutput`).
-- Mixer thread (2026-10-19, for the Switch's core 1): `advanceTo` only records the IOP cycle to mix up to, and the
-  `SoundMix` thread runs the per-sample DSP there. Every other call (set/get param, switch, address, core attribute,
-  sample RAM transfers, streams, `streamPosition`, reset) first waits until that thread has caught up, so each register
-  write or read happens after exactly the samples it did with inline mixing: the output is the same sample for sample,
-  and the mixing runs in parallel with the EE between the driver's calls. While a core input stream (a movie) plays,
-  the IOP fills its ring outside these calls, so `advanceTo` mixes inline then. `GOW_SOUND_THREAD=0` mixes inline
-  always. On the Switch the thread runs on core 0 (`GOW_CORE_SoundMix=<0-2>` moves it).
+- Mixer thread (2026-10-19, for the Switch's core 1): `advanceTo` (called every IOP scheduler loop, ~140000 times a
+  second, mostly with no whole sample due) only records the IOP cycle to mix up to; once a batch of 128 samples
+  (~2.7 ms, `GOW_SOUND_BATCH=<samples>`) is due it hands it to the `SoundMix` thread, which runs the per-sample DSP.
+  Every other call (set/get param, switch, address, core attribute, sample RAM transfers, streams, `streamPosition`,
+  reset) first calls `sync()`: it takes back a batch the thread has not started, waits only for a batch being mixed,
+  and mixes the rest itself. So each register write or read happens after exactly the samples it did with inline
+  mixing (the output is the same sample for sample) and the thread mixes in parallel with the EE between the driver's
+  calls. While a core input stream (a movie) plays, the IOP fills its ring outside these calls, so `advanceTo` mixes
+  inline then. `GOW_SOUND_THREAD=0` mixes inline always. On the Switch the thread runs on core 0
+  (`GOW_CORE_SoundMix=<0-2>` moves it).
+  - Why batches and take-back: handing every `advanceTo` to the thread cost more than the mixing (a lock and a wake
+    per call: `sound=` 94 ms per 5 s); waiting for a woken but not yet scheduled thread cost ~1 ms per wait on a busy
+    PC (92 ms per 5 s in one zone). With both, waits are 0-2 ms per 5 s.
+  - PC, `PS2X_IOP_NATIVE_STATS=1` (`[IOP:native] ... sound= (mixer thread, waits, worker samples)`), zones gate per
+    5 s, inline vs thread: IOP time on the EE thread 168 -> 141 ms mean over the five zones (slot 2: 160 -> 118-124);
+    `sound=` 51-107 -> 22 ms (what is left is the per-call bookkeeping and the stats clock itself); the thread
+    mixes ~64 % of the samples (14-56 ms), the rest is mixed inline at the driver's calls (`cpu=` +5-15 ms). Batch
+    32 moves 96 % of the samples but the wakes cost more than they save on the PC (slot 2: IOP 118 -> 129 ms).
+  - Checked 2026-10-19: zones gate 5/5 ok, savetest 129 pages, directory intact, audio stats (missing/dropped only in
+    the load windows, same as inline), tools/movies.py SEMO01 identical to inline (1410 pictures at 30/s, 46.0 s audio, A/V drift 0.05 s, no
+    silence, clipping, repeats or drops).
 - Sample clock = the IOP cycles the EE granted (`IopEmulator::runCycles`), each call clamped to its grant: IOP work
   outside runCycles (EE-side RPC calls into IOP servers; a dbcman RPC at 0x12BCC costs ~10 M IOP cycles/s on the
   title screen and menus) and overshoot inside it move the IOP clock ahead of the EE but produce no samples.
