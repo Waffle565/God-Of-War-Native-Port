@@ -124,3 +124,87 @@ Gameplay on the console (log `port/switch/logs/20261019_s16`, ship fight, ~21 fp
   the inline one. PC zones gate: EE-thread `iop_ms` 168-281 -> 19-32 ms per 5 s (-90 %; what stays is the RPC calls
   themselves), 5/5 ok at 60 fps, savetest and SEMO01 unchanged. Expected on the console: most of the ~1.2 s per 5 s
   of IOP time leaves core 1 for core 0; not yet measured there. `GOW_IOP_THREAD=0` is the A/B switch.
+
+## Draw count and per-draw cost (ext agent/sw-dkdraw, 2026-10-19)
+Measured in the bot fight (`PLAY=1`, ship) with `GOW_GS_HW_STATS=1`; logs `port/switch/logs/20261019_dkd_*`. Before
+(ext 31a482d, `update_par4`), heavy fight per 5 s: 6.5 M primitives in 14.4 k batches but **142-266 k deko3d draws
+with 125-229 k texture barriers**; GS thread (core 0) busy 2.9 s (draws 1.29 s of it, vertex upload 0.66 s for 19.7 M
+vertices), GS stage (core 1) 1.4 s.
+
+What the draws were: the shadow-volume passes (COLCLAMP=0, Cs*FIX + Cd counting in G). The VU1 program colours each
+volume triangle by its winding (G += 1 or G += 255 = -1), so one batch holds both kinds, is not one flat colour, and
+fell back to the shader blend with a texture barrier before every triangle whose box met an earlier one: ~150
+barrier+draw pairs per batch, ~1.3 k such batches per 5 s.
+
+Changes (all on PC too, same results):
+- **Counting batches as constant-amount groups** (gs_hw_backend.cpp `buildWrapGroups`): every triangle that is flat on
+  its own adds one constant modulo 256; the batch is drawn as at most 4 fixed-function draws, one per (direction,
+  amount), the adds first, then the subtractions (`GL_FUNC_REVERSE_SUBTRACT` of 256 - v), each group in its original
+  order. Modulo-256 additions commute, so the result is the GS's as long as no pixel's partial sum leaves 0..255 on
+  the way; only amounts of at most 1 are grouped (the counting passes), which needs fewer than 128 front faces over
+  one pixel. Anything else (bigger amounts, a triangle not flat or mixing directions, more than 4 kinds) keeps the
+  per-triangle barrier path. `GOW_GS_HW_WRAPGROUPS=0` turns it off; `[gs-hw-wrap]` counts both paths every 5 s.
+- **Indexed batches** (`GOW_GS_HW_INDEXED=0`: off): a triangle that shares vertices with the previous one of its run
+  reuses their indices; the batch's vertices are converted and uploaded once and drawn with
+  `glDrawElementsBaseVertex` (GL 3.2 on PC, `dkCmdBufDrawIndexed` on deko3d). The COLCLAMP=0 paths look at triangles
+  in order and get the expanded list.
+- **Strips and fans as vertex kicks** (`GOW_GS_KICKS=0`: off): the GS frontend sends a strip/fan as the sequence of
+  its vertex kicks (each vertex once, a flag where the kick drew; the run starts with the two vertices the GS window
+  holds), `GSRasterBackend::SubmitKicks`, instead of three full vertices per triangle (136 bytes per triangle in the
+  GS stage -> GL thread queue, now ~40). The backend rebuilds the triangles with the GS's own window rules (strip: the
+  last three, fan: the first and the last two) straight into indices. Other backends expand them into triangles.
+- **deko3d per-draw cost** (gs_dk.cpp): state setters mark dirty only on a real change (the backend sets the whole
+  state before every draw), the blend constant has its own dirty flag, uniform buffer / texture / vertex / index
+  bindings are cached per command list, push constants send only the changed bytes (a program's uniform memory
+  keeps its contents across switches and submits). `[gs-dk-binds]` (draw CPU time, binds per kind, barriers) and
+  `[gs-dk-time]` (swapchain acquire, present submit, submit) every 5 s.
+- `[gs-stage-run]` (GS frontend): runs, triangles, kicks and the time spent handing them to the queue (that time
+  includes waiting for the GL thread's queue, `gsq_wait_ms`).
+
+Heavy fight per 5 s after the groups + indices (ext 7a0ac4a, `update_dkd1`): deko3d draws 142 k -> 24 k, barriers
+125 k -> 4.8 k, uploaded vertices 19.7 M -> 7.7 M, vertex upload 660 -> 326 ms, deko3d CPU in draw calls 42 ms for
+24 k draws (1.7 us each), GS thread busy 2.9 -> 2.2 s. The frame rate did not move with it: the fight is VU1-bound
+(VU1 worker 3.7-3.9 s per 5 s) and the GS stage waits on the GL thread's queue only in bursts.
+
+Console runs (bot fight; title = 25-40 s, heavy fight = the worst windows at 115-135 s, later = 140-200 s; guest fps
+per 5 s window; the bot fight differs from run to run, Kratos even died in dkd1):
+
+| build (ext, package in port/switch/nsp/out) | title | heavy fight | later |
+|---|---|---|---|
+| before: 31a482d (`update_par4`) | 35.4-36.2 | 16.2-17.4 | 23-30 |
+| + groups, indices, deko3d caches (7a0ac4a, `update_dkd1`) | 33-34 | 15.5-17.6 | 21-24 |
+| + VU1 fast float (root 2d99701 VU1_PREGEN; `update_dkd2f`) | 39.4-41.6 | 18.8-24.8 | 29-31 |
+| + sw-iopthr merged, IOP thread on (`update_dkd3`) | 36.8-39.2 | 17.6-22.4 | 25-29.6 |
+| same, `GOW_IOP_THREAD=0` | 36.8-38.6 | 17.2-24.2 | 27-29.6 |
+| + vertex kicks (40bbdaf, `update_dkd4`), IOP inline | 37.4-41.8 | 19.0-23.4 | 26-31 |
+| same, IOP thread on | 38.6-40.8 | 17.2-23.4 | 22.6-26 |
+| same, IOP inline + `GOW_CORE_GSStage=0` | 38.8-39.8 | 18.4-24.4 | 23-26 |
+| **+ sw-vu1cyc merged, IOP inline by default (9996088, `update_dkd5`, installed)** | **39.0-40.2** | **18.6-26.4** | **25.4-28.4** |
+
+Per 5 s in the heavy fight, before -> `update_dkd5`: deko3d draws 142-266 k -> 29-37 k, GS thread (core 0) busy
+2.9 s -> 2.1-2.4 s, VU1 runs (`vu_ms`) 4.0 s -> 3.4-3.7 s (VU1 worker job 3.9-4.05 s), EE 3.0 s -> 3.5-3.9 s,
+IOP 1.2 s -> 0.8-1.2 s, GS stage 1.4 s -> 1.3-1.57 s, EE waiting (`guest_wait_ms`) 0.8-0.9 s -> 0.2-0.5 s.
+**Core 1 is now the limit**: EE + IOP + GS stage ask for 5.9-6.5 s per 5 s, and the EE no longer waits for VU1.
+
+- The IOP thread (sw-iopthr) took the IOP off the EE thread (`iop_ms` 1.0 -> 0.1 s) but the EE then waited for the
+  thread's lead 0.8-1.0 s per 5 s (`[IOP:thread] lead_waits`): `IopRun` shares core 0 with the deko3d thread, which
+  runs at a higher priority, and falls behind. Inline is the Switch default now (`ps2_switch_runtime.cpp`
+  `GOW_IOP_THREAD=0`; env.txt `GOW_IOP_THREAD=1` turns it on). With `GOW_IOP_LEAD=262144` (`update_dkd5`) the EE
+  still waited 0.72-0.84 s per 5 s (fewer, longer waits) for 19.2-24.2 / 24.8-33 fps: about even with inline.
+  Worth trying: `IopRun` above `GSThread` on core 0.
+- The GS stage spends ~180 ns per vertex kick (GIF PACKED decode, register writes, the kick), 1.3-1.6 s per 5 s in
+  fights; handing the runs to the GL thread's queue is ~0.15 s of it (`[gs-stage-run] queue_ms` minus
+  `gsq_wait_ms`). The next lever on core 1: a PACKED fast path for vertex tags (ST/RGBAQ/XYZ2 loops decoded straight
+  into the kick run), or the GS stage on a core with room.
+- `PS2X_GS_QUEUE_CHUNKS` (GL-thread queue depth, default 8 x 64 KB) and the GS stage on core 0 were not better.
+- Checks: PC zone gate (port/dkdraw/gate, against port/swvu1par/gate/20261019_130004) 5/5 ok at 60 fps, speed
+  1.00-1.01, for 7a0ac4a, 40bbdaf and the final 9996088 (`20261019_165610`; only content changes flagged:
+  different combat moments); savetest 129 pages, card directory intact. Console screenshots of the fights (shadows
+  under Kratos and the enemies, HUD) look right.
+- Handoff: worktree ext/PS2Recomp-kl-dkdraw (branch agent/sw-dkdraw: sw-iopthr and sw-vu1cyc merged), PC build
+  `out/build-pc`; the Switch build runs from a copy of the worktree in WSL (`/root/src-dkdraw`, synced with
+  `tar cf - <paths> | wsl -u root -e tar xf - -C /root/src-dkdraw`, then `touch` the synced files) with
+  `/root/dkbuild2.sh` (build dir `/root/gow-switch-dkdraw2`, VU1 blocks `/root/vu1fast/vu1pregen` = sw-vu1fast's):
+  compiling from /mnt/c (9p) kept losing the WSL session. Keep exactly one wsl.exe session attached while it builds
+  (the distro stops when none is) and poll it rarely. The console's address changes (DHCP): when switch_bot.py times
+  out, `switch_bot.py find`. Installed: `update_dkd5`, no env.txt.
