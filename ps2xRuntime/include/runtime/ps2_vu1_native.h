@@ -605,6 +605,35 @@ namespace vu1n
         return maddWide<Sub>(acc, a, b);
 #endif
     }
+    // madd + clampv in one: raw receives the unclamped result (MAC flags), the return value is the clamped one. On the fast
+    // path (product and sum both below FLT_MAX in magnitude, which also excludes NaN) clampv is the identity, so only the
+    // wide path clamps: two instructions less per FMAC in the generated blocks, same bits (docs/vu1-hle.md)
+    template <bool Sub>
+    VU1N_INLINE __m128 maddc(__m128 acc, __m128 a, __m128 b, __m128 &raw)
+    {
+        const __m128 p = _mm_mul_ps(a, b);
+        const __m128 r = Sub ? _mm_sub_ps(acc, p) : _mm_add_ps(acc, p);
+#if defined(__aarch64__)
+        const uint32x4_t sign = vdupq_n_u32(0x80000000u);
+        const uint32x4_t mag = vmaxq_u32(vbicq_u32(vreinterpretq_u32_f32(p), sign), vbicq_u32(vreinterpretq_u32_f32(r), sign));
+        if (__builtin_expect(vmaxvq_u32(mag) <= 0x7F7FFFFEu, 1))
+        {
+            raw = r;
+            return r;
+        }
+#else
+        const __m128i lim = _mm_set1_epi32(0x7F7FFFFE);
+        const __m128i hot = _mm_or_si128(_mm_cmpgt_epi32(_mm_and_si128(_mm_castps_si128(p), _mm_set1_epi32(0x7FFFFFFF)), lim),
+                                         _mm_cmpgt_epi32(_mm_and_si128(_mm_castps_si128(r), _mm_set1_epi32(0x7FFFFFFF)), lim));
+        if (_mm_movemask_epi8(hot) == 0)
+        {
+            raw = r;
+            return r;
+        }
+#endif
+        raw = madd<Sub>(acc, a, b);
+        return clampv(raw);
+    }
     // macVal with the DEST mask (SSE order) at run time: flags of a MAC writer read after its block ended
     inline uint32_t macValRt(__m128 r, uint32_t m)
     {

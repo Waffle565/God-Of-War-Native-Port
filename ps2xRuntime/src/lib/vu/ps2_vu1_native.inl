@@ -4,6 +4,11 @@
 #include <memory>
 #include <unordered_map>
 
+// GOW_VU1N_BLOCKPROF=<file> (with GOW_VU1N_REPLAY): per dispatched block pc, runs and VU cycles of the warm replay
+// passes, written at the end of the replay ("pc runs cycles"); finds the hot paths of the microprograms (docs/vu1-hle.md)
+static std::unordered_map<uint32_t, std::pair<uint64_t, uint64_t>> *g_vu1nBlockProf = nullptr;
+static bool g_vu1nTraceThis = false;
+
 namespace
 {
     struct NativeEntry
@@ -801,6 +806,14 @@ bool VU1Interpreter::runNative(StepContext &context)
             ctx.tail = &t;
         }
         const uint32_t result = fn(ctx);
+        if (g_vu1nBlockProf) // GOW_VU1N_BLOCKPROF (replay): VU cycles per dispatched block pc, chained blocks included
+        {
+            auto &e = (*g_vu1nBlockProf)[pc];
+            ++e.first;
+            e.second += m_cycle - start;
+            if (g_vu1nTraceThis) // GOW_VU1N_TRACEREC=<record>: the dispatch sequence of that record
+                std::fprintf(stderr, "[vu1n-trace] %x +%llu -> %x\n", pc, static_cast<unsigned long long>(m_cycle - start), result & 0x3FFFu);
+        }
         // ctx describes the block the function returns from: chained blocks (VU1NativeAccess::chainTo) may have run after
         // the one dispatched here, and one that stopped the chain has finished its own timing (kVu1nFinished)
         const NativeState::Slot &last = *static_cast<const NativeState::Slot *>(ctx.slot);
@@ -953,6 +966,10 @@ void VU1NativeAccess::recordReplay(VU1Interpreter &vu, void *contextPtr, uint32_
                 vu.m_state = rec->state;
                 if (rep == 0u)
                     vu.m_native->generation = ~0ull - 1u; // micro memory is not the game's: forget the block cache
+                if (rep == 1u && !g_vu1nBlockProf && std::getenv("GOW_VU1N_BLOCKPROF"))
+                    g_vu1nBlockProf = new std::unordered_map<uint32_t, std::pair<uint64_t, uint64_t>>();
+                g_vu1nTraceThis = rep == 1u && std::getenv("GOW_VU1N_TRACEREC") &&
+                                  total == static_cast<unsigned>(std::atoi(std::getenv("GOW_VU1N_TRACEREC")));
                 std::memcpy(scratch->data, rec->data, sizeof(rec->data));
                 VU1Interpreter::StepContext c = context;
                 c.vuCode = rec->code;
@@ -962,9 +979,19 @@ void VU1NativeAccess::recordReplay(VU1Interpreter &vu, void *contextPtr, uint32_
                 vu.m_activeVuData = scratch->data;
                 vu.m_activeVuDataSize = 16384u;
                 g_vu1nReplayNs = 0;
+                const uint64_t cycleStart = vu.m_cycle;
                 const uint64_t h = silentNativeHash(vu, &c);
                 if (rep != 0u)
+                {
                     timedNs += g_vu1nReplayNs; // warm block cache only
+                    // GOW_VU1N_REPLAY_PROFILE=<file>: per record and warm pass "record startPc vuCycles ns" (which
+                    // programs cost what, docs/vu1-hle.md)
+                    static FILE *profile = std::getenv("GOW_VU1N_REPLAY_PROFILE") ? std::fopen(std::getenv("GOW_VU1N_REPLAY_PROFILE"), "w") : nullptr;
+                    if (profile)
+                        std::fprintf(profile, "%u %x %llu %llu\n", total, rec->state.pc,
+                                     static_cast<unsigned long long>(vu.m_cycle - cycleStart),
+                                     static_cast<unsigned long long>(g_vu1nReplayNs));
+                }
                 else
                 {
                     if (h != rec->hash && differ++ < 20u)
@@ -989,6 +1016,18 @@ void VU1NativeAccess::recordReplay(VU1Interpreter &vu, void *contextPtr, uint32_
         }
         if (reps > 1u)
             std::fprintf(stderr, "[vu1n-replay] timing: %.3f ms for %u warm runs\n", timedNs / 1e6, total * (reps - 1u));
+        if (g_vu1nBlockProf)
+        {
+            if (FILE *bp = std::fopen(std::getenv("GOW_VU1N_BLOCKPROF"), "w"))
+            {
+                for (const auto &kv : *g_vu1nBlockProf)
+                    std::fprintf(bp, "%x %llu %llu\n", kv.first, static_cast<unsigned long long>(kv.second.first),
+                                 static_cast<unsigned long long>(kv.second.second));
+                std::fclose(bp);
+            }
+            delete g_vu1nBlockProf;
+            g_vu1nBlockProf = nullptr;
+        }
         std::fclose(f);
         vu = saved;
         vu.m_native->generation = ~0ull - 1u;
