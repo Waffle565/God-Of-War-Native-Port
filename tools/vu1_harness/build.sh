@@ -24,7 +24,7 @@ COMMON="$EXTRA -pthread -std=c++20 -O2 -DNDEBUG -fsigned-char -ffp-contract=off 
 if [ "$arch" = arm ]; then
     SSE2NEON=${SSE2NEON:-$(ls -d /root/gow-switch-build*/_deps/sse2neon-src 2>/dev/null | head -1)}
     [ -f "$SSE2NEON/sse2neon.h" ] || { echo "no sse2neon.h (set SSE2NEON=<dir>, e.g. a Switch build's _deps/sse2neon-src)" >&2; exit 1; }
-    CXX="aarch64-linux-gnu-g++ $COMMON -march=armv8-a+fp+simd -mtune=cortex-a57 -DUSE_SSE2NEON -DSSE2NEON_PRECISE_MINMAX=1 -DSSE2NEON_PRECISE_DIV=1 -DSSE2NEON_PRECISE_SQRT=1 -DSSE2NEON_PRECISE_DP=1 -I$SSE2NEON"
+    CXX="aarch64-linux-gnu-g++ $COMMON -march=armv8-a+fp+simd -mtune=cortex-a57 -DUSE_SSE2NEON -DSSE2NEON_PRECISE_MINMAX=${PMM:-1} -DSSE2NEON_PRECISE_DIV=${PDIV:-1} -DSSE2NEON_PRECISE_SQRT=${PSQRT:-1} -DSSE2NEON_PRECISE_DP=${PDP:-1} -I$SSE2NEON"
     LD=aarch64-linux-gnu-g++
 else
     CXX="g++ $COMMON -msse4.2"

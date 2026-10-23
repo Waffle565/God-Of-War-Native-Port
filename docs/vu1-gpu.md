@@ -5,6 +5,24 @@ look the same (pixel comparison against the CPU path, tolerances documented). Pl
 (2) a plain-float CPU reference (HLE) compared with the exact path on the recordings, which also says whether a fast
 CPU HLE alone reaches the target, (3) GPU path, (4) console fps / per-core busy / screenshots.
 
+## Addendum (2026-10-23 evening: HLE becomes the Switch default, where the rest goes)
+- `GOW_VU1_HLE=1` is now a Switch default (ext 70c9fbb, `update_vgpu5`; env.txt `GOW_VU1_HLE=0` turns it off). Console bot fight windows
+  (`gsw-split` vu_ms / runs): **21.5 us per VU1 run** with HLE+DIRECT+TRACES vs 27.6-28.2 (DIRECT+TRACES only) and 33.1 (no env); title menu
+  44-47 fps (up to 55 in the quiet windows). Bot fight fps still 17-55 (avg ~29, scenes differ; the VU thread stays ~3.6 s / 5 s busy because
+  the faster runs let the EE queue more of them: judge by us/run, not by fps). The kernels' per-call clock reads are now opt-in
+  (`GOW_VU1_HLE_TIME`; they were on whenever GOW_PERF_DIAG was, which the Switch has by default).
+- Where the remaining VU1 time goes (aarch64 harness under qemu, `icount.sh`, fight.rec first 100 records, HLE+DT, excluding the harness's own
+  hashing; script: scratchpad `ic.sh`): kernels ~30 % (kSkinLitSt alone 22 %: ~100 NEON ops per vertex, already at the A57's 128-bit throughput),
+  generated blocks and traces ~37 %, runNative's dispatch loop ~13 % (~4 k instructions per VU1 run), exact-engine entry/exit ~6 %. Dispatch
+  counts (x86 harness, `GOW_VU1N_BLOCKPROF` + `krank.py`): after the kernels the cycles sit in the batch front (pc 00d8/00e0/0458/0350/0240
+  ~45 % of the remaining VU cycles), the clip-flag culling loops (0cd8..0df8 and 1728..17d8, ~19 %), and the batch-switch routine (1258, 9.5 %).
+  Each of these is a 5-10 % item of the VU thread; no single block or kernel is a big lever any more.
+- Thread budget at ~30 fps in the fight (5 s windows): EE 2.7-2.8 s busy (IOP inline ~0.85 s of it) + 1.1-1.4 s `guest_wait`, VU1 thread 3.6 s,
+  GS stage 0.7 s, deko3d thread 1.75 s. 60 fps needs EE < 16 ms per frame as well (it is 18.7 ms at 30 fps) and VU1 < 16 ms (24 ms): both
+  threads need 1.5-2x, which the remaining micro-optimisations of the CPU path do not give; the structural options are the GPU vertex path
+  (step 4) or fewer VU1 runs per frame (840 per frame now).
+- Harness: `tools/vu1_harness/build.sh` takes `PMM= PDIV= PSQRT= PDP=` (0/1) for the SSE2NEON_PRECISE_* defines (default 1, as the Switch build).
+
 ## Addendum (2026-10-23, step 1 + fight replay A/B)
 - Second fight run (DIRECT+TRACES, HLE off, update_vgpu3): menu 40 fps again (31 without), fight 16-26 (scenes vary); not worse than the baseline 15-24 -> `GOW_VU1N_TRACES=1 DIRECT=1` is now the Switch default (ext 3df92c2).
 - Deterministic fight replay on the console (`fight.rec`, 6000 warm runs): no env 137.2 ms, DIRECT+TRACES 128.6, DIRECT+TRACES+HLE 108.4 (-21 %), HLE alone 118.1.
