@@ -5,6 +5,27 @@ look the same (pixel comparison against the CPU path, tolerances documented). Pl
 (2) a plain-float CPU reference (HLE) compared with the exact path on the recordings, which also says whether a fast
 CPU HLE alone reaches the target, (3) GPU path, (4) console fps / per-core busy / screenshots.
 
+## Handoff (2026-10-24 night 9, sw-vu1k5: core 3 as a resource; in progress)
+- **npdm `highest_cpu_id` 3 is the default now** (port/switch/nsp/gow.json): the application may pin threads to core 3.
+- **GS-limited fight phase (165-200 s, gsq_wait ~1100 ms) = the GPU, not a CPU core.** In kd3's log that phase has
+  `[gs-dk-time] present_submit_ms` ~0.7-1.1 s per 5 s (`dkQueuePresentImage` blocks, ~4 ms per present; 150-165 s: 60 ms),
+  while draws and vertices are *lower* than in the VU1-bound windows. Same package with `GOW_GPU_MHZ=max` (handheld
+  307 -> 460.8 MHz, run `s3g`): present_submit 45-53 ms in every window, gsq_wait ~6 ms, **hitches (frames >= 2.3
+  fields) 8-15 -> 0-1 per 5 s**, and the fight is VU1-bound throughout (40-44.6 fps, vu 4.1 s). No core can absorb it;
+  the GPU clock (or less GPU work) does. Not made default here (handheld battery/heat: the user's call, see
+  docs/switch.md clocks).
+- **GSStage on core 3** (`GOW_CORE_GSStage=3`, run `s3a`, kd3c3 package): the deko3d thread's busy time 3.7 -> 2.2-2.6 s
+  per 5 s (on core 0 the stage, one priority step above, preempted it: deko3d's wall-clock busy included that);
+  fight 165-200 s 36-41 -> 38-46 fps (gsq_wait 1100 -> 500-800 at the default GPU clock), 150-165 s unchanged (VU1);
+  title 60.0, vu_ms 3635 -> 3718 (+2 %: the stage reads the queue from another core). Made the default (ext ThreadNaming.h).
+- **VU1 programs on their own thread with a spinning VIF producer on core 3** (`PS2X_VU1_ASYNC=1`, new
+  `PS2X_VU1_ASYNC_WAIT_SPIN_US` = the worker spins for the program's end instead of 4096 pauses + condvar, VU1Run spins
+  for the next job, package `update_ka1`): **slower**. Worker alone on core 3 (`as1g`): title 53.4-54.4 fps (60), fight
+  35.4-38.2 (40-44); worker + stage on core 3 (`as2g`): title 44, fight 28-35. The VU1 thread's execute time per run is
+  unchanged (18.1 us) but a run cycle takes ~27 us instead of ~20: 176838 of 183512 MSCALs wait for the previous program
+  (the VIF work between two MSCALs is ~2 us, so the worker is always at the next MSCAL first) and each hand-off costs
+  more than the overlap. Dropped (kept as an option).
+
 ## Handoff (2026-10-24 night 8, sw-vu1k4 stopped here: ext agent/sw-vu1gpu 19da740 + generator eb1bf2a blocks (`/root/vu1pregen-gen3`), package `update_kd3`)
 - **Re-profile (kc3, fight 150-180 s, line level: the Switch ELF has `-g`, so `switch_pcprof.py --lines FUNC` works
   without a special build)**: the dispatch / bookkeeping share was mostly small fixed costs per call, not the loop logic:
