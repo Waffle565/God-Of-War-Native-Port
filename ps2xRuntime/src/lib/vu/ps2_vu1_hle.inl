@@ -706,18 +706,33 @@ inline uint32_t kCullClip(Ctx &c, uint32_t entry)
     const auto qd = [&](int32_t qw) { return d + ((static_cast<uint32_t>(qw) * 16u) & 0x3FFFu); };
     // the generated blocks' fast variants (plain SSE, no operand normalisation / clamp) where their entry checks pass
     // (vu1n_gen.py Bounds: the same results there); limits per lane (x, y, z, w) on the magnitude bits
-    const auto over = [](__m128 v, uint32_t lx, uint32_t ly, uint32_t lz, uint32_t lw) {
-        const __m128i m = _mm_cmpgt_epi32(_mm_and_si128(_mm_castps_si128(v), _mm_set1_epi32(0x7FFFFFFF)),
-                                          _mm_set_epi32(static_cast<int>(lw), static_cast<int>(lz), static_cast<int>(ly), static_cast<int>(lx)));
-        return _mm_movemask_epi8(m) != 0;
+    // lanes over the limit as a mask (OR several, test once: movemask is ~10 instructions under sse2neon)
+    const auto overm = [](__m128 v, uint32_t lx, uint32_t ly, uint32_t lz, uint32_t lw) {
+        return _mm_cmpgt_epi32(_mm_and_si128(_mm_castps_si128(v), _mm_set1_epi32(0x7FFFFFFF)),
+                               _mm_set_epi32(static_cast<int>(lw), static_cast<int>(lz), static_cast<int>(ly), static_cast<int>(lx)));
     };
+    const auto anyv = [](__m128i m) {
+#if defined(__aarch64__)
+        return vmaxvq_u32(vreinterpretq_u32_s32(vreinterpretq_s32_m128i(m))) != 0u;
+#else
+        return _mm_movemask_epi8(m) != 0;
+#endif
+    };
+    const auto over = [&](__m128 v, uint32_t lx, uint32_t ly, uint32_t lz, uint32_t lw) { return anyv(overm(v, lx, ly, lz, lw)); };
     constexpr uint32_t A = 0x7fffffffu, F = 0x7f7fffffu, M = 0x5d7fffffu, C = 0x5f7fffffu;
     const auto clipf = [](__m128 v, __m128 t, uint32_t prev) { // vu1n::clipValv on in-range operands
         const __m128 w = _mm_and_ps(_mm_shuffle_ps(t, t, _MM_SHUFFLE(3, 3, 3, 3)), _mm_castsi128_ps(_mm_set1_epi32(0x7FFFFFFF)));
         const __m128 nw = _mm_xor_ps(w, _mm_castsi128_ps(_mm_set1_epi32(static_cast<int>(0x80000000u))));
-        const uint32_t g = static_cast<uint32_t>(_mm_movemask_ps(_mm_cmpgt_ps(v, w)));
-        const uint32_t l = static_cast<uint32_t>(_mm_movemask_ps(_mm_cmplt_ps(v, nw)));
+        const __m128i gt = _mm_castps_si128(_mm_cmpgt_ps(v, w));
+        const __m128i lt = _mm_castps_si128(_mm_cmplt_ps(v, nw));
+#if defined(__aarch64__)
+        const uint32x4_t bits = vorrq_u32(vandq_u32(vreinterpretq_u32_m128i(gt), (uint32x4_t){1u, 4u, 16u, 0u}),
+                                          vandq_u32(vreinterpretq_u32_m128i(lt), (uint32x4_t){2u, 8u, 32u, 0u}));
+        const uint32_t f = vaddvq_u32(bits);
+#else
+        const uint32_t g = static_cast<uint32_t>(_mm_movemask_ps(_mm_castsi128_ps(gt))), l = static_cast<uint32_t>(_mm_movemask_ps(_mm_castsi128_ps(lt)));
         const uint32_t f = (g & 1u) | ((l & 1u) << 1) | ((g & 2u) << 1) | ((l & 2u) << 2) | ((g & 4u) << 2) | ((l & 4u) << 3);
+#endif
         return ((prev << 6) | f) & 0xFFFFFFu;
     };
     // the per-call part of the blocks' checks (constant registers)
@@ -771,8 +786,8 @@ inline uint32_t kCullClip(Ctx &c, uint32_t entry)
         atB2 = false;
         // B2 (issue 2..8)
         {
-            const bool fast = constOk && !over(f15, A, A, A, F) && !over(f30, A, A, A, F) && !over(f29, M, M, M, M) &&
-                              !over(acc, C, C, C, C);
+            const bool fast = constOk && !anyv(_mm_or_si128(_mm_or_si128(overm(f15, A, A, A, F), overm(f30, A, A, A, F)),
+                                                             _mm_or_si128(overm(f29, M, M, M, M), overm(acc, C, C, C, C))));
             const __m128 n29 = fast ? f29 : vu1n::nrm(f29);
             __m128 q;
             if (fast)
@@ -811,7 +826,7 @@ inline uint32_t kCullClip(Ctx &c, uint32_t entry)
             cyc += 7u;
         }
         const __m128 n31 = vu1n::nrm(f31);
-        const bool pathOk = constOk && !over(f31, M, M, M, A) && !over(acc, A, A, A, C);
+        const bool pathOk = constOk && !anyv(_mm_or_si128(overm(f31, M, M, M, A), overm(acc, A, A, A, C)));
         if (static_cast<int16_t>(vi14) != 0)
         {
             // path A (issue 1, 5, 9), then 0d78 (idle)
@@ -844,7 +859,7 @@ inline uint32_t kCullClip(Ctx &c, uint32_t entry)
         else
         {
             // path B (issue 0, 1, 4, 8, 12, 16, 17)
-            const bool fast = pathOk && !over(f15, F, F, F, F) && !over(f18, F, F, F, F) && !over(f19, F, F, F, F);
+            const bool fast = pathOk && !anyv(_mm_or_si128(overm(f15, F, F, F, F), _mm_or_si128(overm(f18, F, F, F, F), overm(f19, F, F, F, F))));
             __m128 q;
             const uint32_t c0 = fast ? clipf(f18, f15, clip) : vu1n::clipValv(vu1n::nrm(f18), vu1n::nrm(f15), clip);
             clp(cyc, c0);
