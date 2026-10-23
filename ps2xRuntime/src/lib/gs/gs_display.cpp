@@ -2,6 +2,8 @@
 #include "runtime/gs/gs_display.h"
 #include "runtime/ps2_memory.h"
 
+#include <mutex>
+
 namespace ps2_gs_display
 {
     namespace
@@ -37,6 +39,31 @@ namespace ps2_gs_display
         state.display2 = gs.display2;
         state.bgcolor = gs.bgcolor;
         return state;
+    }
+
+    namespace
+    {
+        std::mutex g_latchMutex;
+        GSDisplayState g_latched;
+        bool g_latchValid = false;
+    }
+
+    void latchDisplay(const PS2Memory &memory)
+    {
+        const GSDisplayState state = display(memory);
+        std::lock_guard<std::mutex> lock(g_latchMutex);
+        g_latched = state;
+        g_latchValid = true;
+    }
+
+    GSDisplayState latchedDisplay(const GSDisplayState &live)
+    {
+        {
+            std::lock_guard<std::mutex> lock(g_latchMutex);
+            if (g_latchValid)
+                return g_latched;
+        }
+        return live;
     }
 
     uint64_t status(PS2Memory &memory)

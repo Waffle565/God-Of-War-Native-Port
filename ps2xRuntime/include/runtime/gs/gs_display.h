@@ -28,6 +28,14 @@ namespace ps2_gs_display
     void setDisplay(PS2Memory &memory, const GSDisplayState &state);
     GSDisplayState display(const PS2Memory &memory);
 
+    // The display registers as the CRTC scans them out: copied by the EE scheduler at the start of each VBlank, before
+    // the game's VBlank handler runs (it rewrites PMODE / DISPFB1 / DISPFB2 ... one store at a time, e.g. DISPFB2 = the
+    // other buffer and back a few instructions later). The host's presentation sampled the live registers on its own
+    // thread, so on a slow CPU it could catch the handler half way and show the wrong buffer for one frame (the intro
+    // movie flashed the in-engine cliff picture, docs/fmv.md). latchedDisplay() returns `live` until the first latch.
+    void latchDisplay(const PS2Memory &memory);
+    GSDisplayState latchedDisplay(const GSDisplayState &live);
+
     // GS status (CSR: FIELD, FINISH, ...), as the game's display code reads it.
     uint64_t status(PS2Memory &memory);
 
