@@ -701,6 +701,26 @@ inline uint32_t kCullClip(Ctx &c, uint32_t)
     };
     const auto clp = [&](uint64_t at, uint32_t v) { clipAt[clipN % 5u] = at, clipV[clipN % 5u] = v, ++clipN, clip = v; };
     const auto qd = [&](int32_t qw) { return d + ((static_cast<uint32_t>(qw) * 16u) & 0x3FFFu); };
+    // the generated blocks' fast variants (plain SSE, no operand normalisation / clamp) where their entry checks pass
+    // (vu1n_gen.py Bounds: the same results there); limits per lane (x, y, z, w) on the magnitude bits
+    const auto over = [](__m128 v, uint32_t lx, uint32_t ly, uint32_t lz, uint32_t lw) {
+        const __m128i m = _mm_cmpgt_epi32(_mm_and_si128(_mm_castps_si128(v), _mm_set1_epi32(0x7FFFFFFF)),
+                                          _mm_set_epi32(static_cast<int>(lw), static_cast<int>(lz), static_cast<int>(ly), static_cast<int>(lx)));
+        return _mm_movemask_epi8(m) != 0;
+    };
+    constexpr uint32_t A = 0x7fffffffu, F = 0x7f7fffffu, M = 0x5d7fffffu, C = 0x5f7fffffu;
+    const auto clipf = [](__m128 v, __m128 t, uint32_t prev) { // vu1n::clipValv on in-range operands
+        const __m128 w = _mm_and_ps(_mm_shuffle_ps(t, t, _MM_SHUFFLE(3, 3, 3, 3)), _mm_castsi128_ps(_mm_set1_epi32(0x7FFFFFFF)));
+        const __m128 nw = _mm_xor_ps(w, _mm_castsi128_ps(_mm_set1_epi32(static_cast<int>(0x80000000u))));
+        const uint32_t g = static_cast<uint32_t>(_mm_movemask_ps(_mm_cmpgt_ps(v, w)));
+        const uint32_t l = static_cast<uint32_t>(_mm_movemask_ps(_mm_cmplt_ps(v, nw)));
+        const uint32_t f = (g & 1u) | ((l & 1u) << 1) | ((g & 2u) << 1) | ((l & 2u) << 2) | ((g & 4u) << 2) | ((l & 4u) << 3);
+        return ((prev << 6) | f) & 0xFFFFFFu;
+    };
+    // the per-call part of the blocks' checks (constant registers)
+    const __m128 r22 = ldv(s, 22), r23 = ldv(s, 23), r24 = ldv(s, 24), r25 = ldv(s, 25), r26 = ldv(s, 26), r27 = ldv(s, 27);
+    const bool constOk = !over(r22, M, M, M, M) && !over(r23, M, M, M, M) && !over(r24, M, M, M, M) && !over(r25, M, M, M, M) &&
+                         !over(r26, M, M, M, M) && !over(r27, C, C, C, A) && !over(f0, C, A, A, A);
     uint32_t next;
     for (;;)
     {
@@ -739,44 +759,66 @@ inline uint32_t kCullClip(Ctx &c, uint32_t)
         }
         // B2 (issue 2..8)
         {
-            const __m128 n29 = vu1n::nrm(f29);
+            const bool fast = constOk && !over(f15, A, A, A, F) && !over(f30, A, A, A, F) && !over(f29, M, M, M, M) &&
+                              !over(acc, C, C, C, C);
+            const __m128 n29 = fast ? f29 : vu1n::nrm(f29);
             __m128 q;
-            r = vu1n::maddc<false>(acc, n29, n22, q);
+            if (fast)
+                q = r = _mm_add_ps(acc, _mm_mul_ps(f29, r22));
+            else
+                r = vu1n::maddc<false>(acc, n29, n22, q);
             mac(cyc + 2u, q, 7u);
             f30 = _mm_blend_ps(f30, r, 7);
             vi9 = vi10 | vi11;
             f31 = _mm_blend_ps(f31, vu1n::itofv<4>(f31), 7);
             vi11 = vi10;
-            r = vu1n::maddc<false>(acc, n29, n23, q);
+            if (fast)
+                q = r = _mm_add_ps(acc, _mm_mul_ps(f29, r23));
+            else
+                r = vu1n::maddc<false>(acc, n29, n23, q);
             mac(cyc + 4u, q, 7u);
             f15 = _mm_blend_ps(f15, r, 7);
-            r = vu1n::maddc<true>(acc, n29, n22, q);
+            if (fast)
+                q = r = _mm_sub_ps(acc, _mm_mul_ps(f29, r22));
+            else
+                r = vu1n::maddc<true>(acc, n29, n22, q);
             mac(cyc + 5u, q, 3u);
             f18 = _mm_blend_ps(f18, r, 3);
             vi14 = static_cast<int32_t>(m15w & 16u);
-            r = vu1n::maddc<true>(acc, n29, n23, q);
+            if (fast)
+                q = r = _mm_sub_ps(acc, _mm_mul_ps(f29, r23));
+            else
+                r = vu1n::maddc<true>(acc, n29, n23, q);
             mac(cyc + 6u, q, 3u);
             f19 = _mm_blend_ps(f19, r, 3);
             vi5 = vu1n::sx16(vi5 - 1);
-            const uint32_t c5 = vu1n::clipValv(vu1n::nrm(f30), vu1n::nrm(f15), clip);
+            const uint32_t c5 = fast ? clipf(f30, f15, clip) : vu1n::clipValv(vu1n::nrm(f30), vu1n::nrm(f15), clip);
             clp(cyc + 7u, c5);
-            clp(cyc + 8u, vu1n::clipValv(vu1n::nrm(f15), vu1n::nrm(f15), c5));
+            clp(cyc + 8u, fast ? clipf(f15, f15, c5) : vu1n::clipValv(vu1n::nrm(f15), vu1n::nrm(f15), c5));
             vi3 = 63;
             cyc += 7u;
         }
         const __m128 n31 = vu1n::nrm(f31);
+        const bool pathOk = constOk && !over(f31, M, M, M, A) && !over(acc, A, A, A, C);
         if (static_cast<int16_t>(vi14) != 0)
         {
             // path A (issue 1, 5, 9), then 0d78 (idle)
+            const bool fast = pathOk;
             __m128 q;
-            r = _mm_add_ps(n27, bc<0>(f0));
+            r = _mm_add_ps(fast ? r27 : n27, bc<0>(f0));
             mac(cyc + 1u, r, 7u);
-            acc = _mm_blend_ps(acc, vu1n::clampv(r), 7);
+            acc = _mm_blend_ps(acc, fast ? r : vu1n::clampv(r), 7);
             vi10 = vu1n::laneBits16<0>(f19);
-            r = vu1n::maddc<false>(acc, n24, bc<0>(n31), q);
+            if (fast)
+                q = r = _mm_add_ps(acc, _mm_mul_ps(r24, bc<0>(f31)));
+            else
+                r = vu1n::maddc<false>(acc, n24, bc<0>(n31), q);
             mac(cyc + 5u, q, 7u);
             acc = _mm_blend_ps(acc, r, 7);
-            r = vu1n::maddc<false>(acc, n25, bc<1>(n31), q);
+            if (fast)
+                q = r = _mm_add_ps(acc, _mm_mul_ps(r25, bc<1>(f31)));
+            else
+                r = vu1n::maddc<false>(acc, n25, bc<1>(n31), q);
             mac(cyc + 9u, q, 7u);
             acc = _mm_blend_ps(acc, r, 7);
             vi10 = static_cast<int32_t>(clip & 0x0FFFu);
@@ -790,26 +832,36 @@ inline uint32_t kCullClip(Ctx &c, uint32_t)
         else
         {
             // path B (issue 0, 1, 4, 8, 12, 16, 17)
+            const bool fast = pathOk && !over(f15, F, F, F, F) && !over(f18, F, F, F, F) && !over(f19, F, F, F, F);
             __m128 q;
-            const uint32_t c0 = vu1n::clipValv(vu1n::nrm(f18), vu1n::nrm(f15), clip);
+            const uint32_t c0 = fast ? clipf(f18, f15, clip) : vu1n::clipValv(vu1n::nrm(f18), vu1n::nrm(f15), clip);
             clp(cyc, c0);
             f29 = _mm_blend_ps(f29, vu1n::fromInt(vu1n::sx16(vi10)), 1);
-            const uint32_t c1 = vu1n::clipValv(vu1n::nrm(f19), vu1n::nrm(f15), c0);
+            const uint32_t c1 = fast ? clipf(f19, f15, c0) : vu1n::clipValv(vu1n::nrm(f19), vu1n::nrm(f15), c0);
             clp(cyc + 1u, c1);
             vi14 = 3055;
-            r = _mm_add_ps(n27, bc<0>(f0));
+            r = _mm_add_ps(fast ? r27 : n27, bc<0>(f0));
             mac(cyc + 4u, r, 7u);
-            acc = _mm_blend_ps(acc, vu1n::clampv(r), 7);
+            acc = _mm_blend_ps(acc, fast ? r : vu1n::clampv(r), 7);
             vi10 = vu1n::laneBits16<0>(f29);
-            r = vu1n::maddc<false>(acc, n24, bc<0>(n31), q);
+            if (fast)
+                q = r = _mm_add_ps(acc, _mm_mul_ps(r24, bc<0>(f31)));
+            else
+                r = vu1n::maddc<false>(acc, n24, bc<0>(n31), q);
             mac(cyc + 8u, q, 7u);
             acc = _mm_blend_ps(acc, r, 7);
             vi10 = static_cast<int32_t>(c1 & 0x0FFFu);
-            r = vu1n::maddc<false>(acc, n25, bc<1>(n31), q);
+            if (fast)
+                q = r = _mm_add_ps(acc, _mm_mul_ps(r25, bc<1>(f31)));
+            else
+                r = vu1n::maddc<false>(acc, n25, bc<1>(n31), q);
             mac(cyc + 12u, q, 7u);
             acc = _mm_blend_ps(acc, r, 7);
             vi10 = vu1n::sx16(vi14 - vi10);
-            r = vu1n::maddc<false>(acc, n26, bc<2>(n31), q);
+            if (fast)
+                q = r = _mm_add_ps(acc, _mm_mul_ps(r26, bc<2>(f31)));
+            else
+                r = vu1n::maddc<false>(acc, n26, bc<2>(n31), q);
             mac(cyc + 16u, q, 7u);
             f29 = _mm_blend_ps(f29, r, 7);
             vi8 = vi8 & vi10;
