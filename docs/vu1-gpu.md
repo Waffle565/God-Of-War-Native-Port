@@ -5,6 +5,36 @@ look the same (pixel comparison against the CPU path, tolerances documented). Pl
 (2) a plain-float CPU reference (HLE) compared with the exact path on the recordings, which also says whether a fast
 CPU HLE alone reaches the target, (3) GPU path, (4) console fps / per-core busy / screenshots.
 
+## Handoff (2026-10-23, console measurements of the HLE kernels; ext agent/sw-vu1gpu 556db41 + the diagnostics commit)
+- State: `update_vgpu3` (= `update_vgpu1` + the intro-movie fix 3873093 merged as 556db41 + diagnostics) is on the console. Build:
+  `bash port/switch/env_sync.sh ... vgpu`, `VU1_PREGEN=/root/vu1pregen-vgpu BUILD_DIR=/root/gow-switch-vgpu ./switch/build.sh` (docs/switch-env-setup.md).
+  Console loop = the 4c236500 `cycle.sh` (scratchpad, copy it): bot menu -> New Game -> fight, `PLAY=1 BOOT=45` (BOOT = seconds before the
+  first B; 25 was too early now); after a failed cycle the console may sit at the user picker (A) or hbmenu ordering differs: DBI is the 12th tile
+  (DDOWN, DRIGHT x5), then A, A, DDOWN x9, A.
+- Baseline `update_vgpu1`, no env: title menu 31-33 fps (VU thread 3.6 s / 5 s, EE 1.7 s, guest waits 2.8 s), bot fight 15-24 fps (VU 3.5-3.9 s,
+  EE 2.4-2.8 s), movie 53-58 fps. (Old docs: menu 28-29, fight 19-28: the bot fight differs from run to run.)
+- `GOW_VU1_HLE=1` changes NOTHING measurable (menu 31, fight 18-25, VU thread still 3.6-3.8 s). Why (measured with the new diagnostics):
+  - the kernels themselves are cheap: `[vu1-hle]` now prints calls/VU cycles/wall ms: unlit 135 ms, lit 78, skin 111, cull 22+22 per 5 s
+    (~0.35 s for ~110 M VU cycles); native pairs drop 225 M -> 120 M and blocks 28 M -> 22 M (`GOW_VU1N_DIAG`),
+  - what is left costs ~3 s: ~22 M small blocks per 5 s (batch switch / prologue code, avg 5.4 pairs) at ~120-250 ns each, i.e. the
+    per-block dispatch (the Switch default `GOW_VU1N_DIRECT=0 GOW_VU1N_TRACES=0` of c985a11 makes every block a runNative round trip),
+  - code changes (MPG) 600-1500 per 5 s and slot set-ups 33-47 k per 5 s cost only ~70 ms + ~95 ms (`codeMs`/`slotMs` in `[vu1n]`),
+    so they are not the problem (the HLE `tried` reset is not either).
+- The title menu is 94 % two loops with NO kernel yet: `5181a0b08a6d0989` (28 pairs, 66 %: two-matrix lit/skinned two-block cycle, vf14 weight,
+  loi 0x4b0000ff clamp) and `a2eaa96b750883ce` (11 pairs, 28 %: unlit ST-less vertex loop family), seen with `GOW_VU1N_LIVEPROF=1
+  GOW_VU1N_DIAG=1` (`[vu1n-prof]` top 14 code hashes per 5 s; with the cached hash it still halves the fps: use it for a look only). A menu
+  recording exists only on the console SD (`switch/gow/menu.rec`, pulled to the scratchpad; `fight.rec` too; keep out of git); disassembly
+  from `tools/vu1_hle/findblk.py` (want.prof lines `k <hash> <pc> <pairs> 1 9000000`).
+- **Measured win, no code: `GOW_VU1_HLE=1 GOW_VU1N_DIRECT=1 GOW_VU1N_TRACES=1` in env.txt: title menu 38-40 fps (31 without), bot fight
+  22.2-23.6 fps (same as before).** The menu is the steady, deterministic scene: use it as the A/B workload (the fight varies per run).
+  Not yet tried: DIRECT/TRACES with HLE off in the fight on the same build, JR chaining on, then make them the Switch default if the fight
+  does not lose.
+- Next (in order): (1) A/B DIRECT/TRACES x HLE in the menu and fight (4 runs, same package); (2) kernels for `5181a0b0` and `a2eaa96b`
+  (`kUnlitSt` in ps2_vu1_hle.inl is the pattern; verify with the harness `cmp.sh`/`hlecmp.py` on `menu.rec`: the old reference dump is lost,
+  re-make it with HLE off); (3) shrink the batch-switch / prologue blocks (the ~22 M leftover blocks) as a kernel of their own;
+  (4) the GPU path only after these: the CPU side is dispatch-bound, not arithmetic-bound.
+- Intro movie fix (3873093) is in this build but the glitch frame has not been checked on the console yet (the bot skips the movie with +).
+
 ## Handoff (2026-10-20, stopped on request after step 2 started)
 - Worktree `ext/PS2Recomp-kl-vu1gpu`, branch `agent/sw-vu1gpu` from b632e46 (sw-vu1split), untracked build files
   copied from the vu1split worktree (generated EE code, native IOP files, overrides, deko3d shader table). Commits:
