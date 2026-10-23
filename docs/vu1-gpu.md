@@ -5,6 +5,23 @@ look the same (pixel comparison against the CPU path, tolerances documented). Pl
 (2) a plain-float CPU reference (HLE) compared with the exact path on the recordings, which also says whether a fast
 CPU HLE alone reaches the target, (3) GPU path, (4) console fps / per-core busy / screenshots.
 
+## Handoff (2026-10-23 afternoon: console env tests, console agent)
+- Same bot fight each run (cycle.sh PLAY=1 BOOT=45, 150 s), update_ee3, windows 150-190 s (later windows are often the death screen):
+  baseline 23.2 fps avg / 22.0 min, 30 frames >= 2.3 fields per 5 s (`[gow-speed-hist]` bucket 23 is the cap);
+  `GOW_CORE_GSStage=0` 25.8 / 22.4, 15 hitches; `GOW_IOP_THREAD=1 GOW_IOP_SPIN=0 GOW_IOP_LEAD=4194304` 24.4 / 22.7, 9 hitches;
+  both 22.5 / 19.4 (core 0 overloaded: deko3d 2.0 -> 3.0 s / 5 s, gsq_wait doubles); GSStage=0 + IOP thread on core 1
+  (`GOW_CORE_IopRun=1`) 24.2 / 17.4; GSStage=0 + `PS2X_GS_QUEUE_CHUNKS=32` 24.2 / 22.6 (gsq_wait 0.36 -> 0.29 s, no fps gain).
+  Kept: GSStage on core 0 (ext agent/sw-con 85bd55d, to be put on top of fast1).
+- `[ee-wait]` (update_ee3, `GOW_EE_SAMPLE`): in the fight ALL EE idle is cause 7 = pacing (1.0-1.6 s / 5 s), none is DMAC/vblank
+  wait. With the VU1 thread 3.6 s / 5 s busy (~29 ms per frame) the VU1 path is the per-frame limiter; the EE gets ahead and
+  sleeps in the pacing wait.
+- `PS2X_GS_WORKER_TRACE` on the console is unusable as is: consecutive trace events from three threads are ~56 ms apart
+  (only 30 events in 2 s). stderr is unbuffered to the SD file, so each line seems to block the printing thread for tens of
+  ms. Fix prepared (85bd55d): stdout/stderr go to a 1 MiB memory ring that a priority-0x3B thread on core 0 writes every
+  100 ms; `[switch-log]` every 30 s reports the SD write cost (avg/max ms). If confirmed, every speed line on the EE, stage or
+  worker thread was a potential hitch. Also new: `[gsw-chain]` (EE time to walk+copy the DMA source chains before the worker
+  job is queued, per 5 s).
+
 ## Handoff (2026-10-23 night: EE thread profile, structural-lever study; ext agent/sw-vu1gpu c7337ec)
 - New tool (ext c7337ec, `update_ee2`/`update_ee3`): `GOW_EE_SAMPLE=<hz>` starts a sampler thread that every 5 s prints `[ee-prof]` (exclusive guest
   function = the innermost function entered through `dispatchGuestBranch`, or the resume pc when the scheduler re-enters a function after a
