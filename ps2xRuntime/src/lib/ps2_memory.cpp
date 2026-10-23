@@ -274,6 +274,8 @@ PS2Memory::PS2Memory()
             m_vu1AsyncDefer = async[0] == '2';
             const char *spin = std::getenv("PS2X_VU1_ASYNC_SPIN_US");
             m_vu1AsyncSpinNs = static_cast<uint64_t>(spin ? std::strtoul(spin, nullptr, 10) : 300ul) * 1000ull;
+            const char *waitSpin = std::getenv("PS2X_VU1_ASYNC_WAIT_SPIN_US");
+            m_vu1AsyncWaitSpinNs = static_cast<uint64_t>(waitSpin ? std::strtoul(waitSpin, nullptr, 10) : 0ul) * 1000ull;
             m_vu1AsyncOn = true;
             if (!m_vu1AsyncDefer)
             {
@@ -2037,6 +2039,7 @@ namespace
 void PS2Memory::vu1AsyncLoop()
 {
     ThreadNaming::SetCurrentThreadName("VU1Run");
+    s_vu1RunOf = this; // onGsWorkerThread
     for (;;)
     {
         // spin a little for the next job (the MSCALs of a batch list come tens of microseconds apart), then sleep
@@ -2074,7 +2077,7 @@ void PS2Memory::vu1AsyncLoop()
 
 bool PS2Memory::vu1AsyncSubmit(const Vu1AsyncJob &job)
 {
-    if (!m_vu1AsyncOn || !m_vu1AsyncExec || std::this_thread::get_id() != m_gsWorkerId)
+    if (!m_vu1AsyncOn || !m_vu1AsyncExec || s_gsWorkerOf != this)
         return false;
     vu1AsyncWait();
     m_vu1AsyncJob = job;
@@ -2091,7 +2094,7 @@ bool PS2Memory::vu1AsyncSubmit(const Vu1AsyncJob &job)
 
 void PS2Memory::vu1AsyncWait()
 {
-    if (!m_vu1AsyncOn || std::this_thread::get_id() != m_gsWorkerId)
+    if (!m_vu1AsyncOn || s_gsWorkerOf != this)
         return;
     if (m_vu1AsyncDefer && m_vu1AsyncState.load(std::memory_order_relaxed) == 1)
     {
@@ -2103,8 +2106,24 @@ void PS2Memory::vu1AsyncWait()
     {
         const uint64_t t0 = ps2_perf::enabled() ? ps2_perf::nowNanos() : 0u;
         // the program often ends within a few microseconds of the next MSCAL: spin first
-        for (unsigned n = 0; n < 4096u && m_vu1AsyncState.load(std::memory_order_acquire) != 0; ++n)
-            vu1AsyncPause();
+        if (m_vu1AsyncWaitSpinNs == 0u)
+        {
+            for (unsigned n = 0; n < 4096u && m_vu1AsyncState.load(std::memory_order_acquire) != 0; ++n)
+                vu1AsyncPause();
+        }
+        else
+        {
+            // a worker on a core of its own (GOW_CORE_GSWorker=3) spins through the whole program: a sleeping worker
+            // costs the VU1 thread a notify (a syscall) at every program end
+            const uint64_t until = ps2_perf::nowNanos() + m_vu1AsyncWaitSpinNs;
+            unsigned n = 0;
+            while (m_vu1AsyncState.load(std::memory_order_acquire) != 0)
+            {
+                vu1AsyncPause();
+                if ((++n & 63u) == 0u && ps2_perf::nowNanos() >= until)
+                    break;
+            }
+        }
         if (m_vu1AsyncState.load(std::memory_order_acquire) != 0)
         {
             std::unique_lock<std::mutex> lock(m_vu1AsyncMutex);
@@ -2114,8 +2133,8 @@ void PS2Memory::vu1AsyncWait()
         }
         if (t0)
         {
-            ps2_perf::gsw::asyncWaitNs.fetch_add(ps2_perf::nowNanos() - t0, std::memory_order_relaxed);
-            ps2_perf::gsw::asyncWaits.fetch_add(1, std::memory_order_relaxed);
+            ps2_perf::gsw::asyncWaitNs.addOwned(ps2_perf::nowNanos() - t0);
+            ps2_perf::gsw::asyncWaits.addOwned(1);
         }
     }
     if (m_vu1AsyncDrainAfter)
@@ -2207,8 +2226,8 @@ void PS2Memory::gsWorkerLoop()
         }
         if (jobT0)
         {
-            ps2_perf::gsw::jobNs.fetch_add(ps2_perf::nowNanos() - jobT0, std::memory_order_relaxed);
-            ps2_perf::gsw::jobs.fetch_add(1, std::memory_order_relaxed);
+            ps2_perf::gsw::jobNs.addOwned(ps2_perf::nowNanos() - jobT0);
+            ps2_perf::gsw::jobs.addOwned(1);
             ps2_perf::gsw::reportFromWorker();
         }
         // GOW-Port: hand the job's GIF packets to a sleeping GS stage (gs_stage.h); not while the VU1 thread may be

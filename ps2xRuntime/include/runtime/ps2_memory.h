@@ -431,9 +431,10 @@ public:
         // s_gsWorkerOf: set by gsWorkerLoop on its own thread (a thread_local read instead of std::this_thread::get_id,
         // which on the Switch is pthread_self -> __syscall_thread_self -> the TLS read; asked per XGKICK packet)
         return m_gsWorkerEnabled &&
-               (s_gsWorkerOf == this || (m_vu1AsyncOn && std::this_thread::get_id() == m_vu1AsyncId));
+               (s_gsWorkerOf == this || s_vu1RunOf == this);
     }
     inline static thread_local const PS2Memory *s_gsWorkerOf = nullptr;
+    inline static thread_local const PS2Memory *s_vu1RunOf = nullptr; // set by vu1AsyncLoop (PS2X_VU1_ASYNC=1)
     // GOW-Port: PS2X_VU1_ASYNC=1 (with the GS worker): VU1 microprograms run on their own thread ("VU1Run") while the
     // worker goes on decoding the VIF1 stream (UNPACKs into the other input buffers), as the hardware overlaps them.
     // The worker waits for the running program before anything the hardware also orders behind it (the next
@@ -571,6 +572,7 @@ public:
     bool m_vu1AsyncStop = false;
     bool m_vu1AsyncDrainAfter = false; // a job end found the VU1 thread busy: drain the GIF arbiter after the wait
     uint64_t m_vu1AsyncSpinNs = 0;
+    uint64_t m_vu1AsyncWaitSpinNs = 0; // PS2X_VU1_ASYNC_WAIT_SPIN_US: the worker spins this long for the program's end (0: 4096 pauses)
     Vu1AsyncJob m_vu1AsyncJob{};
     Vu1AsyncExec m_vu1AsyncExec;
 

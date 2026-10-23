@@ -70,8 +70,10 @@ namespace ThreadNaming
         // GS frontend on core 0 next to the deko3d thread (bot fight 2026-10-23, update_ee3, 150-190 s: 25.8 fps / 15
         // frames >= 2.3 fields per 5 s vs 23.2 / 30 on core 1, now that deko3d is ~1.9 s / 5 s busy instead of 3.8);
         // with GOW_IOP_THREAD=1 as well core 0 is overloaded (22.5 fps). GOW_CORE_GSStage=1 puts it back.
+        // Core 3 (npdm highest_cpu_id 3, 2026-10-24 sw-vu1k5): the stage there leaves core 0 to the deko3d thread,
+        // which had been preempted by it (bot fight 165-200 s: 36-41 -> 38-46 fps); GOW_CORE_GSStage=0 restores core 0.
         else if (name == "GSStage")
-            core = 0, boost = 1;
+            core = 3, boost = 1;
         else if (name == "GSWorker" || name == "VU1Run") // VU1Run: PS2X_VU1_ASYNC=1 (move GSWorker with GOW_CORE_GSWorker)
             core = 2;
         // VU1Split (GOW_VU1_SPLIT helper): core 0 at the default priority, which is already the lowest an application

@@ -883,8 +883,8 @@ bool PS2Runtime::syncCoreSubsystems()
                           m_gs, &m_memory, job.startPC, job.top, job.itop, 65536);
         if (vuT0)
         {
-            ps2_perf::gsw::vuNs.fetch_add(ps2_perf::nowNanos() - vuT0, std::memory_order_relaxed);
-            ps2_perf::gsw::runs.fetch_add(1, std::memory_order_relaxed);
+            ps2_perf::gsw::vuNs.addOwned(ps2_perf::nowNanos() - vuT0);
+            ps2_perf::gsw::runs.addOwned(1);
         }
         gowReportVu1Budget(m_vu1, job.mscnt ? "MSCNT" : "MSCAL", job.mscnt ? 0xFFFFu : job.startPC);
     };

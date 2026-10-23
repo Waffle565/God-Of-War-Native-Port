@@ -59,6 +59,9 @@ namespace ps2_perf
     {
         using std::atomic<uint64_t>::atomic;
         using std::atomic<uint64_t>::operator=;
+        // for counters with one writing thread (the others only load): a relaxed load + store instead of fetch_add's
+        // LDXR/STXR loop (on the console half of finishXgkick's samples sat in its two counter adds)
+        void addOwned(uint64_t v) { store(load(std::memory_order_relaxed) + v, std::memory_order_relaxed); }
     };
     inline std::array<PaddedCounter, bucketCount> nanos{};
     inline std::atomic<uint64_t> guestFlips{0}, hostFrames{0};

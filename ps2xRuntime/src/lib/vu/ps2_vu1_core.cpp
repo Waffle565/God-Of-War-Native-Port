@@ -1251,8 +1251,8 @@ void VU1Interpreter::finishXgkick(const uint8_t *packet)
         m_activeMemory->submitGifPacket(GifPathId::Path1, packet, m_xgkick.totalBytes);
         if (kickT0)
         {
-            ps2_perf::gsw::kickNs.fetch_add(ps2_perf::nowNanos() - kickT0, std::memory_order_relaxed);
-            ps2_perf::gsw::kicks.fetch_add(1, std::memory_order_relaxed);
+            ps2_perf::gsw::kickNs.addOwned(ps2_perf::nowNanos() - kickT0);
+            ps2_perf::gsw::kicks.addOwned(1);
         }
     }
     else if (m_activeGs)
