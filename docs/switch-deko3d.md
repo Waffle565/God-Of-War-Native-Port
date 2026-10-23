@@ -321,7 +321,12 @@ deferred)`), so the worker mixes while the EE runs. Only the inline IOP defers; 
 - Checks (inline IOP, deferral on): zone gate `port/core1/gate-idle/20261023_200157` slots 0-4 ok, 60 fps, game speed
   1.01, no `[iop-idle]` line; savetest `port/core1/savetest-idle` 129 pages changed, card directory intact, violations 0
   (the save screens are the heaviest RPC path); devkitA64 `-fsyntax-only` with the Switch build's flags on the three
-  touched files: ok. Not yet run on the console.
+  touched files: ok.
+- Console (sw-vu1k2, `update_sc2` = this merged into agent/sw-vu1gpu 7a78411, handheld bot fight, `PS2X_IOP_NATIVE_STATS=1`):
+  `idle_defer ... violations=0`, fight 150-190 s 35.4-37.6 fps, `iop_ms` 820-1076 per 5 s (before ~950-1040), title
+  60. A/B with the IOP on its own core-0 thread (`GOW_IOP_THREAD=1 GOW_IOP_SPIN=0 GOW_IOP_LEAD=4194304`): core 1's
+  `iop_ms` falls to 160-250, but the fight drops to 28.6-35.0 (avg 33.7; the fight is VU1-bound and core 0 carries
+  deko3d + the GS stage): **not made the Switch default**.
 - Side effect: `waits` in the sound line rose (0 -> 13-48 ms per 5 s on PC): the IOP code now reaches its next libsd
   read sooner after a batch was handed to the mixer and waits for it. Already counted in the numbers above.
 

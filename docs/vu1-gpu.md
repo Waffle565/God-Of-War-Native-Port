@@ -5,6 +5,50 @@ look the same (pixel comparison against the CPU path, tolerances documented). Pl
 (2) a plain-float CPU reference (HLE) compared with the exact path on the recordings, which also says whether a fast
 CPU HLE alone reaches the target, (3) GPU path, (4) console fps / per-core busy / screenshots.
 
+## Handoff (2026-10-23 night 6, sw-vu1k2 stopped here: ext agent/sw-vu1gpu 529de89, package `update_sc5` installed)
+- New kernels in ps2_vu1_hle.inl (all checked with the x86 harness on fight.rec + menu.rec against HEAD with
+  `GOW_VU1N_DIRECT=0`, scratchpad `hx4.sh` = hx3.sh without REBUILD, `cmpx.sh` = cycle sum + hlecmp):
+  - `scat_b / scat_bw / scat / scat_w` (5d66edb): the skinned module's batch-front scatter loops (qwords to the
+    offsets of packed lists, 2-6 pair blocks). **Byte-identical dumps, cycles included** (each native block's idle
+    table: head 4, tail 3/2, pair-4 block 2, reload 12/11; native blocks do not stall across block starts unless
+    they read entry flags). `Kernel::keepsQ`: kernels without DIV/EFU leave an FDIV/EFU entry valid.
+  - `cull_clip` (52f0fc9, a3d13d6, db7ebfd, 529de89): the vertex module's whole clip-flag culling strip loop
+    0cd8..0e10 (B1, B2 with fmand, path A / B with fcget, the accept / reject / partial exits), entries 0cd8 and
+    0d00. Values exact (data, GIF, the whole VU1 state incl. MAC / clip flags on all 4000 records); the flag reads use
+    the writers the blocks' timing gives them (fmand: B1's addz.w; fcget: B2's second clipw on path A, path B's own
+    second clipw). **Not cycle-exact**: +91 k VU cycles over 336 calls on fight.rec (~3 % of the loop, always above
+    native): the native traces (TRACES=1) time the later parts on idle tables, which I could not reproduce block by
+    block (B2 = 7 and path A = 9 fit best; the rest of the residual is in the trace timing). Uses the generated
+    blocks' fast variants where their Bounds checks pass (ORed masks, NEON clip flags: movemask is slow under
+    sse2neon), MAC writers kept raw in the ring (flags computed on read).
+  - runNative after a kernel (52f0fc9): one history entry stands for the kernel (all lanes ready at its start: same
+    timing as the empty history before), so the next block's entry timing can come from the predecessor memo.
+- Merged agent/sw-core1 7da6cae (IOP idle-batch deferral, import-stub cache): `idle_defer ... violations=0` in all runs.
+- Console (handheld, bot fight, env `c/env_pcs.txt`; fight windows 150-190 s; bot fights vary +-2 fps per run):
+  | package | ext | fight fps | other | title | VU1 thread |
+  |---|---|---|---|---|---|
+  | `update_snd1` (before) | a26a44a | 31-37.4 (35-37 from 165 s) | | 51-60 | blocks 29.6 %, runNative 7.6 % |
+  | `update_sc1` | 5d66edb (scatter) | 34.8-36.8 | | 60.0 | scatter blocks 5.6 % -> kernels 0.7 %, runNative 11.0 % |
+  | `update_sc2` | 7a78411 (cull_clip exact helpers + core1 merge) | 35.4-37.6 | deck after the fight 41.4-42.8; iop_ms 820-1076 | 60.0 | kCullClip 7.4 % (costlier than the blocks) |
+  | `update_sc2` + `GOW_IOP_THREAD=1 GOW_IOP_SPIN=0 GOW_IOP_LEAD=4194304` | | 28.6-35.0 (avg 33.7) | iop_ms (core 1) 160-250 | 60.0 | **slower: not made default** |
+  | `update_sc4` | db7ebfd (entry 0d00, raw MAC) | 36.2-37.8 | deck 44.2-46.4 (+7 % vs sc2) | 60.0 | blocks 18.1 %, kCullClip 8.3 % |
+  | `update_sc5` | 529de89 (NEON checks) | 35.4-37.2 (avg 36.6) | died at 190 s | 60.0 | kCullClip 4.3 %, runNative 13.1 %, vu_ms 4140-4180 per 5 s (83 %), idle 6 % |
+  The fight stays at ~36 fps: the VU1 thread is still ~83 % busy and runNative's own dispatch loop grew with every
+  kernel (7.6 -> 13.1 %: each kernel call is one more runNative dispatch where the blocks used to chain directly).
+- Not done (next, in order): (1) cheaper kernel dispatch: let chainStep / chainDirect call a kernel at a hleStop pc
+  itself instead of returning to runNative (the dispatch loop is now the largest single item, 13 %); (2) native
+  codegen in tools/vu1/vu1n_gen.py for the exact-engine callouts: OPMULA / OPMSUB are MUL / MSUB on swizzled operands
+  in the exact engine (ps2_vu1_core.cpp: crossLeft / crossRight, w lane 0), so `emit_upper` can map them onto the
+  mul / msub emitters with dest xyz (fall back for a w dest); ERLENG / WAITP / EEXP need EFU support in the generator
+  (P value + `m_efu` timing entries like the FDIV ones). Blocks with a callout keep the memory form, which is why
+  b1748 (2.0 %), b0250 (1.6 %) and b18c0 (0.6 %) are slow; (3) the batch front's L3/L4 loops (0x168 / 0x1e0 with a
+  `bal` to the FMAC subroutine at 0x4c8) and L5 (0x2f0, `jalr` per list entry) have no kernel (they write MAC /
+  status flags).
+- Tools added (scratchpad): `fb2.py` (find a generated block's module in a .rec by its registry key: key = FNV over
+  pc + pairs), `gf2.sh <fn>...` (print generated block functions), `gk.sh <key>` (registry line), `pp.sh lo hi
+  pat,pat pkg...` (VU1 thread profile lines per package), `fit.sh` / `km.sh` (cycle sums vs HEAD per kernel mask).
+- Console left on DBI's MTP screen with `update_sc5`; env.txt deleted from the SD.
+
 ## Handoff (2026-10-23 night 5, sw-vu1k stopped here: ext agent/sw-vu1gpu a26a44a, package `update_snd1`)
 - State of the console (handheld, bot fight, all runs with the sampler env `c/env_pcs.txt`, ~1-2 % cost; the SD's
   env.txt has been deleted since; the console is on DBI's MTP screen with `update_snd1` installed):
@@ -362,7 +406,10 @@ need the console A/B (fight + title menu fps, `gsw-split` vu_ms per run, `[ee-pr
 | 40c1d3cda1601098 | 13 | none yet | 0.1 % | - | 2.3 % |
 | 476fc4cf0fe83040 | 12 | none yet | 1.3 % | - | - |
 
-## CPU HLE kernels (step 2, ps2_vu1_hle.inl, `GOW_VU1_HLE=1`, off by default)
+## CPU HLE kernels (step 2, ps2_vu1_hle.inl, `GOW_VU1_HLE=1`, off by default; on by default on the Switch)
+- Kernels: vertex loops `unlit_st`, `lit_st`, `skin_lit_st`, `skin_lit28`, `unlit11`, shadow culling `cull` /
+  `cull_swap`, batch-front scatter loops `scat_b`, `scat_bw`, `scat`, `scat_w` (cycle-exact), clip-flag culling strip
+  loop `cull_clip` (values and flags exact, cycles ~3 % high); details in the night-6 handoff above.
 - A kernel names its loop region by FNV-1a 64 of the region's bytes (no game code in the source) and its entry
   blocks by offset; runNative checks each dispatch pc once per code change (`VU1HleState`, reset in the code-change
   path) and then calls the kernel instead of the block: it runs all remaining passes in plain float (the native blocks'
