@@ -39,6 +39,23 @@ CPU HLE alone reaches the target, (3) GPU path, (4) console fps / per-core busy 
   second; a condition-variable hand-off costs more than the ~2 us of VIF work per run (as PS2X_VU1_ASYNC=1 measured),
   so both sides would have to spin, and core 0 has ~1.8 s per 5 s free, not a spinning core. Only worth a prototype if
   core 3 is usable (next item).
+- **Core 3 is usable** (`update_kd3c3` = kd3's program + an npdm with `highest_cpu_id` 3, scratchpad `c/gow_c3.json`;
+  env `c/env_c3.txt`: `GOW_IOP_THREAD=1 GOW_CORE_IopRun=3 GOW_IOP_LEAD=4194304 GOW_PC_SAMPLE_CORE=3`, sampler on IopRun
+  too): the log shows `thread pinned to core 3` (no "failed") and the IOP thread runs there ~22 % busy (78 % of its
+  samples wait); the EE thread's waits go 19 -> 33 % of its samples, iop_ms on core 1 ~900 -> ~200 ms per 5 s. Title 60.0
+  (vu_ms 3635), fight 42.8-43.8 (155-165 s), 33.6-39.4 later (gsq_wait 700-1500): unchanged, the fight stays bound by
+  the VU1 thread (vu_ms 4110-4130). Not made default (gow.json still says 2; no gain for the fight yet, and the IOP thread
+  changes event timing); it is the place for a spinning VIF producer or a VU1 helper (GOW_VU1_SPLIT measured +24 % with
+  its helper on core 0, never on a free core).
+- **Next levers** (kd3 fight, VU1 thread): blocks 35 %, kernels 17 % (kCullClip 5.6: its writer stores and blends;
+  kUnlitSt / kLitSt / kSkinLitSt are load/store bound), dispatch 10.4 % (runNative's `sl.known` load = the slot's cache
+  miss is 13 % of runNative), VIF 8.4 %, per-run entry/exit ~6 % (run / execute / flushPipelines / exportFlags /
+  syncInflight / importFlags / the MSCAL lambda and std::function hops), kick hand-off ~4.5 % (memmove 1.7, finishXgkick
+  1.7, push / stage); idle 9 %. Structural options with core 3: (1) VIF decode + unpack on a core-3 thread that spins,
+  one MSCAL ahead (cap ~8 %); (2) GOW_VU1_SPLIT helper pinned to core 3 (`GOW_CORE_VU1Split=3`), measure; (3) the
+  kick hand-off copy done by the stage thread from a double-buffered VU1 output region.
+- Console left on DBI's MTP screen with `update_kd3` installed (kd3 npdm, core mask 0-2); env.txt and pcs_*.txt deleted
+  from the SD.
 - Tools (scratchpad): `ln.sh <pkg> <lo> <hi> FUNC...` (per-line profile), `chk.sh <harness>` (x86 harness from the
   worktree with gen3's blocks, dumps vs h5 = 529de89 and k3g = a61de30), `bk.sh <pkg> <harness>` (package + chk),
   `c/cycle4.sh` (cycle3.sh + a title screenshot at 15 s), `neon.sh` (arm_neon.h line -> intrinsic). WSL: call scripts by

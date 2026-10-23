@@ -115,3 +115,6 @@ IOP entry point), `ps2_iop_host.cpp` (deferred EE effects), `Kernel/EeScheduler.
 - The RPC calls (~120 a second in gameplay, ~2100 on the save/load menus) still run their IOP server code on the EE
   thread; an asynchronous RPC (`sceSifCallRpc` with the nowait flag) could go to the thread, a synchronous one
   cannot without the EE waiting anyway.
+- Switch core 3 (2026-10-24, docs/vu1-gpu.md sw-vu1k4 handoff): with `highest_cpu_id` 3 in the npdm the application may
+  pin threads to core 3 (`GOW_CORE_IopRun=3`; ThreadNaming accepts 0-3). The IOP thread there is ~22 % busy in a fight
+  and takes ~0.7 s per 5 s off the EE core; fight fps unchanged (VU1-bound), title 60. Not the default yet.
