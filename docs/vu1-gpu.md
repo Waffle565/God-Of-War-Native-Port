@@ -5,13 +5,32 @@ look the same (pixel comparison against the CPU path, tolerances documented). Pl
 (2) a plain-float CPU reference (HLE) compared with the exact path on the recordings, which also says whether a fast
 CPU HLE alone reaches the target, (3) GPU path, (4) console fps / per-core busy / screenshots.
 
+## Handoff (2026-10-23 evening: log ring + GSStage core 0 = fights at 30 fps; ext agent/sw-vu1gpu ac30584, `update_con1`)
+- ext ac30584 (on top of fast1 1b9a06d): GSStage thread on core 0 by default (`GOW_CORE_GSStage=1` restores core 1); stdout/stderr
+  through a memory log ring written to the SD by a low-priority core-0 thread (`[switch-log]`); `[gsw-chain]`. Package
+  `port/switch/nsp/out/update_con1`.
+- Console, handheld, same bot fight: **fight 150-190 s 29.0 avg / 28.0 min** (fast1 24.0 / 22.2), frames >= 2.3 fields 1 per 5 s
+  (was ~21); **title 51.5 fps** (47.6). `[switch-log]`: SD writes avg 4.8 ms, max 65 ms each, i.e. every log line used to stall
+  the thread that printed it (EE speed lines every second, worker/stage/deko3d lines every 5 s): that was most of the hitches.
+  With `GOW_EMC_MHZ=max GOW_GPU_MHZ=max` (opt-in, not default: battery/heat in handheld): title 57.0, fight 28.2 (no gain).
+- Fight frames now sit at 1.9-2.1 fields (the game's 30 fps step). Budget per 5 s at 29 fps: VU1 thread (core 2) 4.35-4.44 s busy
+  (~30 ms per frame: cap ~33 fps); core 0: deko3d 2.58 s (clut 0.82 s / 18.6 k ops, unnamed draw-op bucket 0.82 s / 360 k,
+  texflush 0.32, vrun 0.29, present 0.28) + GS stage ~1.0 s = 3.6 s (72 %: cap ~40 fps); core 1: EE 2.1 s + IOP 1.6 s +
+  pacing 1.3 s (a large part of ee+iop is the vsync spin with its IOP checkpoints, 39 % of EE samples in the profile), real
+  game EE code ~14 ms per frame. EE chain walk+copy only ~110 ms / 5 s (~0.8 ms per frame): the EE->VU1 overlap prototype was
+  dropped (<= 2-3 %).
+- Next for 60 fps: VU1 needs ~2x AND core 0 needs ~1.8x. Recommendation: (1) VU1 work onto the core-1 slack (the vsync spin
+  and pacing are ~40 % of core 1: make the spin sleep until the vblank event, then a coarse VU1 helper there, or the GPU
+  vertex path for the skin/lit kernels if per-run splitting stays as unprofitable as GOW_VU1_SPLIT was); (2) core 0: the CLUT
+  op (44 us each, ~128 per frame) and the per-draw op cost in the deko3d backend; the GS stage could share core 1 slack too.
+
 ## Handoff (2026-10-23 afternoon: console env tests, console agent)
 - Same bot fight each run (cycle.sh PLAY=1 BOOT=45, 150 s), update_ee3, windows 150-190 s (later windows are often the death screen):
   baseline 23.2 fps avg / 22.0 min, 30 frames >= 2.3 fields per 5 s (`[gow-speed-hist]` bucket 23 is the cap);
   `GOW_CORE_GSStage=0` 25.8 / 22.4, 15 hitches; `GOW_IOP_THREAD=1 GOW_IOP_SPIN=0 GOW_IOP_LEAD=4194304` 24.4 / 22.7, 9 hitches;
   both 22.5 / 19.4 (core 0 overloaded: deko3d 2.0 -> 3.0 s / 5 s, gsq_wait doubles); GSStage=0 + IOP thread on core 1
   (`GOW_CORE_IopRun=1`) 24.2 / 17.4; GSStage=0 + `PS2X_GS_QUEUE_CHUNKS=32` 24.2 / 22.6 (gsq_wait 0.36 -> 0.29 s, no fps gain).
-  Kept: GSStage on core 0 (ext agent/sw-con 85bd55d, to be put on top of fast1).
+  Kept: GSStage on core 0 (now ext agent/sw-vu1gpu ac30584).
 - update_fast1 (PIE, VU1 -O3, raw-FPCR div/sqrt) vs update_ee3, no env, console handheld (`[switch] mode handheld`, EMC
   1331 MHz, GPU 307 MHz): title 47.6 vs 47.3 fps, VU1 19.2 vs 21.0 us per run (-9 %); fight 150-190 s 24.0 / 22.2 vs 23.2 / 22.0,
   25.1 vs 25.7 us per run. fast1 + `GOW_EMC_MHZ=max GOW_GPU_MHZ=max` (EMC 1600, GPU 460.8 handheld): title 48.4, fight
