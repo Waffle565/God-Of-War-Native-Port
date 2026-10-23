@@ -10,11 +10,15 @@
 #include <cstdlib>
 #include <cstring>
 #include <pthread.h>
+#include <fcntl.h>
+#include <sys/iosupport.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
 extern "C"
 {
+    static void logDrain(bool locked);
+
     // Crashes (data aborts, bad jumps): libnx calls this on its own stack instead of ending the process silently. The
     // log gets the exception and the registers as offsets in the ELF (addr2line -e ps2EntryRunner.elf <offset>).
     extern char __start__;
@@ -31,6 +35,7 @@ extern "C"
                          i + 1 < 29 ? ctx->cpu_gprs[i + 1].x : 0ul, i + 2, i + 2 < 29 ? ctx->cpu_gprs[i + 2].x : 0ul, i + 3,
                          i + 3 < 29 ? ctx->cpu_gprs[i + 3].x : 0ul);
         std::fflush(stderr);
+        logDrain(false); // the log ring (below) still holds the last lines
         svcExitProcess();
     }
 
@@ -229,6 +234,130 @@ extern "C"
         s_clockServiceOpen = false;
     }
 
+    // Log ring: stdout/stderr go into a memory buffer that a low-priority thread on core 0 writes to the SD card every
+    // 100 ms. Unbuffered writes straight to the SD file blocked the printing thread (console 2026-10-23, update_ee3 with
+    // PS2X_GS_WORKER_TRACE: consecutive trace lines from three threads ~56 ms apart), so every speed line on the EE, GS
+    // stage or VU1 thread could stall a frame. [switch-log] every 30 s says what the SD writes cost.
+    static constexpr size_t kLogRing = 1u << 20;
+    static char s_logBuf[kLogRing];
+    static char s_logOut[kLogRing];
+    static size_t s_logLen = 0;
+    static u64 s_logDropped = 0;
+    static Mutex s_logLock;
+    static int s_logFd = -1;
+    static Thread s_logThread;
+    static volatile bool s_logStop = false;
+    static bool s_logThreadUp = false;
+    static devoptab_t s_logDevoptab;
+    static u64 s_logWrites = 0, s_logBytes = 0, s_logWriteNs = 0, s_logMaxNs = 0;
+
+    static int logOpen(struct _reent *, void *, const char *, int, int) { return 0; }
+    static int logClose(struct _reent *, void *) { return 0; }
+    static ssize_t logWrite(struct _reent *, void *, const char *ptr, size_t len)
+    {
+        if (!s_logThreadUp)
+            return write(s_logFd, ptr, len);
+        mutexLock(&s_logLock);
+        if (s_logLen + len <= kLogRing)
+        {
+            std::memcpy(s_logBuf + s_logLen, ptr, len);
+            s_logLen += len;
+        }
+        else
+            ++s_logDropped;
+        mutexUnlock(&s_logLock);
+        return static_cast<ssize_t>(len);
+    }
+
+    // locked: false only from the exception handler (the crashed thread may hold the lock)
+    static void logDrain(bool locked)
+    {
+        size_t n = 0;
+        if (locked)
+            mutexLock(&s_logLock);
+        n = s_logLen;
+        if (n != 0u)
+            std::memcpy(s_logOut, s_logBuf, n);
+        s_logLen = 0;
+        if (locked)
+            mutexUnlock(&s_logLock);
+        if (n == 0u || s_logFd < 0)
+            return;
+        const u64 t0 = armGetSystemTick();
+        for (size_t off = 0; off < n;)
+        {
+            const ssize_t w = write(s_logFd, s_logOut + off, n - off);
+            if (w <= 0)
+                break;
+            off += static_cast<size_t>(w);
+        }
+        const u64 ns = armTicksToNs(armGetSystemTick() - t0);
+        ++s_logWrites;
+        s_logBytes += n;
+        s_logWriteNs += ns;
+        if (ns > s_logMaxNs)
+            s_logMaxNs = ns;
+    }
+
+    static void logThreadMain(void *)
+    {
+        u64 lastReport = armGetSystemTick();
+        while (!s_logStop)
+        {
+            svcSleepThread(100000000ll);
+            logDrain(true);
+            if (armTicksToNs(armGetSystemTick() - lastReport) >= 30000000000ull)
+            {
+                lastReport = armGetSystemTick();
+                std::fprintf(stderr, "[switch-log] sd writes=%llu bytes=%llu avg_ms=%.2f max_ms=%.2f dropped=%llu\n",
+                             static_cast<unsigned long long>(s_logWrites), static_cast<unsigned long long>(s_logBytes),
+                             s_logWrites ? s_logWriteNs / 1e6 / s_logWrites : 0.0, s_logMaxNs / 1e6,
+                             static_cast<unsigned long long>(s_logDropped));
+                s_logMaxNs = 0;
+            }
+        }
+        logDrain(true);
+    }
+
+    // true: stdout/stderr now go to the ring; false: the caller falls back to the plain SD file
+    static bool logStart()
+    {
+        s_logFd = open("sdmc:/switch/gow/log.txt", O_WRONLY | O_CREAT | O_TRUNC, 0666);
+        if (s_logFd < 0)
+            return false;
+        mutexInit(&s_logLock);
+        std::memset(&s_logDevoptab, 0, sizeof(s_logDevoptab));
+        s_logDevoptab.name = "gowlog";
+        s_logDevoptab.structSize = sizeof(int);
+        s_logDevoptab.open_r = logOpen;
+        s_logDevoptab.close_r = logClose;
+        s_logDevoptab.write_r = logWrite;
+        if (AddDevice(&s_logDevoptab) < 0 || !std::freopen("gowlog:/log", "w", stdout))
+        {
+            close(s_logFd);
+            s_logFd = -1;
+            return false;
+        }
+        dup2(fileno(stdout), fileno(stderr));
+        // priority 0x3B (below every game thread), core 0
+        if (R_SUCCEEDED(threadCreate(&s_logThread, logThreadMain, nullptr, nullptr, 0x10000, 0x3B, 0)) &&
+            R_SUCCEEDED(threadStart(&s_logThread)))
+            s_logThreadUp = true;
+        return true;
+    }
+
+    static void logStop()
+    {
+        if (s_logThreadUp)
+        {
+            s_logStop = true;
+            threadWaitForExit(&s_logThread);
+            threadClose(&s_logThread);
+            s_logThreadUp = false;
+        }
+        logDrain(true);
+    }
+
     void userAppInit(void)
     {
         // the installed title (NSP) carries the extracted disc in its RomFS (romfs:/disc-usa/...); an NRO has none and
@@ -243,8 +372,9 @@ extern "C"
             // the previous run's log survives one more launch (a crash, then a restart, keeps the crash log)
             std::remove("sdmc:/switch/gow/log_prev.txt");
             std::rename("sdmc:/switch/gow/log.txt", "sdmc:/switch/gow/log_prev.txt");
-            // one file descriptor for both streams (two opens of the file would overwrite each other's lines)
-            if (std::freopen("sdmc:/switch/gow/log.txt", "w", stdout))
+            // one file descriptor for both streams (two opens of the file would overwrite each other's lines): the log
+            // ring, else the SD file itself
+            if (!logStart() && std::freopen("sdmc:/switch/gow/log.txt", "w", stdout))
                 dup2(fileno(stdout), fileno(stderr));
             std::setvbuf(stdout, nullptr, _IONBF, 0);
             std::setvbuf(stderr, nullptr, _IONBF, 0);
@@ -312,6 +442,7 @@ extern "C"
         stopClocks();
         std::fflush(stdout);
         std::fflush(stderr);
+        logStop();
         if (s_nxlinkSocket >= 0)
             close(s_nxlinkSocket);
         socketExit();

@@ -142,6 +142,9 @@ namespace ps2_perf
     namespace gsw
     {
         inline std::atomic<uint64_t> jobNs{0}, vuNs{0}, kickNs{0}, runs{0}, kicks{0}, jobs{0}, asyncWaitNs{0}, asyncWaits{0};
+        // EE side: DMA source chains walked and copied by PS2Memory::sendDmaChain before the worker job is queued (VU1
+        // cannot start on a chain until this is done), printed as [gsw-chain]
+        inline std::atomic<uint64_t> chainNs{0}, chains{0}, chainBytes{0}, chainMaxNs{0};
         inline void reportFromWorker()
         {
             static uint64_t last = nowNanos();
@@ -155,6 +158,12 @@ namespace ps2_perf
                          (now - last) * 1e-9, d[0] * 1e-6, d[1] * 1e-6, d[2] * 1e-6, (d[0] > d[1] ? d[0] - d[1] : 0) * 1e-6,
                          (unsigned long long)d[3], (unsigned long long)d[4], (unsigned long long)d[5], d[6] * 1e-6,
                          (unsigned long long)d[7]);
+            static uint64_t chainBefore[3] = {};
+            const uint64_t chainCur[3] = {chainNs.load(), chains.load(), chainBytes.load()};
+            uint64_t c[3];
+            for (int i = 0; i < 3; ++i) { c[i] = chainCur[i] - chainBefore[i]; chainBefore[i] = chainCur[i]; }
+            std::fprintf(stderr, "[gsw-chain] window=%.2f chain_ms=%.1f chains=%llu chain_kb=%llu max_chain_ms=%.2f\n", (now - last) * 1e-9,
+                         c[0] * 1e-6, (unsigned long long)c[1], (unsigned long long)(c[2] >> 10), chainMaxNs.exchange(0) * 1e-6);
             last = now;
         }
     }

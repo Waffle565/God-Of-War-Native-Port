@@ -56,7 +56,7 @@ namespace ThreadNaming
 #elif defined(__linux__)
         pthread_setname_np(pthread_self(), name.data());
 #elif defined(__SWITCH__)
-        // EE + IOP and the GS frontend on core 1, VIF1/VU1 on core 2; the presentation thread and the GL backend on
+        // EE + IOP on core 1, VIF1/VU1 on core 2; the GS frontend, the presentation thread and the GL backend on
         // core 0. The EE spends most of a frame spinning in vid::WaitForDMAComplete (profile 2026-10-16: ~85 % of its
         // samples), so the GS frontend shares its core one priority step above it: it runs whenever it has work and
         // the spin only gets what is left. On core 0 it starved behind the GL backend and the presentation.
@@ -66,8 +66,11 @@ namespace ThreadNaming
         int core = 0, boost = 0;
         if (name == "GameThread")
             core = 1;
+        // GS frontend on core 0 next to the deko3d thread (bot fight 2026-10-23, update_ee3, 150-190 s: 25.8 fps / 15
+        // frames >= 2.3 fields per 5 s vs 23.2 / 30 on core 1, now that deko3d is ~1.9 s / 5 s busy instead of 3.8);
+        // with GOW_IOP_THREAD=1 as well core 0 is overloaded (22.5 fps). GOW_CORE_GSStage=1 puts it back.
         else if (name == "GSStage")
-            core = 1, boost = 1;
+            core = 0, boost = 1;
         else if (name == "GSWorker" || name == "VU1Run") // VU1Run: PS2X_VU1_ASYNC=1 (move GSWorker with GOW_CORE_GSWorker)
             core = 2;
         // VU1Split (GOW_VU1_SPLIT helper): core 0 at the default priority, which is already the lowest an application

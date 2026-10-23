@@ -1856,6 +1856,7 @@ void PS2Memory::sendDmaChain(DmaPath path, uint32_t tagAddress)
     const bool transferTags = path != DmaPath::Gif && config != m_ioRegisters.end() && (config->second & 0x40u) != 0u;
     uint32_t returnStack[2] = {};
     uint32_t depth = 0u;
+    const uint64_t chainT0 = ps2_perf::enabled() ? ps2_perf::nowNanos() : 0u;
     std::vector<uint8_t> bytes = takeDmaBuffer();
     int tags = 0;
     for (; tags < kMaxTags; ++tags)
@@ -1946,6 +1947,17 @@ void PS2Memory::sendDmaChain(DmaPath path, uint32_t tagAddress)
     if (tags >= kMaxTags)
         std::fprintf(stderr, "[dma] chain on path %u stopped after %d tags at 0x%08x\n", static_cast<unsigned>(path), tags,
                      tagAddress);
+    if (chainT0)
+    {
+        const uint64_t ns = ps2_perf::nowNanos() - chainT0;
+        ps2_perf::gsw::chainNs.fetch_add(ns, std::memory_order_relaxed);
+        ps2_perf::gsw::chains.fetch_add(1, std::memory_order_relaxed);
+        ps2_perf::gsw::chainBytes.fetch_add(bytes.size(), std::memory_order_relaxed);
+        uint64_t prev = ps2_perf::gsw::chainMaxNs.load(std::memory_order_relaxed);
+        while (ns > prev && !ps2_perf::gsw::chainMaxNs.compare_exchange_weak(prev, ns, std::memory_order_relaxed))
+        {
+        }
+    }
     deliverDma(path, std::move(bytes));
 }
 
