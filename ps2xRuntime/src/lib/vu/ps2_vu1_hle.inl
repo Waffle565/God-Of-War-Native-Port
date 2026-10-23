@@ -677,7 +677,7 @@ inline uint32_t kScatter(Ctx &c, uint32_t entry)
 // identical), but the cycle COUNT per pass uses B2 = 7 and path A = 9 (their idle tables, as the native traces run them)
 // and the other lengths above; the native traces still count fewer cycles (fight.rec: +71 k VU cycles over 302 calls,
 // ~3 % of the loop's cycles, never fewer than native). Like the vertex kernels, not cycle-exact.
-inline uint32_t kCullClip(Ctx &c, uint32_t)
+inline uint32_t kCullClip(Ctx &c, uint32_t entry)
 {
     VU1State &s = c.s;
     uint8_t *d = c.data;
@@ -694,10 +694,13 @@ inline uint32_t kCullClip(Ctx &c, uint32_t)
     uint32_t clip = *c.workingClip;
     uint64_t cyc = c.cycle;
     // the newest five MAC / clip writers (issue cycle, flags), pushed to the rings at the exit
+    // (MAC writers keep their raw result: the ring computes the flags when something reads them)
     uint64_t macAt[5], clipAt[5];
-    uint32_t macV[5], clipV[5], macN = 0u, clipN = 0u;
+    __m128 macR[5];
+    uint32_t macM[5], clipV[5], macN = 0u, clipN = 0u;
     const auto mac = [&](uint64_t at, __m128 raw, uint32_t mask) {
-        macAt[macN % 5u] = at, macV[macN % 5u] = vu1n::macValRt(raw, mask), ++macN;
+        const uint32_t k = macN % 5u;
+        macAt[k] = at, macR[k] = raw, macM[k] = mask, ++macN;
     };
     const auto clp = [&](uint64_t at, uint32_t v) { clipAt[clipN % 5u] = at, clipV[clipN % 5u] = v, ++clipN, clip = v; };
     const auto qd = [&](int32_t qw) { return d + ((static_cast<uint32_t>(qw) * 16u) & 0x3FFFu); };
@@ -722,11 +725,18 @@ inline uint32_t kCullClip(Ctx &c, uint32_t)
     const bool constOk = !over(r22, M, M, M, M) && !over(r23, M, M, M, M) && !over(r24, M, M, M, M) && !over(r25, M, M, M, M) &&
                          !over(r26, M, M, M, M) && !over(r27, C, C, C, A) && !over(f0, C, A, A, A);
     uint32_t next;
+    // entry 1 (0d00): B1 ran natively (the strip's first pass after the prologue); B2's fmand reads the ring as the
+    // block does (its pair 3 at entry + 5)
+    bool atB2 = entry == 1u;
+    uint32_t m15w = atB2 ? VU1NativeAccess::ringAt(*c.macRing, cyc + 5u) : 0u;
     for (;;)
     {
+      __m128 r;
+      if (!atB2)
+      {
         // B1
         const __m128 n19 = vu1n::nrm(f19), n29e = vu1n::nrm(f29);
-        __m128 r = _mm_add_ps(vu1n::nrm(f16), bc<0>(f0));
+        r = _mm_add_ps(vu1n::nrm(f16), bc<0>(f0));
         mac(cyc, r, 15u);
         f17 = vu1n::clampv(r);
         {
@@ -747,7 +757,7 @@ inline uint32_t kCullClip(Ctx &c, uint32_t)
         mac(cyc + 3u, r, 4u);
         acc = _mm_blend_ps(acc, vu1n::clampv(r), 4);
         r = _mm_add_ps(n19, bc<2>(n29e));
-        const uint32_t m15w = vu1n::macValRt(r, 8u);
+        m15w = vu1n::macValRt(r, 8u);
         mac(cyc + 4u, r, 8u);
         f15 = _mm_blend_ps(f15, vu1n::clampv(r), 8);
         vi8 = vi10 & vi11;
@@ -757,6 +767,8 @@ inline uint32_t kCullClip(Ctx &c, uint32_t)
             next = c.base + 0x140u; // 0e18
             break;
         }
+      }
+        atB2 = false;
         // B2 (issue 2..8)
         {
             const bool fast = constOk && !over(f15, A, A, A, F) && !over(f30, A, A, A, F) && !over(f29, M, M, M, M) &&
@@ -902,7 +914,14 @@ inline uint32_t kCullClip(Ctx &c, uint32_t)
         cyc += 8u;
     }
     for (uint32_t k = macN > 5u ? macN - 5u : 0u; k < macN; ++k)
-        VU1NativeAccess::ringPush(*c.macRing, macAt[k % 5u], macV[k % 5u]);
+    {
+        VU1FlagRing &rg = *c.macRing;
+        rg.issue[rg.next] = macAt[k % 5u];
+        rg.raw[rg.next] = macR[k % 5u];
+        rg.mask[rg.next] = macM[k % 5u];
+        rg.tail[rg.next] = nullptr;
+        rg.next = (rg.next + 1u) & VU1FlagRing::kWrap;
+    }
     for (uint32_t k = clipN > 5u ? clipN - 5u : 0u; k < clipN; ++k)
         VU1NativeAccess::ringPush(*c.clipRing, clipAt[k % 5u], clipV[k % 5u]);
     *c.workingClip = clip;
@@ -927,7 +946,7 @@ inline constexpr Kernel kKernels[] = {
     {"scat_bw", 0xfb0e4fb24245d179ull, 12u, {0x48u, 0x20u}, kScatter<8, true>, true},
     {"scat", 0x8fb4c370967d9ff8ull, 11u, {0x48u, 0x20u}, kScatter<15, false>, true},
     {"scat_w", 0x8b442df4a19fae58ull, 11u, {0x48u, 0x20u}, kScatter<8, false>, true},
-    {"cull_clip", 0x0b72be7897fd2d28ull, 40u, {0x00u, ~0u}, kCullClip, true},
+    {"cull_clip", 0x0b72be7897fd2d28ull, 40u, {0x00u, 0x28u}, kCullClip, true},
 };
 constexpr uint32_t kKernelCount = sizeof(kKernels) / sizeof(kKernels[0]);
 // the reach of a match around its pc (VU1NativeAccess::codeChanged resets only the pcs a code change can affect)
