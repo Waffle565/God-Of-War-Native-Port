@@ -5,6 +5,23 @@ look the same (pixel comparison against the CPU path, tolerances documented). Pl
 (2) a plain-float CPU reference (HLE) compared with the exact path on the recordings, which also says whether a fast
 CPU HLE alone reaches the target, (3) GPU path, (4) console fps / per-core busy / screenshots.
 
+## Handoff (2026-10-23 night 7, sw-vu1k3, in progress: ext agent/sw-vu1gpu dcbc523, package `update_kc1`)
+- **Kernels entered from direct chains** (dcbc523): chainStep, at a pc whose `hleStop` byte is set, calls
+  `VU1NativeAccess::hleChain`, which runs the kernel there itself (shared `hleRun`, the same code runNative runs between
+  two blocks: stats, the one history entry, `arraysReadyBy`, Q validity), then any kernel at the pc it returns, then
+  sets the next block up as a chain successor (runNative's order: stop / budget test before each kernel, the slot must
+  be set up and hold a function, else a stub slot returns the pc to runNative with kVu1nFinished). A decline at the
+  first kernel lets the chain go on into the block (as runNative's fall-through). Bisecting and GOW_VU1_SPLIT keep the
+  old hand-over. x86 replay dumps (fight.rec, menu.rec; HLE=1 and HLE=0, DIRECT=1 TRACES=1) **byte-identical to
+  529de89, cycles included** (scratchpad `hb5.sh` / `hr5.sh`, baseline harness `h5` built from `git archive 529de89`).
+- Console `update_kc1` (bot fight 150-190 s, sampler env): fight 38.4-44.8 fps (avg ~42; this run's fight had other
+  enemies than sc5's, which died at 190 s: part of the gain is the scene), title 60.0 (10-20 s) / ~50 (25-65 s, as sc5),
+  vu_ms 4160-4210 per 5 s (83-84 %, unchanged); VU1 thread: runNative 13.1 -> 9.0 % + hleChain 3.0 % = dispatch
+  12.0 % (-1.1 points); kCullClip 6.5 %.
+- Console note: the HOME click after the fight did not register (game kept running ~10 min); `c/recover3.sh <name>`
+  (NOHOME=1 when the HOME menu is already up) closes the game, opens DBI's MTP and pulls the log. HOME toggles: check
+  the screenshot (hbmenu/HOME menu jpg ~190 KB, game ~95 KB) before pressing again.
+
 ## Handoff (2026-10-23 night 6, sw-vu1k2 stopped here: ext agent/sw-vu1gpu 529de89, package `update_sc5` installed)
 - New kernels in ps2_vu1_hle.inl (all checked with the x86 harness on fight.rec + menu.rec against HEAD with
   `GOW_VU1N_DIRECT=0`, scratchpad `hx4.sh` = hx3.sh without REBUILD, `cmpx.sh` = cycle sum + hlecmp):
