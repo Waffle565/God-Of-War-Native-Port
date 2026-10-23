@@ -126,18 +126,25 @@ namespace ps2x::iop::detail
         // inline then. GOW_SOUND_THREAD=0: always inline.
         void sync() const;
         void workerLoop();
+        // The hand-off is a state word, so the caller (the EE thread, which runs the IOP) never takes a lock the worker
+        // may hold: on the Switch a condition-variable signal makes the woken thread the mutex owner at once, and the
+        // worker (core 0, behind the deko3d and GS stage threads) then held it until it got the core: the EE stood in
+        // svcArbitrateLock for ~15 % of its time in fights (GOW_PC_SAMPLE, 2026-10-23). The mutex / condition variable
+        // only put the worker to sleep (it re-checks every 2 ms, so a signal sent between its check and its wait costs
+        // at most that) and let sync() sleep while a batch is being mixed.
+        enum : uint32_t { JobIdle = 0, JobPending = 1, JobRunning = 2, JobRunningPending = 3 };
+        mutable std::atomic<uint32_t> m_jobState{JobIdle};
         mutable std::mutex m_jobMutex;
-        mutable std::condition_variable m_jobCv;
+        mutable std::condition_variable m_jobCv;  // worker: a job may be pending
+        mutable std::condition_variable m_doneCv; // sync(): the running batch is done
         uint64_t m_batchCycles = 128u * CyclesPerSample; // GOW_SOUND_BATCH=<samples> (default 128, ~2.7 ms) per wake of the worker
         std::atomic<uint64_t> m_workerSamples{0}; // samples mixed by the worker (the rest: inline in sync())
-        uint64_t m_jobTarget = 0; // the latest advanceTo() cycle not yet handed to mixTo()
+        std::atomic<uint64_t> m_jobTarget{0}; // the latest advanceTo() cycle handed to the worker
         mutable uint64_t m_callerTarget = 0; // caller thread: the latest advanceTo() cycle
         mutable uint64_t m_handedTarget = 0; // caller thread: the cycle mixed up to or handed to the worker
         std::atomic<uint64_t> m_mixerNanos{0};
         mutable uint64_t m_syncWaitNanos = 0, m_syncWaits = 0;
-        mutable bool m_jobPending = false; // sync() takes a batch back
-        bool m_jobRunning = false;
-        bool m_stop = false;
+        std::atomic<bool> m_stop{false};
         bool m_async = false;
         std::thread m_worker;
 
