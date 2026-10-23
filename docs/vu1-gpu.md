@@ -5,6 +5,35 @@ look the same (pixel comparison against the CPU path, tolerances documented). Pl
 (2) a plain-float CPU reference (HLE) compared with the exact path on the recordings, which also says whether a fast
 CPU HLE alone reaches the target, (3) GPU path, (4) console fps / per-core busy / screenshots.
 
+## Handoff (2026-10-23 night 5, sw-vu1k stopped here: ext agent/sw-vu1gpu a26a44a, package `update_snd1`)
+- State of the console (handheld, bot fight, all with the sampler env `c/env_pcs.txt`; the SD's env.txt still holds
+  `GOW_PC_SAMPLE=1000 GOW_PC_SAMPLE_THREADS=GSWorker,GameThread`, ~1-2 % cost: delete it or run cycle.sh without an env):
+  | package | ext | fight 150-200 s | title |
+  |---|---|---|---|
+  | `update_con2` (before) | 06b18e2 | 28-29 | 54-56 |
+  | `update_pcs1` (sampler only) | + sampler | 27-30 | 55 |
+  | `update_pcs2` | b5445ee (dispatch fixes) | 30-37 | 56.2-56.4 |
+  | `update_pcs3` | 0183d57 (key table, caller sampling) | 31-35 | 56.2-56.6 |
+  | `update_snd1` | a26a44a (sound hand-off) | 31-37.4 (35-37 from 165 s) | 60.0 first windows, then 51-58 |
+  Bot fights vary by a few fps per run; the step over the 30 fps line is consistent in all three runs.
+- Step order vs the directive: the PC profile showed that the dispatch costs were larger and cheaper to remove than a
+  batch-front kernel, so those went first. Not built yet: the batch-front kernel (blocks at pc < 0x460 are **20.5 %**
+  of the VU1 thread live), the clip-flag culling loop kernel (0c10-0e30 **13.7 %**, 1728-1808 2.6 %), the batch
+  switch (0.8 %: smaller live than in the replay). The culling loop's fmand / fcget read MAC and clip flags with the
+  stall-dependent timing the generated blocks take from `n.cyc` (see `b0d00_53ba0530` in vu1n_part3.cpp:
+  `I14 = (cyc[3] - cyc[2] >= 4) ? m2 : ...`), and it has two paths per point (w < 0 / >= 0) plus three exits
+  (accept, reject: ADC 0x8001 written back, partial: vi1 - 16384 and the 929.z flag); a kernel must reproduce which
+  writer each flag read sees on both paths (replay dumps vs HEAD with DIRECT=0 are the check, as for the others).
+- Other measured items (pcs3 fight, VU1 thread): exact-engine callouts ~5 % (OPMULA/OPMSUB upper callouts and
+  ERLENG/WAITP lower callouts in `b1748_ff5616cb`, an EFU op at 0x288 in `b0250_b0fc2612`: native versions in
+  tools/vu1/vu1n_gen.py would remove the callout + commit round trips), VIF decode/unpack ~6.5 %, codeChanged 1.6 %,
+  commitReadyPipelines 1.4 %, runNative 7.8 %, kernels 6.7 %, idle 5.4 %.
+- EE thread after a26a44a: 32.6 % of its fight samples wait in `EeScheduler::processDueDeadlines` (pacing / idle):
+  core 1 has room now; the fight is bound by the VU1 thread (vu_ms ~4.3 s per 5 s).
+- Tools: scratchpad `c/cycle2.sh` (cycle.sh + clears/pulls `pcs_*.txt`), `bp8.sh <name>` keeps `/root/elf_<name>.elf`,
+  `hx3.sh <name>` (x86 harness exactness: HLE=0 dumps vs HEAD, HLE=1 vs HEAD with DIRECT=0; `/root/vu1h/vghead` =
+  HEAD before this round), `k2.sh`-style calls of tools/switch_pcprof.py.
+
 ## Handoff (2026-10-23 night 4, sw-vu1k: live PC sampling, VU1 dispatch costs cut; ext agent/sw-vu1gpu b5445ee, `update_pcs2`)
 - New tool `GOW_PC_SAMPLE` (docs/diagnostics.md): real A57 wall-time profile of the VU1 thread in the bot fight (pcs1 =
   con2 code + sampler, 145-195 s, 28-29 fps): generated blocks 45.6 % (spread: the top block, culling `b0d00`, 2.9 %),

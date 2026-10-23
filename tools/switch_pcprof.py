@@ -3,6 +3,9 @@
 
 usage: switch_pcprof.py <pcs_<thread>.txt> <ps2EntryRunner.elf> [first_ms last_ms] [--top N] [--lines FUNC] [--blocks]
 
+Samples stopped in a system call also list the svc (0x1a ArbitrateLock: a contended mutex, 0x1c
+WaitProcessWideKeyAtomic: a condition variable wait, 0x0b SleepThread) with two callers found on the stack.
+
 Sums the windows whose end time (ms since the sampler started) lies in [first_ms, last_ms] (default: all), then prints
 the share of samples per function (generated VU1 blocks summed as <vu1 block>, kept apart with --blocks). --lines FUNC
 breaks one function down by source line (needs a build with debug info). Run in WSL: uses aarch64-linux-gnu-nm and
@@ -32,6 +35,7 @@ def main():
     path, elf = args[0], args[1]
     lo, hi = (int(args[2]), int(args[3])) if len(args) >= 4 else (0, 1 << 62)
     hist = collections.Counter()
+    callers = collections.Counter()
     samples = failed = windows = 0
     use = False
     for line in open(path):
@@ -43,7 +47,11 @@ def main():
             if use:
                 windows += 1; samples += int(p[2]); failed += int(p[3])
             continue
-        if use:
+        if not use:
+            continue
+        if p[0] == 'c':  # stopped in a system call: svc number, two return addresses found on the stack
+            callers[(int(p[1], 16), int(p[2], 16), int(p[3], 16))] += int(p[4])
+        else:
             hist[(int(p[0], 16) - base) & 0xFFFFFFFF] += int(p[1])
     nm = os.environ.get('NM', 'aarch64-linux-gnu-nm')
     syms = []
@@ -67,6 +75,14 @@ def main():
     print(f'windows={windows} samples={samples} failed={failed} counted={tot}')
     for name, n in by_fn.most_common(top):
         print(f'{100 * n / tot:6.2f}% {n:7d} {name[:140]}')
+    if callers:
+        def name(off):
+            i = bisect.bisect_right(addrs, off) - 1
+            return (syms[i][1] if i >= 0 and off else '-').split('(')[0][:70]
+        ctot = sum(callers.values())
+        print(f'--- in system calls: {ctot} samples ({100 * ctot / tot:.1f} %), by svc and the first two stack callers')
+        for (svc, a, b), n in callers.most_common(top):
+            print(f'{100 * n / tot:6.2f}% svc {svc:#04x}  {name(a)}  <-  {name(b)}')
     if lines_fn:
         a2l = os.environ.get('ADDR2LINE', 'aarch64-linux-gnu-addr2line')
         offs = [o for o, _ in in_fn.most_common(300)]

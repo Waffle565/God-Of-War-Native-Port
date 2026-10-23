@@ -44,6 +44,12 @@ model: the SPU2 register-level model and the IOP's SPU DMA channels were removed
   - Why batches and take-back: handing every `advanceTo` to the thread cost more than the mixing (a lock and a wake
     per call: `sound=` 94 ms per 5 s); waiting for a woken but not yet scheduled thread cost ~1 ms per wait on a busy
     PC (92 ms per 5 s in one zone). With both, waits are 0-2 ms per 5 s.
+  - The hand-off is a state word (idle / pending / running / running+pending, CAS on both sides), not a mutex
+    (2026-10-23): on Horizon a condition-variable signal makes the woken worker the owner of the mutex right away, and
+    the worker on core 0 waits behind the deko3d / GS stage threads, so the EE's next `advanceTo` / `sync` blocked in
+    `svcArbitrateLock` until the worker got the core: ~15 % of the EE thread in a console fight (`GOW_PC_SAMPLE`).
+    The mutex and condition variables now only let the worker sleep (it re-checks every 2 ms, covering a signal sent
+    between its check and its wait) and `sync()` sleep while a batch is mixed.
   - PC, `PS2X_IOP_NATIVE_STATS=1` (`[IOP:native] ... sound= (mixer thread, waits, worker samples)`), zones gate per
     5 s, inline vs thread: IOP time on the EE thread 168 -> 141 ms mean over the five zones (slot 2: 160 -> 118-124);
     `sound=` 51-107 -> 22 ms (what is left is the per-call bookkeeping and the stats clock itself); the thread
