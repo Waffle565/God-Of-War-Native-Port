@@ -148,6 +148,33 @@ The PAKs are 4 GB each: the SD card must be exFAT (FAT32 has a 4 GB file limit).
   - Remote loop notes: pad mapping on the console is Nintendo positions (B = Cross, A = Circle, Y = Square,
     X = Triangle, PLUS = Start); botbase clicks of 50 ms can be missed at 25 fps, `cmd configure
     buttonClickSleepTime 120` makes them reliable. New Game: B, B (Hero), PLUS skips the intro movie.
+- v16 window presentation (ext agent/sw-present; logs `port/switch/logs/20261018_swp1*`, 2026-10-19): the GS
+  renderer's own context draws and swaps the window, so a frame never leaves the GPU and the host thread does no GL.
+  - Why not shared textures: switch-mesa's shared EGL contexts do not see each other's textures (the shared probe
+    reads back wrong on the console and in Citron). Instead `GSSharedPresent::CaptureHostContext` takes SDL's window
+    surface and its EGL config id, releases the host context (`eglMakeCurrent(NONE)`), and `GSGL::Context::Create`
+    makes the GS context current on that surface (same config; `eglSwapInterval` 0). `GSSharedPresent::WindowPresent()`
+    then holds; env.txt `PS2X_GS_WINDOW_PRESENT=0` restores the old shared-texture / RAM-frame paths.
+  - `GSHwBackend::Present` composes the read circuits into `presentTex` as before and `presentToWindow` blits it
+    into the window at 16:9 (linear, flipped to the window's bottom-up rows) and swaps; an unchanged present (same
+    display registers and target versions) skips the composition and the swap. Black when PMODE shows nothing.
+  - `GSHostPresentation::renderFrame` in this mode only latches one Present per vsync, polls input and sleeps 2 ms:
+    no upload, draw, swap or GL driver lock on the host (the GL thread's lock wait went from 0.5-0.8 s to <1 ms per
+    5 s). switch-mesa answers 0x0 to `eglQuerySurface(EGL_WIDTH)`; `GSGL::WindowSize` falls back to 1280x720.
+  - Console: title menu 25-26 -> **26-27 fps** (picture correct at 1280x720); gameplay (ship, fighting) **9-13 fps,
+    unchanged**. `[gs-hw-window]` (GOW_PERF_DIAG): blit ~12 ms but **eglSwapBuffers ~1.7 s per 5 s, ~28 ms per full
+    present**: the swap waits for the GPU to finish the frame's work (the old RAM path hid that wait behind its
+    fence). The GL thread is busy ~3.9 s of 5 s in gameplay: swap ~1.7 s, draws ~1.4 s (`[gs-hw-cpu]` post_ms ~1.0 s
+    for ~7700 draw calls: ~130 us of Mesa/nouveau CPU per draw call), clut ~0.9 s (mostly pending draws it flushes),
+    texflush ~0.5 s. VU1 ~2.6 s and EE ~2.3 s per 5 s.
+  - Conclusion: on Mesa nouveau both the per-draw CPU cost and the GPU time per frame are far from 60 fps; the
+    renderer has to move to deko3d (devkitPro's low-level NVN-style API for the Tegra X1: `deko3d` 0.5.0 and the
+    `uam` shader compiler are installed in the toolchain; Nintendo's own NVN is an NDA SDK and cannot be used in
+    homebrew). That is a port of `gs_hw_backend.cpp`'s GL calls (render targets, textures, samplers, the draw,
+    present, CLUT, shuffle and pack shaders through uam, texture barriers, dual-source blend, compute) to deko3d
+    command buffers, with CPU-visible memory replacing the readbacks.
+  - Tools: `port/switch/nsp/make_update_to.sh <elf> <out dir>` packages any build's ExeFS without touching
+    `out/update` (v15's package is kept in `out/update_v15`).
 - Remote testing (2026-10-18), USB cable + home Wi-Fi:
   - Files: `python -I tools/switch_mtp.py ls|get|put|rm <SD path>` while DBI's MTP responder runs. It uses the
     Windows Portable Devices API (`pip install comtypes`): the shell's CopyHere (switch_pull_log.ps1) can add files but
