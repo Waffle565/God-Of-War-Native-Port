@@ -150,8 +150,7 @@ extern "C"
                 if (clock.hzWanted != 0u && clockGet(clock, &now) && now != clock.hzWanted)
                 {
                     clockSet(clock, clock.hzWanted);
-                    std::fprintf(stderr, "[switch] %s clock was %u Hz, re-applied %u
-", clock.name, now, clock.hzWanted);
+                    std::fprintf(stderr, "[switch] %s clock was %u Hz, re-applied %u\n", clock.name, now, clock.hzWanted);
                 }
             }
         }
@@ -178,8 +177,7 @@ extern "C"
         const bool clkrst = hosversionAtLeast(8, 0, 0);
         if (R_FAILED(clkrst ? clkrstInitialize() : pcvInitialize()))
         {
-            std::fprintf(stderr, "[switch] mode %s, clock service unavailable
-", docked ? "docked" : "handheld");
+            std::fprintf(stderr, "[switch] mode %s, clock service unavailable\n", docked ? "docked" : "handheld");
             for (ClockSlot &clock : s_clocks)
                 clock.hzWanted = 0;
             return;
@@ -196,8 +194,7 @@ extern "C"
             clockGet(clock, &now[i]);
         }
         std::fprintf(stderr,
-                     "[switch] mode %s; clocks (Hz, start -> now): cpu %u -> %u (rc=%x), emc %u -> %u (rc=%x), gpu %u -> %u (rc=%x)
-",
+                     "[switch] mode %s; clocks (Hz, start -> now): cpu %u -> %u (rc=%x), emc %u -> %u (rc=%x), gpu %u -> %u (rc=%x)\n",
                      docked ? "docked" : "handheld", s_clocks[ClockCpu].hzBefore, now[ClockCpu], rc[ClockCpu],
                      s_clocks[ClockEmc].hzBefore, now[ClockEmc], rc[ClockEmc], s_clocks[ClockGpu].hzBefore, now[ClockGpu],
                      rc[ClockGpu]);
