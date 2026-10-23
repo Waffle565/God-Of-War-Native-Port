@@ -263,3 +263,21 @@ port/dkdraw/gate/20261019_165610; savetest (`port/core1/savetest`) 129 pages, ca
 Next lever: VU1 (core 2) and the EE -> VU1 dependency. The GS stage and the IOP are no longer on the critical path.
 Handoff: worktree ext/PS2Recomp-kl-core1 (branch agent/sw-core1), PC build `out/build-pc` (VU1 blocks
 `out/vu1pregen` = sw-vu1cyc's), WSL copy `/root/src-core1`, `/root/core1build.sh` -> `/root/gow-switch-core1`.
+
+## Stream-buffer reuse and CLUT loads without a flush (ext agent/sw-vu1gpu 06b18e2, 2026-10-23, `update_con2`)
+- **Stream storage pool** (gs_dk.cpp `storage()` / `retire()`): the backend's 8 MiB vertex stream is orphaned (GL
+  `BufferData(nullptr)`) every ~8 MiB of vertices, ~90 times per 5 s in fights; each orphan used to be a
+  `dkMemBlockCreate` of 8 MiB plus a `dkMemBlockDestroy` of the retired one (in the present path). Retired buffer
+  storage of >= 1 MiB now goes to a pool of up to 4 blocks and is reused for the next storage of the same size.
+  `[gs-dk-time] buf_new= buf_reused=` count it (fight: 0 new, ~90 reused per 5 s).
+- **CLUT loads** (`GSHwBackend::LoadClut`): the pending batch reads the CLUT when it is drawn, so every CLUT load
+  flushed it first (~130 per frame). When the palette comes from the memory image (no render target holds the CBP and
+  the pending batch's target cannot span it: `clutSourceMayBeTarget`), the load goes first and the batch is flushed
+  only when the palette changed (old palette restored for the flush). `[gs-hw-cpu] clut_kept=` counts the loads that
+  kept the batch (fight ~2.7 k of 18.3 k). `GOW_GS_HW_CLUT_KEEP=0` restores the flush-first order.
+- Console, same bot fight 150-190 s, update_con1 -> update_con2: GL thread busy 2.57 -> 2.17 s per 5 s; stream_ms
+  541 -> 255, present_submit_ms 197 -> 35, draw calls 17.4 k -> 14.0 k, `[gs-gl]` clut op 836 -> 684 ms, gsq_wait 79 -> 3 ms.
+  fps unchanged (28.0 / 27.2 vs 29.0 / 28.0; this run had ~4 % more VU1 runs per frame): the VU1 thread (core 2,
+  4.35 s per 5 s) is the limit. Core 0 now has ~1.8 s per 5 s free.
+- Note: the `[gs-gl]` `clut` op time is mostly the draws it flushes (the CLUT load itself is `[gs-hw-cpu] clut_ms`,
+  ~10 us each); `?` is the `Kicks` op (strip/fan vertex runs, 360 k per 5 s).

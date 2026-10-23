@@ -39,7 +39,7 @@ The user wants the game **totally playable**; work continues until then. Game da
 | [settings.md](settings.md) | Player settings: text/voice language from the European disc via disc overlays, the save wording (menu text format), no subtitles in the game data. |
 | [status-map/](status-map/detail.md) | Status map shown on the GitHub page: edit `data.toml`, run `python tools/status_map.py`. Keep it in step with status.md. |
 | [switch.md](switch.md) | Switch toolchain (WSL + devkitPro), Switch build changes, open Switch issues. |
-| [switch-deko3d.md](switch-deko3d.md) | Switch GS renderer on deko3d: GL table over deko3d, uam-prebuilt shaders, GPU present, console results; draw count, GS stage PACKED fast path (`GOW_GS_FASTPACK`), per-core budget and IOP thread variants on the console. |
+| [switch-deko3d.md](switch-deko3d.md) | Switch GS renderer on deko3d: GL table over deko3d, uam-prebuilt shaders, GPU present, console results; stream-buffer memblock reuse and CLUT loads without a flush (`GOW_GS_HW_CLUT_KEEP`); draw count, GS stage PACKED fast path (`GOW_GS_FASTPACK`), per-core budget and IOP thread variants on the console. |
 | [switch-env-setup.md](switch-env-setup.md) | Recreating the Switch cross-build environment (WSL Ubuntu + devkitPro, Cloudflare workaround, sync/build/package commands, compiler flags of the Switch build (no -fPIC on the static libraries, VU1 sources at -O3), backup with `wsl --export`); what the 2026-10-23 loss of the distro cost. |
 | [gemini-helper.md](gemini-helper.md) | Read-only helper agent (`agy`/Gemini) to offload log/dump analysis: when and how to call it. |
 

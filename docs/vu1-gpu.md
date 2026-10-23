@@ -5,6 +5,31 @@ look the same (pixel comparison against the CPU path, tolerances documented). Pl
 (2) a plain-float CPU reference (HLE) compared with the exact path on the recordings, which also says whether a fast
 CPU HLE alone reaches the target, (3) GPU path, (4) console fps / per-core busy / screenshots.
 
+## Handoff (2026-10-23 night 2: core 0 cut, vsync spin and VU1 helper assessed; ext agent/sw-vu1gpu 06b18e2, `update_con2`)
+- **Core 0 (done, default)**: ext 06b18e2 (docs/switch-deko3d.md "Stream-buffer reuse"): the 8 MiB vertex-stream orphan reuses
+  retired deko3d memblocks (was a dkMemBlockCreate/Destroy pair ~90 times per 5 s) and a CLUT load that leaves the palette unchanged
+  no longer flushes the pending batch. Same bot fight 150-190 s: GL thread 2.57 -> 2.17 s per 5 s (stream 541 -> 255 ms, present
+  280 -> 100 ms, draw calls 17.4 k -> 14.0 k), gsq_wait 79 -> 3 ms; core 0 total ~3.2 s per 5 s (~1.8 s free). fps 28.0 avg / 27.2 min,
+  6 frames >= 2.3 fields per 5 s, title 55.4 (con1: 29.0 / 28.0, 1.2, 56.0): within run-to-run variance (this run had ~4 % more VU1 runs
+  per frame); fps stays bound by the VU1 thread (core 2: gsw job 4.79 s, vu 4.42 s per 5 s = 96 %). Screenshots correct.
+- **The `[gs-gl] clut` bucket was mostly draws**: the CLUT load itself is `[gs-hw-cpu] clut_ms` ~190 ms (10 us each); the rest of the
+  44 us per op was the batch flush. Only ~15 % of the CLUT loads are unchanged palettes, so most flushes remain (the palette really
+  changes per object). The remaining per-draw cost: draw_ms ~760 per 14 k draws (~54 us), Kicks op 0.8 s per 360 k strips.
+- **Step 1 (vsync spin) is already in place**: `gowCountdownSkip` (gow_overrides.cpp, the two countdown back edges of 0x17A1D0 /
+  0x17A2A0) jumps the countdown to the next scheduler deadline and the EE then sleeps in `processDueDeadlines` (condition variable,
+  `guest_wait`). The profile's "39 % in the spin" are the IOP batches run at those checkpoints (iop bucket: real IOP work that has to
+  run somewhere) plus the sleep (wait bucket); the spin's own code is ~3 %. Core 1's real slack is `guest_wait` ~1.3 s per 5 s, not 40 %.
+  Nothing to change there.
+- **Step 2 (coarse VU1 helper) assessed, not built**: earlier measurements already cover it: run-level speculation (`GOW_VU1N_REPLAY_LIVEIN`,
+  docs/vu1-hle.md) gives the same output for only 78 % of consecutive run pairs (75 % with memory), so a helper running run k+1 early fails
+  ~25-40 %; `PS2X_VU1_ASYNC=1` (VU1 programs on their own thread, VIF decoding overlapped) was slower (2 us VIF per 27 us run, every MSCAL
+  waits); `GOW_VU1_SPLIT` (loop split) +24 %. A chain-level split has only ~2 chains per frame (`[gsw-chain]` chains=284 per 5 s) whose
+  boundary is a run boundary with the same carried-state problem. Not worth a prototype; if someone wants a number first: per-chain
+  vu_ms and whether chain 2's first run's live-ins match last frame's.
+- **Next (per user decision 2026-10-19): the GPU vertex path** for the skin/lit kernels (kSkinLitSt is 22 % of the VU instructions; see
+  "GPU path" below), judged by pixels. Core 0 now has ~1.8 s per 5 s free for the extra CPU-side work it needs. Core 1 (EE 2.05 s + IOP
+  1.6 s + GS-stage share) caps ~45-50 fps even with VU1 free: 60 fps also needs EE/IOP time cut (EE 14 ms per frame, IOP ~5.5 ms at 60 fps).
+
 ## Handoff (2026-10-23 evening: log ring + GSStage core 0 = fights at 30 fps; ext agent/sw-vu1gpu ac30584, `update_con1`)
 - ext ac30584 (on top of fast1 1b9a06d): GSStage thread on core 0 by default (`GOW_CORE_GSStage=1` restores core 1); stdout/stderr
   through a memory log ring written to the SD by a low-priority core-0 thread (`[switch-log]`); `[gsw-chain]`. Package
