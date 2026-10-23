@@ -40,6 +40,7 @@ static bool gowUsePcsx2Vu1(); // GOW_VU1_PCSX2=1, defined before PS2Runtime::ini
 #include <atomic>
 #include <thread>
 #include <unordered_map>
+#include <vector>
 #include <sstream>
 #include <cstdio>
 #include <cstdlib>
@@ -1683,6 +1684,58 @@ void gowDumpBranchRing(const char *why)
         std::fprintf(stderr, "  src=%08x dst=%08x ra=%08x kind=%u\n", r.src, r.dst, r.ra, r.kind);
     }
 }
+// GOW-Port: GOW_EE_SAMPLE=<hz>: guest-function sampling profile of the EE thread (exclusive: the innermost guest function
+// entered through dispatchGuestBranch, plus the thread's perf bucket). Printed every 5 s as [ee-prof].
+std::atomic<uint32_t> g_gowCurFn{0};
+extern std::atomic<uint64_t> g_gowWaitNs[8], g_gowWaitCnt[8];
+#ifdef __SWITCH__
+extern "C" void ps2xSwitchSleepNs(long long ns);
+#endif
+static const ps2_perf::Bucket *g_gowEeBucketPtr = nullptr;
+static void gowEeSamplerThread(unsigned hz)
+{
+    ThreadNaming::SetCurrentThreadName("EeSampler");
+    std::unordered_map<uint64_t, uint32_t> hist;
+    uint32_t total = 0;
+    auto last = std::chrono::steady_clock::now();
+    const auto period = std::chrono::microseconds(1000000u / (hz ? hz : 200u));
+    for (;;)
+    {
+#ifdef __SWITCH__
+        ps2xSwitchSleepNs(std::chrono::duration_cast<std::chrono::nanoseconds>(period).count());
+#else
+        std::this_thread::sleep_for(period);
+#endif
+        const uint32_t fn = g_gowCurFn.load(std::memory_order_relaxed);
+        const uint32_t b = g_gowEeBucketPtr ? (uint32_t)*(volatile const uint32_t *)g_gowEeBucketPtr : 99u;
+        ++hist[((uint64_t)b << 32) | fn];
+        ++total;
+        const auto now = std::chrono::steady_clock::now();
+        if (now - last < std::chrono::seconds(5)) continue;
+        last = now;
+        std::map<uint32_t, uint32_t> byBucket;
+        std::vector<std::pair<uint32_t, uint64_t>> v;
+        for (auto &kv : hist) { byBucket[(uint32_t)(kv.first >> 32)] += kv.second; v.push_back({kv.second, kv.first}); }
+        std::sort(v.begin(), v.end(), [](auto &a, auto &c) { return a.first > c.first; });
+        std::string line = "[ee-prof] samples=" + std::to_string(total) + " buckets(0=ee,1=vu,2=gs,3=iop,4=wait,5=upload,6=host,7=gsq,8=none):";
+        for (auto &kv : byBucket) line += " " + std::to_string(kv.first) + "=" + std::to_string(kv.second);
+        std::fprintf(stderr, "%s\n", line.c_str());
+        for (size_t i = 0; i < v.size() && i < 60; ++i)
+            std::fprintf(stderr, "[ee-prof]  %5.1f%% b%u fn=%08x\n", 100.0 * v[i].first / total, (unsigned)(v[i].second >> 32), (unsigned)(v[i].second & 0xffffffffu));
+        {
+            static uint64_t pn[8] = {}, pc[8] = {};
+            std::string w = "[ee-wait] by cause (0 stop,1 vbstart,2 vbend,3 dmac,4 wake,5 alarm,6 deadline,7 pacing): ms/count:";
+            for (int i = 0; i < 8; ++i)
+            {
+                const uint64_t n = g_gowWaitNs[i].load(), c = g_gowWaitCnt[i].load();
+                char buf[64]; std::snprintf(buf, sizeof buf, " %d=%.0f/%llu", i, (n - pn[i]) * 1e-6, (unsigned long long)(c - pc[i]));
+                w += buf; pn[i] = n; pc[i] = c;
+            }
+            std::fprintf(stderr, "%s\n", w.c_str());
+        }
+        hist.clear(); total = 0;
+    }
+}
 bool PS2Runtime::dispatchGuestBranch(uint8_t *rdram,
                                      R5900Context *ctx,
                                      uint32_t targetPc,
@@ -1764,7 +1817,10 @@ bool PS2Runtime::dispatchGuestBranch(uint8_t *rdram,
     };
     if (traced)
         traceEvent("enter");
+    const uint32_t gowPrevFn = g_gowCurFn.load(std::memory_order_relaxed);
+    g_gowCurFn.store(targetPc, std::memory_order_relaxed);
     targetFn(rdram, ctx, this);
+    g_gowCurFn.store(gowPrevFn, std::memory_order_relaxed);
     if (traced)
         traceEvent("leave");
 
@@ -2783,6 +2839,11 @@ void PS2Runtime::run()
     std::thread gameThread([&]()
                            {
         ThreadNaming::SetCurrentThreadName("GameThread");
+        if (const char *hz = std::getenv("GOW_EE_SAMPLE"); hz && hz[0])
+        {
+            g_gowEeBucketPtr = reinterpret_cast<const ps2_perf::Bucket *>(&ps2_perf::accounting.active);
+            new std::thread(gowEeSamplerThread, (unsigned)std::atoi(hz)); // leaked: pthread_detach is ENOSYS on the Switch libc
+        }
         // GOW-Port: EE FPU like PCSX2's default (Pcsx2Config.cpp DEFAULT_FPU_FP_CONTROL_REGISTER): round toward
         // zero, flush-to-zero and denormals-are-zero for all EE float math on this thread (division keeps its own
         // round-to-nearest, see ps2FpuDivideNearest, = PCSX2's FPUDivFPCR). GOW_EE_FPU_NEAREST=1 = old behavior.

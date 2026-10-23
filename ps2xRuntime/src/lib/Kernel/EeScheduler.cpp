@@ -11,6 +11,9 @@
 #include <limits>
 #include <stdexcept>
 
+extern std::atomic<uint32_t> g_gowCurFn;
+std::atomic<uint64_t> g_gowWaitNs[8], g_gowWaitCnt[8]; // GOW_EE_SAMPLE: EE idle waits by wake-up cause (EeEventType, 6 = deadline, 7 = pacing sleep) // ps2_runtime.cpp (GOW_EE_SAMPLE)
+
 namespace
 {
     constexpr int KE_OK = 0;
@@ -296,6 +299,7 @@ void EeScheduler::run()
             }
             continue;
         }
+        g_gowCurFn.store(1u, std::memory_order_relaxed); // GOW_EE_SAMPLE: scheduler
         PS2Runtime::RecompiledFunction function = m_runtime.lookupFunction(context.pc);
 
         if (checkpointDue(kGuestDispatchCycles))
@@ -309,6 +313,7 @@ void EeScheduler::run()
             m_guestExecuting.store(true, std::memory_order_release);
             ps2_perf::guestEntry(context.pc, m_rdram);
             loadSharedVu0Random(context);
+            g_gowCurFn.store(context.pc, std::memory_order_relaxed);
             function(m_rdram, &context, &m_runtime);
             saveSharedVu0Random(context);
             m_guestExecuting.store(false, std::memory_order_release);
@@ -1943,6 +1948,8 @@ void EeScheduler::processDueDeadlines()
                 m_eventCv.wait_until(lock, pacingDeadline, [this]()
                                      { return !m_events.empty() ||
                                               m_stopRequested.load(std::memory_order_acquire); });
+                g_gowWaitNs[7].fetch_add((uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - now).count(), std::memory_order_relaxed);
+                g_gowWaitCnt[7].fetch_add(1, std::memory_order_relaxed);
                 if (!m_events.empty() || m_stopRequested.load(std::memory_order_acquire))
                 {
                     updateNextDeadline();
@@ -2174,8 +2181,14 @@ void EeScheduler::waitForEvent()
     const bool hasTimerDeadline = timerCycles != std::numeric_limits<uint64_t>::max();
     if (m_deadlines.empty() && !hasTimerDeadline)
     {
+        const auto gowW1 = std::chrono::steady_clock::now();
         m_eventCv.wait(lock, [this]()
                        { return !m_events.empty() || m_stopRequested.load(std::memory_order_acquire); });
+        {
+            const unsigned cause = !m_events.empty() ? (unsigned)m_events.front().type : 6u;
+            g_gowWaitNs[cause].fetch_add((uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - gowW1).count(), std::memory_order_relaxed);
+            g_gowWaitCnt[cause].fetch_add(1, std::memory_order_relaxed);
+        }
         return;
     }
 
@@ -2205,9 +2218,15 @@ void EeScheduler::waitForEvent()
         }
     }
 
+    const auto gowW0 = std::chrono::steady_clock::now();
     const bool signaled = m_eventCv.wait_until(lock, hostDeadline, [this]()
                                                { return !m_events.empty() ||
                                                         m_stopRequested.load(std::memory_order_acquire); });
+    {
+        const unsigned cause = signaled && !m_events.empty() ? (unsigned)m_events.front().type : 6u;
+        g_gowWaitNs[cause].fetch_add((uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - gowW0).count(), std::memory_order_relaxed);
+        g_gowWaitCnt[cause].fetch_add(1, std::memory_order_relaxed);
+    }
     if (!signaled)
     {
         const uint64_t elapsed = deadlineCycle > m_clock.eeCycle ? deadlineCycle - m_clock.eeCycle : 0u;

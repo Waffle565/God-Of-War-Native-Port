@@ -34,6 +34,9 @@ extern "C"
         svcExitProcess();
     }
 
+    // GOW_EE_SAMPLE sampler: std::this_thread::sleep_for throws ENOSYS on this libc
+    void ps2xSwitchSleepNs(long long ns) { svcSleepThread(ns); }
+
     // ThreadNaming.h: pin the calling thread to one application core (0-2)
     void ps2xSwitchPinCurrentThread(int core, int priorityBoost)
     {
