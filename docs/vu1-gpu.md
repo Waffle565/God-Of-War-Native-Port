@@ -18,6 +18,32 @@ CPU HLE alone reaches the target, (3) GPU path, (4) console fps / per-core busy 
   enemies than sc5's, which died at 190 s: part of the gain is the scene), title 60.0 (10-20 s) / ~50 (25-65 s, as sc5),
   vu_ms 4160-4210 per 5 s (83-84 %, unchanged); VU1 thread: runNative 13.1 -> 9.0 % + hleChain 3.0 % = dispatch
   12.0 % (-1.1 points); kCullClip 6.5 %.
+- **Soft callouts no longer force the memory form** (generator eb1bf2a + ext a61de30): `callout_kind` in
+  tools/vu1/vu1n_gen.py: OPMULA / OPMSUB and the EFU ops incl. WAITP (lower specials 0x70-0x7E) are "soft"; a block
+  with only soft callouts keeps its registers in locals (and gets fast variants: 704 -> 713). `NATIVE_CALLOUTS`
+  (default): OPMULA / OPMSUB = the MUL / MSUB emitters on swizzled operands (`_MM_SHUFFLE(3,0,2,1)` / `(3,1,0,2)`,
+  lanes outside DEST zeroed so maddc's all-lane overflow test sees only DEST, as the exact engine computes; a w in
+  DEST keeps the callout since the exact engine writes w = 0) followed by `VU1NativeAccess::opmFlags` (the callout's
+  other effects: the MAC entry joins the ring at the block's start cycle as importFlags put it, status current +
+  sticky with OPMSUB's product bits, the commit of the FDIV / EFU values in flight = `calloutCommit`); EFU / WAITP go
+  through `VU1NativeAccess::efuOp` (execLower's EFU cases moved into `VU1Interpreter::execEfu`, run on the local VF
+  value, then calloutCommit). `VU1N_NATIVE_CALLOUTS=0`: the callout stays, registers stored / reloaded around it
+  (`Regs.callout`, with a `synced` set so a register is stored once). Q is stored / reloaded around the helpers when
+  the block wrote it (a callout's commit can put an older FDIV result back into s.q). x86 replay dumps
+  byte-identical to 529de89 (fight: b1748 runs 3050 times in the replay).
+- Console (bot fight, sampler env; fights vary per run, see the windows):
+  | package | change | fight fps | title 10-20 s | VU1 thread |
+  |---|---|---|---|---|
+  | `update_kc1` | dcbc523 hleChain | 38.4-44.8 (150-190 s) | 60.0 | runNative 9.0 % + hleChain 3.0 %; vu_ms 4160-4210 |
+  | `update_kc2` | + spilled soft callouts (gen1) | 37.6-38.6 (150-170 s), 45.6-48.0 (175-200 s) | 60.0 | b1748 2.26 -> 1.70 %, b0250 1.27 % |
+  | `update_kc3` | + native soft callouts (gen3) | 38.6-42.8 (150-180 s, avg 40.6), 33.8-41.8 (180-200 s, gsq_wait ~1000) | 60.0 | exact-engine callout cost 6.0 % -> 2.3 % (execEfu 0.9, opmFlags 0.5, efuOp 0.5; normalizeFmacResult / __extendsftf2 / execUpper gone); vu_ms 4060-4100 |
+- **Where runNative's time goes (kc3, annotated disassembly, scratchpad `fdis.py`)**: spread over the dispatch loop
+  (slot loads `sl.known` 214 samples = cache misses on the 128-byte slots, hist stores, the hle tried / kernel bytes):
+  per-dispatch cost, not one hot spot. **Half the dispatches are blocks that return without chaining** (replay
+  GOW_VU1N_BLOCKPROF: 49 k of 97 k on fight.rec have 0 cycles at the blockprof point = no chain step): JR exits
+  (e.g. 0x530, the subroutine 0x350 calls; the 0x1238 dispatch table). The generator's `--jr` (JR / JALR exits chain
+  to their profiled targets, then to any block; off since "measured no gain" in an older state) takes fight.rec's
+  runNative dispatches **97201 -> 11649**, dumps byte-identical (gen4 = gen3 + `--jr`, package `update_kc4`).
 - Console note: the HOME click after the fight did not register (game kept running ~10 min); `c/recover3.sh <name>`
   (NOHOME=1 when the HOME menu is already up) closes the game, opens DBI's MTP and pulls the log. HOME toggles: check
   the screenshot (hbmenu/HOME menu jpg ~190 KB, game ~95 KB) before pressing again.
