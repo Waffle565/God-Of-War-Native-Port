@@ -232,7 +232,7 @@ struct VU1Interpreter::NativeState
     bool jrChain = !(std::getenv("GOW_VU1N_JR") && std::atoi(std::getenv("GOW_VU1N_JR")) == 0);
     unsigned verifyLeft = std::getenv("GOW_VU1N_VERIFY") ? static_cast<unsigned>(std::atoi(std::getenv("GOW_VU1N_VERIFY"))) : 0u;
     bool diag = std::getenv("GOW_VU1N_DIAG") != nullptr;
-    unsigned long long nativePairs = 0, nativeBlocks = 0, missBlocks = 0, nativeRuns = 0, codeChanges = 0, slotSetups = 0;
+    unsigned long long nativePairs = 0, nativeBlocks = 0, missBlocks = 0, nativeRuns = 0, codeChanges = 0, slotSetups = 0, slotNs = 0, codeNs = 0;
     std::unordered_map<uint32_t, unsigned> missPcs, missHits;
     unsigned limit = ~0u, count = 0; // verify bisection: native blocks allowed in this run
     VU1State snap;                   // state on entry of block number `limit` (verify bisection)

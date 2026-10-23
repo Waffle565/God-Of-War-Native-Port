@@ -690,6 +690,13 @@ void VU1NativeAccess::codeChanged(VU1Interpreter::NativeState &ns, const uint8_t
     static_assert(kPairs == std::size(ns.slots));
     ++ns.codeChanges;
     ++ns.timingEpoch;
+    struct NsTimer
+    {
+        unsigned long long &acc;
+        uint64_t t0;
+        explicit NsTimer(unsigned long long &a, bool on) : acc(a), t0(on ? vu1hle::nowNs() : 0u) {}
+        ~NsTimer() { if (t0) acc += vu1hle::nowNs() - t0; }
+    } codeTimer(ns.codeNs, ns.diag);
     if (!ns.codeValid)
     {
         for (NS::Slot &sl : ns.slots)
@@ -739,6 +746,13 @@ VU1Interpreter::NativeState::Slot &VU1NativeAccess::slotFor(VU1Interpreter &vu, 
     VU1Interpreter::NativeState::Slot &sl = ns.slots[pc >> 3];
     if (!sl.known)
     {
+        struct NsTimer
+        {
+            unsigned long long &acc;
+            uint64_t t0;
+            explicit NsTimer(unsigned long long &a, bool on) : acc(a), t0(on ? vu1hle::nowNs() : 0u) {}
+            ~NsTimer() { if (t0) acc += vu1hle::nowNs() - t0; }
+        } slotTimer(ns.slotNs, ns.diag);
         uint32_t words[128];
         ++ns.slotSetups;
         ++ns.timingEpoch;
@@ -1028,7 +1042,11 @@ bool VU1Interpreter::runNative(StepContext &context)
                 const vu1hle::Kernel &kn = vu1hle::kKernels[k];
                 vu1hle::Ctx hc{m_state, context.vuData, m_cycle, context.budgetEnd, pc - kn.entryOff[e], &ns.macRing};
                 const uint64_t c0 = m_cycle;
+                static const bool timeK = std::getenv("GOW_PERF_DIAG") != nullptr;
+                const uint64_t t0 = timeK ? vu1hle::nowNs() : 0u;
                 const uint32_t r = kn.fn(hc, e);
+                if (timeK)
+                    vu1hle::stats().ns[k].fetch_add(vu1hle::nowNs() - t0, std::memory_order_relaxed);
                 if (r != vu1hle::kDecline)
                 {
                     vu1hle::stats().calls[k].fetch_add(1u, std::memory_order_relaxed);
@@ -1115,9 +1133,22 @@ bool VU1Interpreter::runNative(StepContext &context)
             edgeFrom = pc;
             if (g_vu1nCodeProf && sl.pairs != 0u && pc + sl.pairs * 8u <= context.codeSize)
             {
-                uint64_t h = 1469598103934665603ull;
-                for (uint32_t b = 0; b < sl.pairs * 8u; ++b)
-                    h = (h ^ context.vuCode[pc + b]) * 1099511628211ull;
+                // hash cached per pc and code generation (a live profile hashes every dispatch otherwise)
+                static uint64_t hashCache[2048];
+                static uint64_t hashGen[2048];
+                static uint16_t hashPairs[2048];
+                uint64_t h;
+                if (hashGen[pc >> 3] == ns.generation + 1u && hashPairs[pc >> 3] == sl.pairs)
+                    h = hashCache[pc >> 3];
+                else
+                {
+                    h = 1469598103934665603ull;
+                    for (uint32_t b = 0; b < sl.pairs * 8u; ++b)
+                        h = (h ^ context.vuCode[pc + b]) * 1099511628211ull;
+                    hashCache[pc >> 3] = h;
+                    hashGen[pc >> 3] = ns.generation + 1u;
+                    hashPairs[pc >> 3] = static_cast<uint16_t>(sl.pairs);
+                }
                 VU1CodeProf &cp = (*g_vu1nCodeProf)[h];
                 cp.pc = pc;
                 cp.pairs = sl.pairs;
@@ -1180,13 +1211,38 @@ bool VU1Interpreter::runNative(StepContext &context)
         vu1hle::report();
     if (ns.diag)
     {
+        // GOW_VU1N_LIVEPROF=1 (with GOW_VU1N_DIAG): per code hash (the "k" profile of GOW_VU1N_BLOCKPROF, pc independent)
+        // of the dispatched blocks in the live game, the top ones every 5 s as "[vu1n-prof] hash pc pairs dispatches cycles"
+        static const bool liveProf = std::getenv("GOW_VU1N_LIVEPROF") != nullptr;
+        if (liveProf && !g_vu1nCodeProf)
+            g_vu1nBlockProf = new std::unordered_map<uint32_t, std::pair<uint64_t, uint64_t>>(),
+            g_vu1nCodeProf = new std::unordered_map<uint64_t, VU1CodeProf>();
+        static auto lastProf = std::chrono::steady_clock::now();
+        if (liveProf && g_vu1nCodeProf && std::chrono::steady_clock::now() - lastProf > std::chrono::seconds(5))
+        {
+            lastProf = std::chrono::steady_clock::now();
+            std::vector<std::pair<uint64_t, uint64_t>> rows;
+            uint64_t tot = 0;
+            for (const auto &kv : *g_vu1nCodeProf)
+                rows.emplace_back(kv.second.cycles, kv.first), tot += kv.second.cycles;
+            std::sort(rows.rbegin(), rows.rend());
+            std::fprintf(stderr, "[vu1n-prof] window cycles=%llu blocks=%zu\n", static_cast<unsigned long long>(tot), rows.size());
+            for (size_t i = 0; i < rows.size() && i < 14u; ++i)
+            {
+                const VU1CodeProf &cp = (*g_vu1nCodeProf)[rows[i].second];
+                std::fprintf(stderr, "[vu1n-prof] %016llx pc=%04x pairs=%u disp=%llu cyc=%llu\n", static_cast<unsigned long long>(rows[i].second),
+                             cp.pc, cp.pairs, static_cast<unsigned long long>(cp.runs), static_cast<unsigned long long>(cp.cycles));
+            }
+            g_vu1nCodeProf->clear();
+            g_vu1nBlockProf->clear();
+        }
         static auto last = std::chrono::steady_clock::now();
         if (std::chrono::steady_clock::now() - last > std::chrono::seconds(5))
         {
             last = std::chrono::steady_clock::now();
-            std::fprintf(stderr, "[vu1n] nativePairs=%llu nativeBlocks=%llu missBlocks=%llu nativeEntries=%llu distinctMissPcs=%zu codeChanges=%llu slotSetups=%llu\n",
-                         ns.nativePairs, ns.nativeBlocks, ns.missBlocks, ns.nativeRuns, ns.missPcs.size(), ns.codeChanges, ns.slotSetups);
-            ns.nativePairs = ns.nativeBlocks = ns.missBlocks = ns.nativeRuns = ns.codeChanges = ns.slotSetups = 0;
+            std::fprintf(stderr, "[vu1n] nativePairs=%llu nativeBlocks=%llu missBlocks=%llu nativeEntries=%llu distinctMissPcs=%zu codeChanges=%llu slotSetups=%llu codeMs=%.1f slotMs=%.1f\n",
+                         ns.nativePairs, ns.nativeBlocks, ns.missBlocks, ns.nativeRuns, ns.missPcs.size(), ns.codeChanges, ns.slotSetups, ns.codeNs / 1e6, ns.slotNs / 1e6);
+            ns.nativePairs = ns.nativeBlocks = ns.missBlocks = ns.nativeRuns = ns.codeChanges = ns.slotSetups = ns.slotNs = ns.codeNs = 0;
             std::vector<std::pair<unsigned, uint32_t>> top;
             for (const auto &kv : ns.missHits)
                 top.emplace_back(kv.second, kv.first);

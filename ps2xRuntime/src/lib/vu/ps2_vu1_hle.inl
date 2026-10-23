@@ -460,7 +460,12 @@ struct Stats
 {
     std::atomic<uint64_t> calls[kKernelCount > 0 ? kKernelCount : 1];
     std::atomic<uint64_t> cycles[kKernelCount > 0 ? kKernelCount : 1];
+    std::atomic<uint64_t> ns[kKernelCount > 0 ? kKernelCount : 1]; // wall time inside the kernel (GOW_PERF_DIAG)
 };
+inline uint64_t nowNs()
+{
+    return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count());
+}
 inline Stats &stats()
 {
     static Stats st{};
@@ -489,9 +494,10 @@ inline void report(bool force = false)
     char buf[1024];
     int n = std::snprintf(buf, sizeof(buf), "[vu1-hle] window=%.1fs", (now - prev) / 1000.0);
     for (uint32_t k = 0; k < kKernelCount && n < static_cast<int>(sizeof(buf)) - 64; ++k)
-        n += std::snprintf(buf + n, sizeof(buf) - n, " %s=%llu/%llu", kKernels[k].name,
+        n += std::snprintf(buf + n, sizeof(buf) - n, " %s=%llu/%llu/%.0fms", kKernels[k].name,
                            static_cast<unsigned long long>(stats().calls[k].exchange(0)),
-                           static_cast<unsigned long long>(stats().cycles[k].exchange(0)));
+                           static_cast<unsigned long long>(stats().cycles[k].exchange(0)),
+                           stats().ns[k].exchange(0) / 1e6);
     std::fprintf(stderr, "%s\n", buf);
 }
 } // namespace vu1hle
