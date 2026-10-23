@@ -6,8 +6,8 @@ look the same (pixel comparison against the CPU path, tolerances documented). Pl
 CPU HLE alone reaches the target, (3) GPU path, (4) console fps / per-core busy / screenshots.
 
 ## Handoff (2026-10-23 night 5, sw-vu1k stopped here: ext agent/sw-vu1gpu a26a44a, package `update_snd1`)
-- State of the console (handheld, bot fight, all with the sampler env `c/env_pcs.txt`; the SD's env.txt still holds
-  `GOW_PC_SAMPLE=1000 GOW_PC_SAMPLE_THREADS=GSWorker,GameThread`, ~1-2 % cost: delete it or run cycle.sh without an env):
+- State of the console (handheld, bot fight, all runs with the sampler env `c/env_pcs.txt`, ~1-2 % cost; the SD's
+  env.txt has been deleted since; the console is on DBI's MTP screen with `update_snd1` installed):
   | package | ext | fight 150-200 s | title |
   |---|---|---|---|
   | `update_con2` (before) | 06b18e2 | 28-29 | 54-56 |
