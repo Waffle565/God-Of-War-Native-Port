@@ -711,8 +711,8 @@ void PS2Runtime::advanceIopEeCycles(uint64_t eeCycles) noexcept
         thread->grant(m_iopSubsystem->takePendingIopCycles());
         return;
     }
-    if (!m_iopSubsystem->accrueEeCycles(eeCycles))
-        return;
+    if (!m_iopSubsystem->accrueEeCycles(eeCycles) || m_iopSubsystem->deferIdleBatch())
+        return; // a deferred idle batch: no perf scope (it would cost more than the deferral)
     ps2_perf::Scope perf(ps2_perf::Bucket::Iop);
     m_iopSubsystem->runPendingEeCycles();
 }

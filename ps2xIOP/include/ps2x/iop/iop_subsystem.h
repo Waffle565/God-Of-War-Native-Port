@@ -33,6 +33,9 @@ namespace ps2x::iop
         // EE cycles that can still accrue before accrueEeCycles reports a batch (0: the next call does).
         [[nodiscard]] uint64_t eeCyclesUntilBatch() const noexcept;
         void runPendingEeCycles() noexcept;
+        // inline path only, after accrueEeCycles returned true: true when the due batch ends before the IOP's next
+        // event and was deferred (it runs, with the same result, before the next real batch or IOP entry)
+        [[nodiscard]] bool deferIdleBatch() noexcept;
         // runPendingEeCycles in two halves for the IOP host thread (docs/iop-thread.md): the EE thread takes the due
         // batch (IOP cycles, 0 if none) and whichever thread owns the IOP runs it; same result as runPendingEeCycles.
         [[nodiscard]] uint64_t takePendingIopCycles() noexcept;
