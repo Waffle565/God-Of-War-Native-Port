@@ -21,6 +21,14 @@ CPU HLE alone reaches the target, (3) GPU path, (4) console fps / per-core busy 
   GS stage 0.7 s, deko3d thread 1.75 s. 60 fps needs EE < 16 ms per frame as well (it is 18.7 ms at 30 fps) and VU1 < 16 ms (24 ms): both
   threads need 1.5-2x, which the remaining micro-optimisations of the CPU path do not give; the structural options are the GPU vertex path
   (step 4) or fewer VU1 runs per frame (840 per frame now).
+- `SSE2NEON_PRECISE_MINMAX=0` (harness `PMM=0`) in the VU1 sources: bit-identical replay on 800 records (fight, menu; HLE off) and -4 % A57 cost
+  of the VU work, but NOT applied: the precise min/max exists because PS2 data holds NaN patterns (0x7FFFFFFF) that the VU treats as large numbers
+  and that the clamps must map to the bound (x86 minps/maxps return the second operand on NaN, NEON fmax propagates the NaN); 4 % is not worth that risk
+  without a recording that exercises those patterns.
+- Next candidates (each ~5-10 % of the VU thread, in order of certainty): (1) a kernel for the batch front (pc 00d8..0398: XTOP, matrix loads, normal
+  length, bounding tests with MAC-flag reads) so that the 4-6 dispatches per batch become one; (2) kernels for the clip-flag culling loops
+  (0cd8.. / 1728..): they need the clip flag ring pushed at exit; (3) a cheaper runNative dispatch (hist entry, slot checks) for the ~20 dispatches per run;
+  (4) the GPU vertex path or fewer VU1 runs per frame for the real step towards 60 fps.
 - Harness: `tools/vu1_harness/build.sh` takes `PMM= PDIV= PSQRT= PDP=` (0/1) for the SSE2NEON_PRECISE_* defines (default 1, as the Switch build).
 
 ## Addendum (2026-10-23, step 1 + fight replay A/B)
