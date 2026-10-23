@@ -1163,7 +1163,7 @@ bool VU1Interpreter::runNative(StepContext &context)
             {
                 const uint32_t k = (kv >> 1) - 1u, e = kv & 1u;
                 const vu1hle::Kernel &kn = vu1hle::kKernels[k];
-                vu1hle::Ctx hc{m_state, context.vuData, m_cycle, context.budgetEnd, pc - kn.entryOff[e], &ns.macRing};
+                vu1hle::Ctx hc{m_state, context.vuData, m_cycle, context.budgetEnd, pc - kn.entryOff[e], &ns.macRing, &ns.clipRing, &m_workingClip};
                 const uint64_t c0 = m_cycle;
                 static const bool timeK = std::getenv("GOW_VU1_HLE_TIME") != nullptr; // two clock reads per call: opt-in (the Switch has GOW_PERF_DIAG on)
                 const uint64_t t0 = timeK ? vu1hle::nowNs() : 0u;
@@ -1174,8 +1174,26 @@ bool VU1Interpreter::runNative(StepContext &context)
                 {
                     vu1hle::stats().calls[k].fetch_add(1u, std::memory_order_relaxed);
                     vu1hle::stats().cycles[k].fetch_add(m_cycle - c0, std::memory_order_relaxed);
-                    // the passes ran without the cycle model: nothing is in flight any more at the kernel's end
-                    ns.histCount = 0u;
+                    // the passes ran without the cycle model: nothing is in flight any more at the kernel's end. One
+                    // history entry stands for the kernel (every lane written, ready at its start: no stalls, the same
+                    // timing as an empty history), so the next block's entry timing is memoised by predecessor
+                    // (entryTimingAfter) instead of computed by blockTiming after every kernel call.
+                    {
+                        static const NativeState::BlockTiming hleBt = [] {
+                            NativeState::BlockTiming b;
+                            b.writeMask[0] = b.writeMask[1] = b.writeMask[2] = ~0ull;
+                            return b;
+                        }();
+                        static const uint8_t zeroCyc[1] = {0u};
+                        NativeState::Hist &h = ns.hist[ns.histNext];
+                        h.bt = &hleBt;
+                        h.cyc = zeroCyc;
+                        h.start = c0;
+                        h.end = m_cycle;
+                        h.cycId = 0u;
+                        ns.histNext = (ns.histNext + 1u) % NativeState::kHist;
+                        ns.histCount = 1u;
+                    }
                     ns.arraysReadyBy = 0u;
                     if (!kn.keepsQ)
                         m_fdiv.valid = false; // Q is the kernel's last DIV (an FDIV entry from before would commit an old Q)

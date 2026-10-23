@@ -25,6 +25,8 @@ struct Ctx
     uint64_t budgetEnd;
     uint32_t base; // region start pc
     VU1FlagRing *macRing; // MAC flags (entry reads through it; a kernel pushes its last writers)
+    VU1FlagRing *clipRing; // clip flags (likewise)
+    uint32_t *workingClip; // the clip flag chain (VU1Interpreter::m_workingClip)
 };
 
 using KernelFn = uint32_t (*)(Ctx &c, uint32_t entry);
@@ -656,6 +658,211 @@ inline uint32_t kScatter(Ctx &c, uint32_t entry)
     return next;
 }
 
+// --- kernel: clip-flag culling loop of the vertex module (0cd8..0e10, 40 pairs; per vertex of a strip) -------------------
+// Blocks as the native code splits them (cycles = their timing tables, the flag-reading blocks with their entry stalls):
+//   B1 0cd8 (5, idle): vf17 = vf16, vf16 = vf15, ACC.xy = 0, ACC.z = vf22w, vf15.w = vf19.w + vf29.z, vi1 = vertex w
+//      word, vf31 = vertex xyz, vi8 = vi10 & vi11; ibeq vi5 -> 0e18 (strip done; the kernel's exit).
+//   B2 0d00 (7 pairs, issue 2..8: waits for ACC.z): vf30/vf15.xyz = ACC + vf29 * vf22/vf23, vf18/vf19.xy = ACC - ...,
+//      fmand vi14 = 16 & the MAC flags of B1's vf15.w (the newest writer visible at its cycle), clipw vf30 and vf15
+//      against vf15w, vi5 -= 1; ibeq vi14 -> path B.
+//   path A 0d38 (3 pairs, issue 1, 5, 9: vf19.x for mtir, then the ACC chain), fcget = B2's second clip, then 0d78 (2,
+//      idle): vf29 = ACC + vf26 * vf31z (the next vertex), vi8 &= vi10; ibltz vi1 -> B1.
+//   path B 0d50 (7 pairs, issue 0, 1, 4, 8, 12, 16, 17: mfir -> mtir, then the ACC chain): clipw vf18 / vf19, vi10 =
+//      3055 - (its second clip & 0xFFF), the same transform to vf29; ibltz vi1 -> B1.
+//   vi1 >= 0 (a vertex that closes a triangle): 0d88 (4) vi9 = (vi9 | vi10) & vi3; vi8 != 0: reject 0df8 (4, ADC word
+//      0x8001); else 0da8 (2) vi9 == 0: accept; else partial 0db8 (8: vi1 - 16384 into the w word, 929.z |= 2). All -> B1.
+// Values use the native blocks' exact helpers (the _x variants: normalised operands, maddc, clamped ADD results); the
+// MAC / clip writers of the last passes go into the flag rings with their issue cycles at the exit.
+// Cycles: the flag READS above follow the blocks' own entry timing (they are exact: replay state, MAC and clip flags
+// identical), but the cycle COUNT per pass uses B2 = 7 and path A = 9 (their idle tables, as the native traces run them)
+// and the other lengths above; the native traces still count fewer cycles (fight.rec: +71 k VU cycles over 302 calls,
+// ~3 % of the loop's cycles, never fewer than native). Like the vertex kernels, not cycle-exact.
+inline uint32_t kCullClip(Ctx &c, uint32_t)
+{
+    VU1State &s = c.s;
+    uint8_t *d = c.data;
+    int32_t vi5 = s.vi[5];
+    if (static_cast<int16_t>(vi5) < 0)
+        return kDecline;
+    __m128 f15 = ldv(s, 15), f16 = ldv(s, 16), f17 = ldv(s, 17), f18 = ldv(s, 18), f19 = ldv(s, 19), f29 = ldv(s, 29),
+           f30 = ldv(s, 30), f31 = ldv(s, 31), acc = _mm_loadu_ps(s.acc);
+    const __m128 f0 = ldv(s, 0), n22 = vu1n::nrm(ldv(s, 22)), n23 = vu1n::nrm(ldv(s, 23)), n24 = vu1n::nrm(ldv(s, 24)), n25 = vu1n::nrm(ldv(s, 25)),
+                 n26 = vu1n::nrm(ldv(s, 26)), n27 = vu1n::nrm(ldv(s, 27));
+    int32_t vi1 = s.vi[1], vi2 = s.vi[2], vi3 = s.vi[3], vi8 = s.vi[8], vi9 = s.vi[9], vi10 = s.vi[10], vi11 = s.vi[11],
+            vi14 = s.vi[14];
+    const int32_t vi4 = s.vi[4];
+    uint32_t clip = *c.workingClip;
+    uint64_t cyc = c.cycle;
+    // the newest five MAC / clip writers (issue cycle, flags), pushed to the rings at the exit
+    uint64_t macAt[5], clipAt[5];
+    uint32_t macV[5], clipV[5], macN = 0u, clipN = 0u;
+    const auto mac = [&](uint64_t at, __m128 raw, uint32_t mask) {
+        macAt[macN % 5u] = at, macV[macN % 5u] = vu1n::macValRt(raw, mask), ++macN;
+    };
+    const auto clp = [&](uint64_t at, uint32_t v) { clipAt[clipN % 5u] = at, clipV[clipN % 5u] = v, ++clipN, clip = v; };
+    const auto qd = [&](int32_t qw) { return d + ((static_cast<uint32_t>(qw) * 16u) & 0x3FFFu); };
+    uint32_t next;
+    for (;;)
+    {
+        // B1
+        const __m128 n19 = vu1n::nrm(f19), n29e = vu1n::nrm(f29);
+        __m128 r = _mm_add_ps(vu1n::nrm(f16), bc<0>(f0));
+        mac(cyc, r, 15u);
+        f17 = vu1n::clampv(r);
+        {
+            uint32_t w;
+            std::memcpy(&w, qd(vi2 - 1) + 12, 4);
+            vi1 = static_cast<int16_t>(w & 0xFFFFu);
+        }
+        r = _mm_add_ps(vu1n::nrm(f15), bc<0>(f0));
+        mac(cyc + 1u, r, 15u);
+        f16 = vu1n::clampv(r);
+        vi2 = vu1n::sx16(vi2 + vi4);
+        r = _mm_sub_ps(f0, f0);
+        mac(cyc + 2u, r, 3u);
+        acc = _mm_blend_ps(acc, vu1n::clampv(r), 3);
+        f31 = _mm_blend_ps(f31, _mm_loadu_ps(reinterpret_cast<const float *>(qd(vi2 - 1))), 7);
+        const bool done = static_cast<int16_t>(vi5) == 0;
+        r = _mm_add_ps(f0, bc<3>(n22));
+        mac(cyc + 3u, r, 4u);
+        acc = _mm_blend_ps(acc, vu1n::clampv(r), 4);
+        r = _mm_add_ps(n19, bc<2>(n29e));
+        const uint32_t m15w = vu1n::macValRt(r, 8u);
+        mac(cyc + 4u, r, 8u);
+        f15 = _mm_blend_ps(f15, vu1n::clampv(r), 8);
+        vi8 = vi10 & vi11;
+        cyc += 5u;
+        if (done)
+        {
+            next = c.base + 0x140u; // 0e18
+            break;
+        }
+        // B2 (issue 2..8)
+        {
+            const __m128 n29 = vu1n::nrm(f29);
+            __m128 q;
+            r = vu1n::maddc<false>(acc, n29, n22, q);
+            mac(cyc + 2u, q, 7u);
+            f30 = _mm_blend_ps(f30, r, 7);
+            vi9 = vi10 | vi11;
+            f31 = _mm_blend_ps(f31, vu1n::itofv<4>(f31), 7);
+            vi11 = vi10;
+            r = vu1n::maddc<false>(acc, n29, n23, q);
+            mac(cyc + 4u, q, 7u);
+            f15 = _mm_blend_ps(f15, r, 7);
+            r = vu1n::maddc<true>(acc, n29, n22, q);
+            mac(cyc + 5u, q, 3u);
+            f18 = _mm_blend_ps(f18, r, 3);
+            vi14 = static_cast<int32_t>(m15w & 16u);
+            r = vu1n::maddc<true>(acc, n29, n23, q);
+            mac(cyc + 6u, q, 3u);
+            f19 = _mm_blend_ps(f19, r, 3);
+            vi5 = vu1n::sx16(vi5 - 1);
+            const uint32_t c5 = vu1n::clipValv(vu1n::nrm(f30), vu1n::nrm(f15), clip);
+            clp(cyc + 7u, c5);
+            clp(cyc + 8u, vu1n::clipValv(vu1n::nrm(f15), vu1n::nrm(f15), c5));
+            vi3 = 63;
+            cyc += 7u;
+        }
+        const __m128 n31 = vu1n::nrm(f31);
+        if (static_cast<int16_t>(vi14) != 0)
+        {
+            // path A (issue 1, 5, 9), then 0d78 (idle)
+            __m128 q;
+            r = _mm_add_ps(n27, bc<0>(f0));
+            mac(cyc + 1u, r, 7u);
+            acc = _mm_blend_ps(acc, vu1n::clampv(r), 7);
+            vi10 = vu1n::laneBits16<0>(f19);
+            r = vu1n::maddc<false>(acc, n24, bc<0>(n31), q);
+            mac(cyc + 5u, q, 7u);
+            acc = _mm_blend_ps(acc, r, 7);
+            r = vu1n::maddc<false>(acc, n25, bc<1>(n31), q);
+            mac(cyc + 9u, q, 7u);
+            acc = _mm_blend_ps(acc, r, 7);
+            vi10 = static_cast<int32_t>(clip & 0x0FFFu);
+            cyc += 9u;
+            r = vu1n::maddc<false>(acc, n26, bc<2>(n31), q);
+            mac(cyc, q, 7u);
+            f29 = _mm_blend_ps(f29, r, 7);
+            vi8 = vi8 & vi10;
+            cyc += 2u;
+        }
+        else
+        {
+            // path B (issue 0, 1, 4, 8, 12, 16, 17)
+            __m128 q;
+            const uint32_t c0 = vu1n::clipValv(vu1n::nrm(f18), vu1n::nrm(f15), clip);
+            clp(cyc, c0);
+            f29 = _mm_blend_ps(f29, vu1n::fromInt(vu1n::sx16(vi10)), 1);
+            const uint32_t c1 = vu1n::clipValv(vu1n::nrm(f19), vu1n::nrm(f15), c0);
+            clp(cyc + 1u, c1);
+            vi14 = 3055;
+            r = _mm_add_ps(n27, bc<0>(f0));
+            mac(cyc + 4u, r, 7u);
+            acc = _mm_blend_ps(acc, vu1n::clampv(r), 7);
+            vi10 = vu1n::laneBits16<0>(f29);
+            r = vu1n::maddc<false>(acc, n24, bc<0>(n31), q);
+            mac(cyc + 8u, q, 7u);
+            acc = _mm_blend_ps(acc, r, 7);
+            vi10 = static_cast<int32_t>(c1 & 0x0FFFu);
+            r = vu1n::maddc<false>(acc, n25, bc<1>(n31), q);
+            mac(cyc + 12u, q, 7u);
+            acc = _mm_blend_ps(acc, r, 7);
+            vi10 = vu1n::sx16(vi14 - vi10);
+            r = vu1n::maddc<false>(acc, n26, bc<2>(n31), q);
+            mac(cyc + 16u, q, 7u);
+            f29 = _mm_blend_ps(f29, r, 7);
+            vi8 = vi8 & vi10;
+            cyc += 18u;
+        }
+        if (static_cast<int16_t>(vi1) < 0)
+            continue;
+        // 0d88: the triangle's clip codes
+        vi9 = (vi9 | vi10) & vi3;
+        const bool reject = static_cast<int16_t>(vi8) != 0;
+        vi3 = vu1n::sx16(-32767);
+        cyc += 4u;
+        const auto stW = [&](int32_t qw, int comp, int32_t v) {
+            const uint32_t w = static_cast<uint16_t>(v & 0xFFFF);
+            std::memcpy(qd(qw) + comp * 4, &w, 4);
+        };
+        if (reject) // 0df8: ADC 0x8001 into the vertex's w word
+        {
+            stW(vi2 - vi4 - 1, 3, vi3);
+            cyc += 4u;
+            continue;
+        }
+        const bool accept = static_cast<int16_t>(vi9) == 0; // 0da8
+        vi1 = vu1n::sx16(vi1 - 16384);
+        cyc += 2u;
+        if (accept)
+            continue;
+        // 0db8: partially outside: the w word with bit 14 cleared, 929.z |= 2
+        {
+            uint32_t w;
+            std::memcpy(&w, qd(929) + 8, 4);
+            vi8 = static_cast<int16_t>(w & 0xFFFFu);
+        }
+        stW(vu1n::sx16(vi2 - vi4) - 1, 3, vi1);
+        vi1 = 2;
+        vi8 = vi8 | vi1;
+        stW(929, 2, vi8);
+        cyc += 8u;
+    }
+    for (uint32_t k = macN > 5u ? macN - 5u : 0u; k < macN; ++k)
+        VU1NativeAccess::ringPush(*c.macRing, macAt[k % 5u], macV[k % 5u]);
+    for (uint32_t k = clipN > 5u ? clipN - 5u : 0u; k < clipN; ++k)
+        VU1NativeAccess::ringPush(*c.clipRing, clipAt[k % 5u], clipV[k % 5u]);
+    *c.workingClip = clip;
+    stv(s, 15, f15); stv(s, 16, f16); stv(s, 17, f17); stv(s, 18, f18); stv(s, 19, f19); stv(s, 29, f29); stv(s, 30, f30);
+    stv(s, 31, f31);
+    _mm_storeu_ps(s.acc, acc);
+    s.vi[1] = vi1; s.vi[2] = vi2; s.vi[3] = vi3; s.vi[5] = vi5; s.vi[8] = vi8; s.vi[9] = vi9; s.vi[10] = vi10;
+    s.vi[11] = vi11; s.vi[14] = vi14;
+    c.cycle = cyc;
+    return next;
+}
+
 inline constexpr Kernel kKernels[] = {
     {"unlit_st", 0x2e8bdf18116c01cdull, 20u, {0x00u, 0x58u}, kUnlitSt},
     {"lit_st", 0x7c187fbcd9b8ba29ull, 24u, {0x00u, ~0u}, kLitSt},
@@ -668,6 +875,7 @@ inline constexpr Kernel kKernels[] = {
     {"scat_bw", 0xfb0e4fb24245d179ull, 12u, {0x48u, 0x20u}, kScatter<8, true>, true},
     {"scat", 0x8fb4c370967d9ff8ull, 11u, {0x48u, 0x20u}, kScatter<15, false>, true},
     {"scat_w", 0x8b442df4a19fae58ull, 11u, {0x48u, 0x20u}, kScatter<8, false>, true},
+    {"cull_clip", 0x0b72be7897fd2d28ull, 40u, {0x00u, ~0u}, kCullClip, true},
 };
 constexpr uint32_t kKernelCount = sizeof(kKernels) / sizeof(kKernels[0]);
 // the reach of a match around its pc (VU1NativeAccess::codeChanged resets only the pcs a code change can affect)
