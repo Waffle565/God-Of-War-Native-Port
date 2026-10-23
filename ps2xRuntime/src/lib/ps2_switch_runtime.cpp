@@ -227,6 +227,10 @@ extern "C"
         // them (2 runs, docs/vu1-gpu.md); the fights are not worse (16-30 vs 15-24, scenes vary); env.txt =0 turns them off
         setenv("GOW_VU1N_TRACES", "1", 0);
         setenv("GOW_VU1N_DIRECT", "1", 0);
+        // the plain-float kernels for the hot vertex loops (ps2_vu1_hle.inl, docs/vu1-gpu.md): replay benchmark on the console
+        // fight 128.6 -> 108.4 ms, menu 146.9 -> 115.2 ms (6000 warm runs), menu 38-40 -> 44-46 fps; verified against the exact
+        // path on the recordings (tolerances in docs/vu1-gpu.md); env.txt GOW_VU1_HLE=0 turns them off
+        setenv("GOW_VU1_HLE", "1", 0);
         // speed lines in every log (a few lines every 5 s), so a log from the console says where the time goes
         setenv("GOW_PERF_DIAG", "1", 0);
         setenv("GOW_PERF_FRAME_PC", "0x001837B8", 0);

@@ -957,6 +957,10 @@ bool VU1Interpreter::runNative(StepContext &context)
     const bool diag = ns.diag; // the pair count is only printed by GOW_VU1N_DIAG
     uint64_t blocks = 0u, pairs = 0u;
     uint32_t edgeFrom = 0u; // GOW_VU1N_BLOCKPROF: the block dispatched before
+    // GOW_VU1N_PEEK (read once, outside the dispatch loop: function-local statics cost a guard check per block)
+    static const char *peekEnv = std::getenv("GOW_VU1N_PEEK");
+    static uint64_t peekKey = peekEnv ? std::strtoull(peekEnv, nullptr, 16) : 0u;
+    static int peekLeft = peekEnv && std::strchr(peekEnv, ':') ? std::atoi(std::strchr(peekEnv, ':') + 1) : 2;
     for (;;)
     {
         if (m_stopRequested || m_cycle >= context.budgetEnd)
@@ -1042,7 +1046,7 @@ bool VU1Interpreter::runNative(StepContext &context)
                 const vu1hle::Kernel &kn = vu1hle::kKernels[k];
                 vu1hle::Ctx hc{m_state, context.vuData, m_cycle, context.budgetEnd, pc - kn.entryOff[e], &ns.macRing};
                 const uint64_t c0 = m_cycle;
-                static const bool timeK = std::getenv("GOW_PERF_DIAG") != nullptr;
+                static const bool timeK = std::getenv("GOW_VU1_HLE_TIME") != nullptr; // two clock reads per call: opt-in (the Switch has GOW_PERF_DIAG on)
                 const uint64_t t0 = timeK ? vu1hle::nowNs() : 0u;
                 const uint32_t r = kn.fn(hc, e);
                 if (timeK)
@@ -1084,9 +1088,6 @@ bool VU1Interpreter::runNative(StepContext &context)
         }
         // GOW_VU1N_PEEK=<code hash hex>[:n]: registers and data memory around vi2 / vi3 before and after the first n
         // dispatches of the block with that code (the "k" hash of GOW_VU1N_BLOCKPROF): reading a vertex loop's layout
-        static const char *peekEnv = std::getenv("GOW_VU1N_PEEK");
-        static uint64_t peekKey = peekEnv ? std::strtoull(peekEnv, nullptr, 16) : 0u;
-        static int peekLeft = peekEnv && std::strchr(peekEnv, ':') ? std::atoi(std::strchr(peekEnv, ':') + 1) : 2;
         bool peekThis = false;
         if (peekKey && peekLeft > 0 && pc + sl.pairs * 8u <= context.codeSize)
         {
