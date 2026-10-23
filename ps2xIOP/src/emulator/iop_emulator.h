@@ -28,6 +28,11 @@ namespace ps2x::iop::detail
         [[nodiscard]] bool accrueEeCycles(uint64_t eeCycles) noexcept;
         [[nodiscard]] uint64_t eeCyclesUntilBatch() const noexcept;
         void runPendingEeCycles() noexcept;
+        // inline path, after accrueEeCycles reported a batch: true when the batch ends before the IOP's next event
+        // (no ready thread) and was deferred instead (GOW_IOP_IDLE_DEFER); false: runPendingEeCycles as before
+        [[nodiscard]] bool deferIdleBatch() noexcept;
+        // runs the deferred idle cycles and drops the horizon: every IOP entry from the EE side calls it first
+        void syncIdle() noexcept;
         // runPendingEeCycles split for the IOP thread (docs/iop-thread.md): the EE thread takes the batch, the thread runs it
         [[nodiscard]] uint64_t takePendingIopCycles() noexcept;
         void runIopCycles(uint64_t iopCycles) noexcept;

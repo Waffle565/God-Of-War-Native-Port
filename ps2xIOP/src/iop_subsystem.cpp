@@ -14,6 +14,21 @@
 
 namespace ps2x::iop
 {
+    namespace
+    {
+        // Every EE-side entry that can run IOP code or change what it does next (docs/switch-deko3d.md "Core 1 budget"):
+        // the deferred idle cycles run first, and the idle horizon is dropped again at the end, because the entry may
+        // have run IOP code (nested runs included) that scheduled new events.
+        struct IdleEntry
+        {
+            detail::IopEmulator &emulator;
+            explicit IdleEntry(detail::IopEmulator &e) noexcept : emulator(e) { emulator.syncIdle(); }
+            ~IdleEntry() { emulator.syncIdle(); }
+            IdleEntry(const IdleEntry &) = delete;
+            IdleEntry &operator=(const IdleEntry &) = delete;
+        };
+    }
+
     class IopSubsystem::Impl
     {
     public:
@@ -118,6 +133,7 @@ namespace ps2x::iop
 
     ModuleLoadResult IopSubsystem::loadModule(std::string_view path, const void *arguments, uint32_t argumentSize)
     {
+        const IdleEntry idle{m_impl->emulator}; // an HLE module load as well as a physical one
         const ParsedPs2Path parsed = parsePs2Path(path);
         if (!parsed)
             return {true, -1, -1};
@@ -149,11 +165,13 @@ namespace ps2x::iop
 
     ModuleLoadResult IopSubsystem::loadModuleBuffer(uint32_t guestAddress, const void *arguments, uint32_t argumentSize)
     {
+        const IdleEntry idle{m_impl->emulator};
         return m_impl->emulator.loadModuleBuffer(guestAddress, arguments, argumentSize);
     }
 
     bool IopSubsystem::stopModule(int32_t moduleId, int32_t *result)
     {
+        const IdleEntry idle{m_impl->emulator};
         if (m_impl->moduleManager.stopHle(moduleId, result))
         {
             m_impl->rebuildRoutes();
@@ -179,6 +197,11 @@ namespace ps2x::iop
     uint64_t IopSubsystem::eeCyclesUntilBatch() const noexcept
     {
         return m_impl->emulator.eeCyclesUntilBatch();
+    }
+
+    bool IopSubsystem::deferIdleBatch() noexcept
+    {
+        return m_impl->emulator.deferIdleBatch();
     }
 
     void IopSubsystem::runPendingEeCycles() noexcept
@@ -225,6 +248,7 @@ namespace ps2x::iop
     {
         // GOW-Port: PS2X_TRACE_RPC=<sid prefix hex, e.g. 800013> logs every call to the matching servers (protocol
         // capture for the native pad / memory-card service); empty value = all servers.
+        const IdleEntry idle{m_impl->emulator}; // before the trace's reads and an HLE server
         static const char *traceRpc = std::getenv("PS2X_TRACE_RPC");
         if (traceRpc)
         {
@@ -277,6 +301,7 @@ namespace ps2x::iop
 
     void IopSubsystem::onSifTransfer(const SifTransfer &transfer)
     {
+        const IdleEntry idle{m_impl->emulator}; // the services below can run IOP code too
         for (auto &service : m_impl->coreServices)
         {
             if (service && m_impl->serviceActive(*service))
@@ -289,11 +314,13 @@ namespace ps2x::iop
 
     uint32_t IopSubsystem::allocateMemory(uint32_t size, uint32_t alignment)
     {
+        const IdleEntry idle{m_impl->emulator};
         return m_impl->emulator.allocateMemory(size, alignment);
     }
 
     bool IopSubsystem::freeMemory(uint32_t address)
     {
+        const IdleEntry idle{m_impl->emulator};
         return m_impl->emulator.freeMemory(address);
     }
 
@@ -304,11 +331,13 @@ namespace ps2x::iop
 
     bool IopSubsystem::writeMemory(uint32_t address, const void *source, size_t size)
     {
+        const IdleEntry idle{m_impl->emulator};
         return m_impl->emulator.writeMemory(address, source, size);
     }
 
     bool IopSubsystem::zeroMemory(uint32_t address, size_t size)
     {
+        const IdleEntry idle{m_impl->emulator};
         return m_impl->emulator.zeroMemory(address, size);
     }
 

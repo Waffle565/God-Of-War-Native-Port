@@ -153,6 +153,7 @@ namespace ps2x::iop::detail
             nativeRanges.clear();
             nativeOverrides.clear();
             imports.reset();
+            importCache.clear();
             rpc.reset();
             cdvd.reset();
             intrman.reset();
@@ -167,6 +168,7 @@ namespace ps2x::iop::detail
             soundBase = runStartTotal = runGrant = lastRunEnd = 0;
             totalInstructions = 0;
             eeCycleCarry = 0;
+            idleHorizon = deferredIdleCycles = 0;
             activeCpu = nullptr;
             lastError.clear();
             servicingDmaInterrupts = false;
@@ -441,6 +443,33 @@ namespace ps2x::iop::detail
             return ImportDisposition::Missing;
         }
 
+        // IopImportRegistry::decode walks back up to 64 KB of IOP RAM to the import table of a "jr ra" stub, every
+        // time the stub is reached (and as far for a plain "jr ra" that is no stub). Module code does not change
+        // between loads, so the answer is kept per address (keyed on the delay-slot word too, which carries the
+        // ordinal) and dropped when a module is loaded or stopped (docs/switch-deko3d.md "Core 1 budget").
+        struct CachedImport
+        {
+            uint32_t delayWord = 0;
+            bool valid = false;
+            std::optional<IopImportCall> call;
+        };
+        std::unordered_map<uint32_t, CachedImport> importCache;
+        uint64_t importCacheMisses = 0;
+        static inline const std::optional<IopImportCall> kNoImport{};
+        const std::optional<IopImportCall> &decodeImport(uint32_t pc)
+        {
+            const uint32_t delayWord = memory.fetch32(pc + 4u);
+            CachedImport &entry = importCache[physicalAddress(pc)];
+            if (!entry.valid || entry.delayWord != delayWord)
+            {
+                entry.valid = true;
+                entry.delayWord = delayWord;
+                entry.call = imports.decode(pc);
+                ++importCacheMisses;
+            }
+            return entry.call;
+        }
+
         bool step(CpuState &cpu)
         {
             if (cpu.stopped)
@@ -462,10 +491,21 @@ namespace ps2x::iop::detail
                 return true;
 
             // GOW-Port: los stubs de importacion empiezan por "jr ra"; solo esas direcciones se buscan en las tablas.
-            const auto import = memory.fetch32(cpu.pc) == 0x03E00008u ? imports.decode(cpu.pc) : std::nullopt;
+            const auto importStart = nativeStats ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+            const std::optional<IopImportCall> &import = memory.fetch32(cpu.pc) == 0x03E00008u ? decodeImport(cpu.pc) : kNoImport;
             if (import)
             {
+                if (nativeStats)
+                {
+                    const auto decoded = std::chrono::steady_clock::now();
+                    importDecodeSeconds += std::chrono::duration<double>(decoded - importStart).count();
+                    ++importCalls;
+                    ++importsByLibrary[import->library + ":" + std::to_string(import->ordinal)];
+                }
+                const auto dispatchStart = nativeStats ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
                 const ImportDisposition disposition = dispatchImport(*import, cpu);
+                if (nativeStats)
+                    importDispatchSeconds += std::chrono::duration<double>(std::chrono::steady_clock::now() - dispatchStart).count();
                 ++totalInstructions;
                 ++totalCycles;
                 if (disposition == ImportDisposition::JumpToGuest)
@@ -770,7 +810,20 @@ namespace ps2x::iop::detail
                         << " | time total=" << static_cast<int>(d.totalSeconds * 1000.0) << " ms cpu=" << static_cast<int>(d.cpuSeconds * 1000.0)
                         << " ms sound=" << static_cast<int>(d.spuSeconds * 1000.0) << " ms (mixer thread " << static_cast<int>(d.memory.sound().takeMixerSeconds() * 1000.0) << " ms, waits "
                         << static_cast<int>(d.memory.sound().takeSyncWaitSeconds(syncWaits) * 1000.0) << " ms in " << syncWaits << ", worker samples " << d.memory.sound().takeWorkerSamples() << ") services=" << static_cast<int>(d.serviceSeconds * 1000.0)
-                        << " ms | loops busy=" << d.busyLoops << " idle=" << d.idleLoops << " runCycles calls=" << d.runCyclesCalls << " (5 s window)";
+                        << " ms | loops busy=" << d.busyLoops << " idle=" << d.idleLoops << " runCycles calls=" << d.runCyclesCalls << " (5 s window)"
+                        << " | imports " << d.importCalls << " decode=" << static_cast<int>(d.importDecodeSeconds * 1000.0) << " ms dispatch="
+                        << static_cast<int>(d.importDispatchSeconds * 1000.0) << " ms decode_misses=" << d.importCacheMisses << " | idle_defer batches=" << d.idleDeferred
+                        << " runs=" << d.idleFlushes << " violations=" << d.idleViolations;
+                    d.idleDeferred = d.idleFlushes = 0; // violations stay cumulative
+                    std::vector<std::pair<uint64_t, std::string>> topImports;
+                    for (const auto &[name, calls] : d.importsByLibrary)
+                        topImports.emplace_back(calls, name);
+                    std::sort(topImports.rbegin(), topImports.rend());
+                    for (size_t i = 0; i < topImports.size() && i < 12u; ++i)
+                        out << ' ' << topImports[i].second << '=' << topImports[i].first;
+                    d.importsByLibrary.clear();
+                    d.importCalls = 0;
+                    d.importDecodeSeconds = d.importDispatchSeconds = 0.0;
                     d.busyLoops = d.idleLoops = d.runCyclesCalls = 0;
                     d.serviceSeconds = 0.0;
                     d.log(LogLevel::Info, out.str());
@@ -812,8 +865,13 @@ namespace ps2x::iop::detail
                     outsideCycles = 0;
                 }
                 const uint64_t target = totalCycles + cycles;
+                idleHorizon = 0;
+                lastRunIterations = 0;
+                lastRunRanThread = false;
                 while (totalCycles < target)
                 {
+                    idleHorizon = 0;
+                    ++lastRunIterations;
                     serviceSound();
                     const auto serviceStart = nativeStats ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
                     servicePendingDmaInterrupts();
@@ -838,15 +896,20 @@ namespace ps2x::iop::detail
                             out << "[IOP:idle] sin hilos listos (veces=" << idleCount << ") instr=" << totalInstructions;
                             log(LogLevel::Info, out.str());
                         }
-                        uint64_t nextWake = kernel.nextWakeCycle(target);
+                        // the next event of any kind, not capped by this run's target: deferIdleBatch skips whole
+                        // batches that end at or before it
+                        uint64_t nextWake = kernel.nextWakeCycle(UINT64_MAX);
                         for (const auto &[irq, completionCycle] : pendingDmaInterrupts)
                             nextWake = std::min(nextWake, completionCycle);
                         if (!pendingGuestCallbacks.empty())
                             nextWake = std::min(nextWake, pendingGuestCallbacks.begin()->first);
                         nextWake = timrman.nextEventCycle(nextWake);
                         totalCycles = std::max(totalCycles + 1u, std::min(target, nextWake));
+                        if (totalCycles == target && nextWake >= target)
+                            idleHorizon = nextWake; // the run ends idle: nothing happens before nextWake
                         continue;
                     }
+                    lastRunRanThread = true;
                     const uint64_t before = totalCycles;
                     const auto cpuStart = nativeStats ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
                     runCpu(next->cpu, static_cast<uint32_t>(std::min<uint64_t>(kDefaultSlice, target - totalCycles)));
@@ -871,6 +934,7 @@ namespace ps2x::iop::detail
         {
             ModuleLoadResult result{true, -1, -1};
             const IopImageLoadResult loaded = IopModuleLoader::load(image, memory, moduleCursor);
+            importCache.clear(); // new code in IOP RAM
             moduleCursor = loaded.nextModuleCursor;
             if (!loaded)
             {
@@ -1023,6 +1087,7 @@ namespace ps2x::iop::detail
                 return false;
             // A removable IRX normally exposes a stop entry through module metadata. We do not guess it; terminate owned execution and release the image cleanly.
             kernel.terminateThreadsInRange(it->second.base, it->second.size);
+            importCache.clear();
             const uint32_t lo = physicalAddress(it->second.base);
             std::erase_if(nativeRanges, [&](const NativeRange &r) { return r.lo == lo; });
             std::erase_if(nativeOverrides, [&](const auto &kv) { return kv.first >= lo && kv.first < lo + it->second.size; });
@@ -1068,7 +1133,9 @@ namespace ps2x::iop::detail
         // PS2X_IOP_NATIVE_STATS=1: every 5 s, instructions run natively / interpreted and where the IOP time goes
         const bool nativeStats = std::getenv("PS2X_IOP_NATIVE_STATS") != nullptr;
         double spuSeconds = 0.0, cpuSeconds = 0.0, totalSeconds = 0.0, serviceSeconds = 0.0;
-        uint64_t busyLoops = 0, idleLoops = 0, runCyclesCalls = 0;
+        uint64_t busyLoops = 0, idleLoops = 0, runCyclesCalls = 0, importCalls = 0;
+        double importDecodeSeconds = 0.0, importDispatchSeconds = 0.0;
+        std::unordered_map<std::string, uint64_t> importsByLibrary;
         std::chrono::steady_clock::time_point statsLast = std::chrono::steady_clock::now();
         std::map<int, uint64_t> pendingDmaInterrupts;
         std::multimap<uint64_t, ScheduledGuestCallback> pendingGuestCallbacks;
@@ -1085,6 +1152,47 @@ namespace ps2x::iop::detail
         std::unordered_map<uint32_t, uint64_t> outsideByAddress; // GOW_IOP_DRIFT: cycles of top-level calls per address
         uint64_t totalInstructions = 0;
         uint64_t eeCycleCarry = 0;
+        // Idle batches (docs/switch-deko3d.md "Core 1 budget"): when a run ends with no ready thread, idleHorizon is the
+        // cycle of the IOP's next event (thread wake, timer, DMA completion, scheduled callback; 0 = unknown). A due
+        // batch that ends at or before it would only move totalCycles and the sound clock, so the inline EE path adds
+        // it to deferredIdleCycles instead of running it; flushDeferredIdle runs them as one run (same end state:
+        // the idle loop jumps straight to the end) before the next real batch and before every other IOP entry.
+        uint64_t idleHorizon = 0, deferredIdleCycles = 0;
+        const uint64_t idleDeferLimit = []
+        {
+            const char *v = std::getenv("GOW_IOP_IDLE_DEFER"); // IOP cycles one deferral may cover; 0 = off
+            return v ? std::strtoull(v, nullptr, 10) : 16384ULL;
+        }();
+        void flushDeferredIdle() noexcept
+        {
+            if (deferredIdleCycles == 0u)
+                return;
+            const uint64_t cycles = deferredIdleCycles;
+            deferredIdleCycles = 0;
+            const uint64_t start = totalCycles, horizon = idleHorizon;
+            runCycles(cycles);
+            ++idleFlushes;
+            // the deferred run has to be one idle step straight to its end; anything else means the horizon was wrong
+            if (lastRunIterations != 1u || lastRunRanThread)
+            {
+                if (++idleViolations <= 20u)
+                    std::fprintf(stderr, "[iop-idle] violation start=%llu cycles=%llu horizon=%llu end=%llu iterations=%u thread=%d\n",
+                                 static_cast<unsigned long long>(start), static_cast<unsigned long long>(cycles),
+                                 static_cast<unsigned long long>(horizon), static_cast<unsigned long long>(totalCycles),
+                                 lastRunIterations, lastRunRanThread ? 1 : 0);
+            }
+        }
+        uint64_t idleDeferred = 0, idleFlushes = 0, idleViolations = 0; // [IOP:native] idle_defer
+        uint32_t lastRunIterations = 0;
+        bool lastRunRanThread = false;
+        // an IOP entry that can change what the IOP does next (RPC, SIF, module or memory changes): the deferred idle
+        // cycles run first, so the entry sees the IOP clock where batch-by-batch running has it, and the horizon is
+        // recomputed by the next run
+        void syncIdle() noexcept
+        {
+            flushDeferredIdle();
+            idleHorizon = 0;
+        }
         CpuState *activeCpu = nullptr;
         std::string lastError;
         bool servicingDmaInterrupts = false;
@@ -1147,6 +1255,27 @@ namespace ps2x::iop::detail
         return 8u * (kIopCycleBatch - m_impl->pendingIopCycles) - m_impl->eeCycleCarry;
     }
 
+    bool IopEmulator::deferIdleBatch() noexcept
+    {
+        Impl &d = *m_impl;
+        const uint64_t deferred = d.deferredIdleCycles + d.pendingIopCycles;
+        if (d.idleHorizon == 0u || deferred > d.idleDeferLimit || d.totalCycles + deferred > d.idleHorizon)
+            return false;
+        d.deferredIdleCycles = deferred;
+        d.pendingIopCycles = 0;
+        ++d.idleDeferred;
+        // the sound clock the deferred run will end at (serviceSound: soundBase + the run's grant): handed to the mixer
+        // now, so it mixes while the EE runs instead of while the IOP code that follows waits in sync (advanceTo is
+        // monotonic; the run's own calls are then no-ops)
+        d.sound().advanceTo(d.soundBase + deferred);
+        return true;
+    }
+
+    void IopEmulator::syncIdle() noexcept
+    {
+        m_impl->syncIdle();
+    }
+
     void IopEmulator::runPendingEeCycles() noexcept
     {
         runIopCycles(takePendingIopCycles());
@@ -1154,6 +1283,7 @@ namespace ps2x::iop::detail
 
     uint64_t IopEmulator::takePendingIopCycles() noexcept
     {
+        m_impl->flushDeferredIdle(); // only the inline path defers; a deferred run still goes first
         const uint64_t cycles = m_impl->pendingIopCycles;
         m_impl->pendingIopCycles = 0;
         return cycles;
