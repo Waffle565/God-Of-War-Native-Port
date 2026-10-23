@@ -80,31 +80,47 @@ extern "C"
     // boost clock (games use it while loading; sys-clk sets it the same way). GOW_CPU_MHZ in env.txt picks another
     // rate, 0 leaves the clock alone. The system resets the rate on dock changes and when the game returns from HOME,
     // so a small thread re-applies it every 2 s; the rate found at start is restored at exit.
-    static u32 s_cpuHzWanted = 0;
-    static u32 s_cpuHzBefore = 0;
+    // Memory (EMC) and GPU are left at the system's rates unless env.txt asks: GOW_EMC_MHZ (1600 = the docked rate,
+    // "max" = 1600) and GOW_GPU_MHZ (e.g. 768, 460.8; "max" = 768 docked / 460.8 handheld, Nintendo's top rate for the
+    // mode). The start-up line [switch] mode/clocks says docked or handheld and the three rates either way.
+    enum ClockIndex { ClockCpu, ClockEmc, ClockGpu, ClockCount };
+    struct ClockSlot
+    {
+        const char *name;
+        PcvModuleId id;   // clkrst (HOS 8+)
+        PcvModule module; // pcv (older)
+        u32 hzWanted;     // 0 = leave alone
+        u32 hzBefore;
+    };
+    static ClockSlot s_clocks[ClockCount] = {
+        {"cpu", PcvModuleId_CpuBus, PcvModule_CpuBus, 0, 0},
+        {"emc", PcvModuleId_EMC, PcvModule_EMC, 0, 0},
+        {"gpu", PcvModuleId_GPU, PcvModule_GPU, 0, 0},
+    };
+    static bool s_clockServiceOpen = false;
     static Thread s_clockThread;
     static UEvent s_clockStop;
 
-    static bool cpuClockGet(u32 *hz)
+    static bool clockGet(const ClockSlot &clock, u32 *hz)
     {
         if (hosversionAtLeast(8, 0, 0))
         {
             ClkrstSession session;
-            if (R_FAILED(clkrstOpenSession(&session, PcvModuleId_CpuBus, 3)))
+            if (R_FAILED(clkrstOpenSession(&session, clock.id, 3)))
                 return false;
             const bool ok = R_SUCCEEDED(clkrstGetClockRate(&session, hz));
             clkrstCloseSession(&session);
             return ok;
         }
-        return R_SUCCEEDED(pcvGetClockRate(PcvModule_CpuBus, hz));
+        return R_SUCCEEDED(pcvGetClockRate(clock.module, hz));
     }
 
-    static Result cpuClockSet(u32 hz)
+    static Result clockSet(const ClockSlot &clock, u32 hz)
     {
         if (hosversionAtLeast(8, 0, 0))
         {
             ClkrstSession session;
-            Result rc = clkrstOpenSession(&session, PcvModuleId_CpuBus, 3);
+            Result rc = clkrstOpenSession(&session, clock.id, 3);
             if (R_SUCCEEDED(rc))
             {
                 rc = clkrstSetClockRate(&session, hz);
@@ -112,7 +128,15 @@ extern "C"
             }
             return rc;
         }
-        return pcvSetClockRate(PcvModule_CpuBus, hz);
+        return pcvSetClockRate(clock.module, hz);
+    }
+
+    static bool anyClockWanted()
+    {
+        for (const ClockSlot &clock : s_clocks)
+            if (clock.hzWanted != 0u)
+                return true;
+        return false;
     }
 
     static void clockKeeper(void *)
@@ -120,36 +144,74 @@ extern "C"
         // waitSingle returns 0 when the stop event fires, a timeout result every 2 s otherwise
         while (R_FAILED(waitSingle(waiterForUEvent(&s_clockStop), 2000000000ull)))
         {
-            u32 now = 0;
-            if (cpuClockGet(&now) && now != s_cpuHzWanted)
-                cpuClockSet(s_cpuHzWanted);
+            for (const ClockSlot &clock : s_clocks)
+            {
+                u32 now = 0;
+                if (clock.hzWanted != 0u && clockGet(clock, &now) && now != clock.hzWanted)
+                {
+                    clockSet(clock, clock.hzWanted);
+                    std::fprintf(stderr, "[switch] %s clock was %u Hz, re-applied %u
+", clock.name, now, clock.hzWanted);
+                }
+            }
         }
     }
 
-    static void startCpuClock()
+    // env value in MHz (decimals allowed: 460.8); "max" -> maxHz; unset -> fallbackHz
+    static u32 clockWantedHz(const char *variable, u32 fallbackHz, u32 maxHz)
     {
-        const char *value = std::getenv("GOW_CPU_MHZ");
-        const u32 mhz = value ? static_cast<u32>(std::strtoul(value, nullptr, 10)) : 1785u;
-        if (mhz == 0u)
-            return;
+        const char *value = std::getenv(variable);
+        if (!value)
+            return fallbackHz;
+        if (std::strcmp(value, "max") == 0)
+            return maxHz;
+        return static_cast<u32>(std::strtod(value, nullptr) * 1000000.0 + 0.5);
+    }
+
+    static void startClocks()
+    {
+        const AppletOperationMode mode = appletGetOperationMode();
+        const bool docked = mode == AppletOperationMode_Console;
+        s_clocks[ClockCpu].hzWanted = clockWantedHz("GOW_CPU_MHZ", 1785000000u, 1785000000u);
+        s_clocks[ClockEmc].hzWanted = clockWantedHz("GOW_EMC_MHZ", 0u, 1600000000u);
+        s_clocks[ClockGpu].hzWanted = clockWantedHz("GOW_GPU_MHZ", 0u, docked ? 768000000u : 460800000u);
         const bool clkrst = hosversionAtLeast(8, 0, 0);
         if (R_FAILED(clkrst ? clkrstInitialize() : pcvInitialize()))
+        {
+            std::fprintf(stderr, "[switch] mode %s, clock service unavailable
+", docked ? "docked" : "handheld");
+            for (ClockSlot &clock : s_clocks)
+                clock.hzWanted = 0;
             return;
-        cpuClockGet(&s_cpuHzBefore);
-        s_cpuHzWanted = mhz * 1000000u;
-        const Result rc = cpuClockSet(s_cpuHzWanted);
-        u32 now = 0;
-        cpuClockGet(&now);
-        std::fprintf(stderr, "[switch] cpu clock %u -> %u Hz (rc=%x)\n", s_cpuHzBefore, now, rc);
+        }
+        s_clockServiceOpen = true;
+        u32 now[ClockCount] = {};
+        Result rc[ClockCount] = {};
+        for (int i = 0; i < ClockCount; ++i)
+        {
+            ClockSlot &clock = s_clocks[i];
+            clockGet(clock, &clock.hzBefore);
+            if (clock.hzWanted != 0u)
+                rc[i] = clockSet(clock, clock.hzWanted);
+            clockGet(clock, &now[i]);
+        }
+        std::fprintf(stderr,
+                     "[switch] mode %s; clocks (Hz, start -> now): cpu %u -> %u (rc=%x), emc %u -> %u (rc=%x), gpu %u -> %u (rc=%x)
+",
+                     docked ? "docked" : "handheld", s_clocks[ClockCpu].hzBefore, now[ClockCpu], rc[ClockCpu],
+                     s_clocks[ClockEmc].hzBefore, now[ClockEmc], rc[ClockEmc], s_clocks[ClockGpu].hzBefore, now[ClockGpu],
+                     rc[ClockGpu]);
+        if (!anyClockWanted())
+            return;
         ueventCreate(&s_clockStop, false);
         if (R_FAILED(threadCreate(&s_clockThread, clockKeeper, nullptr, nullptr, 0x4000, 0x3B, -2)) ||
             R_FAILED(threadStart(&s_clockThread)))
             s_clockThread = {};
     }
 
-    static void stopCpuClock()
+    static void stopClocks()
     {
-        if (s_cpuHzWanted == 0u)
+        if (!s_clockServiceOpen)
             return;
         if (s_clockThread.handle)
         {
@@ -157,13 +219,17 @@ extern "C"
             threadWaitForExit(&s_clockThread);
             threadClose(&s_clockThread);
         }
-        if (s_cpuHzBefore != 0u)
-            cpuClockSet(s_cpuHzBefore);
+        for (ClockSlot &clock : s_clocks)
+        {
+            if (clock.hzWanted != 0u && clock.hzBefore != 0u)
+                clockSet(clock, clock.hzBefore);
+            clock.hzWanted = 0;
+        }
         if (hosversionAtLeast(8, 0, 0))
             clkrstExit();
         else
             pcvExit();
-        s_cpuHzWanted = 0;
+        s_clockServiceOpen = false;
     }
 
     void userAppInit(void)
@@ -241,12 +307,12 @@ extern "C"
         // GPU diagnostics are opt-in again (env.txt GOW_GS_HW_STATS=1 / GOW_GS_GPU_TIME=1 / GOW_GPU_BISECT=1): the bisect
         // phases draw wrong pictures on purpose, and a timer query per draw plus glGetError per batch cost the GL thread
         // time; the [gow-perf]/[gs-gl]/[gs-hw-cpu] lines above say where the time goes without them
-        startCpuClock();
+        startClocks();
     }
 
     void userAppExit(void)
     {
-        stopCpuClock();
+        stopClocks();
         std::fflush(stdout);
         std::fflush(stderr);
         if (s_nxlinkSocket >= 0)
