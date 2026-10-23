@@ -147,7 +147,9 @@ def heads_of(code, extra_heads):
 # register file of a block: C++ locals (loaded at block entry, stored back at every exit) or the VU1State in memory.
 # The blocks are straight-line, so a local per register is exact; the compiler then keeps the values in NEON / SSE
 # registers instead of a store and a reload per instruction (the data-memory stores through n.data may alias the state,
-# so it could not do that with s.vf). Blocks that call out to the exact engine (callUpper / callLower) keep the memory form.
+# so it could not do that with s.vf). Blocks with a callout to the exact engine (callUpper / callLower) keep the memory form,
+# except for the soft ones (callout_kind: OPMULA / OPMSUB, EFU ops, WAITP), generated natively (NATIVE_CALLOUTS) or
+# with the registers stored / reloaded around the callout (Regs.callout).
 
 class Regs:
     def __init__(self, local):
@@ -159,6 +161,7 @@ class Regs:
         # computed once at entry (N<r>) instead of at every use in every pass (the matrix rows of the vertex loops)
         self.inv = set()
         self.nused = []
+        self.synced = set()   # locals equal to the VU1State since a callout stored or reloaded them (Regs.callout)
 
     def _use(self, key):
         if key not in self.defined:
@@ -166,6 +169,7 @@ class Regs:
             self.need.append(key)
 
     def _def(self, key):
+        self.synced.discard(key)
         if key not in self.defined:
             self.defined.append(key)
         if key not in self.dirty:
@@ -289,24 +293,81 @@ class Regs:
             out.append(f"const __m128 N{r} = vu1n::nrm(F{r});")
         return out
 
+    def _store(self, key):
+        name = self._name(key)
+        if key[0] == 'f':
+            return f"_mm_storeu_ps(s.vf[{key[1]}], {name});"
+        if key[0] == 'i':
+            return f"s.vi[{key[1]}] = {name};"
+        if key[0] == 'acc':
+            return "_mm_storeu_ps(s.acc, ACC);"
+        if key[0] == 'q':
+            return "s.q = QR;"
+        return "s.i = IR;"
+
     def writeback(self):
-        out = []
-        for key in self.dirty:
-            name = self._name(key)
+        return [self._store(key) for key in self.dirty]
+
+    def callout(self, call, reads, writes, m=15):
+        """a soft callout (callout_kind) in the locals form: the registers it reads or writes and Q (its commit of the
+        values in flight may rewrite s.q) stored to the VU1State when written so far, the call, then what it wrote and Q
+        read back, so the VU1State sees exactly what the memory form would show it"""
+        keys = set(reads) | set(writes) | {('q',)}
+        spilled = [key for key in self.dirty if key in keys and key not in self.synced]
+        out = [self._store(key) for key in spilled]
+        out.append(call)
+        for key in writes:
             if key[0] == 'f':
-                out.append(f"_mm_storeu_ps(s.vf[{key[1]}], {name});")
-            elif key[0] == 'i':
-                out.append(f"s.vi[{key[1]}] = {name};")
-            elif key[0] == 'acc':
-                out.append("_mm_storeu_ps(s.acc, ACC);")
-            elif key[0] == 'q':
-                out.append("s.q = QR;")
+                out.append(self.setf(key[1], 15, f"vu1n::ld(s, {key[1]})"))
+                if BND is not None:
+                    BND.setv(key, m, [None] * 4)
             else:
-                out.append("s.i = IR;")
+                out.append(self.setacc(15, "vu1n::ldAcc(s)"))
+                if BND is not None:
+                    BND.setv(key, m, [None] * 4)
+        out.append(self.setq("s.q"))
+        self.synced |= set(spilled) | set(writes) | {('q',)}
+        if BND is not None and BND.st[('q',)] is not None:
+            BND.st[('q',)] = (128, frozenset())  # the same value, or an FDIV result committed (finite)
         return out
 
 
 RG = Regs(False)
+
+# Exact-engine callouts a block in the locals form may make (Regs.callout spills and reloads around them): OPMULA /
+# OPMSUB (upper) and the EFU ops incl. WAITP (lower specials 0x70-0x7E): they read VF / ACC, write one VF / ACC or only
+# P, and touch nothing the locals hold besides Q (commitValuesKeepTiming). Other callouts keep the memory form.
+SOFT_CALLOUTS = os.environ.get('VU1N_SOFT_CALLOUTS', '1') == '1'
+# In the locals form the soft callouts are generated natively (VU1N_NATIVE_CALLOUTS=0: Regs.callout around the exact
+# engine): OPMULA / OPMSUB as MUL / MSUB on swizzled operands (dest without w: the exact engine writes w = 0) followed
+# by VU1NativeAccess::opmFlags (their MAC entry, status, the callout's commit), the EFU ops and WAITP through
+# VU1NativeAccess::efuOp (the exact engine's execEfu on the local value, without callLower's decode).
+NATIVE_CALLOUTS = os.environ.get('VU1N_NATIVE_CALLOUTS', '1') == '1'
+
+
+def q_around(call_lines):
+    """a native callout replacement: like the callout, it may commit an older FDIV result into s.q"""
+    if ('q',) not in RG.dirty:
+        return call_lines
+    out = ["s.q = QR;"] + call_lines + [RG.setq("s.q")]
+    if BND is not None and BND.st[('q',)] is not None:
+        BND.st[('q',)] = (128, frozenset())
+    return out
+
+
+def callout_kind(l, u):
+    """per pair: None (no callout), 'soft' or 'hard'"""
+    kinds = []
+    if classify(u)[0] in ('opmsub', 'opmula'):
+        kinds.append('soft')
+    elif classify(u)[0] == 'other':
+        kinds.append('hard')
+    if not (u >> 31) and lower_info(l)['calls_out']:
+        sp = lower_special(l) if (l >> 25) == 0x40 else None
+        kinds.append('soft' if sp is not None and 0x70 <= sp <= 0x7E and sp != 0x77 else 'hard')
+    if not kinds:
+        return None
+    return 'hard' if 'hard' in kinds or not SOFT_CALLOUTS else 'soft'
 
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -545,17 +606,51 @@ def emit_upper(u, pc, idx, mac_var, clip_var, prev_clip, clean=None):
         if BND is not None:
             BND.setv(('f', ft), m, BND.last)
         return [line]
-    if kind in ('opmsub', 'opmula', 'other'):
-        assert not RG.local
-        return [f"VU1NativeAccess::callUpper(n, {pc}u, 0x{u:08x}u);"]
+    opm = None
+    if kind in ('opmsub', 'opmula') and RG.local and NATIVE_CALLOUTS and not (m & 8):
+        # x = fs.y * ft.z, y = fs.z * ft.x, z = fs.x * ft.y (OPMSUB: subtracted from ACC)
+        used_s = sum(1 << (1, 2, 0)[k] for k in range(3) if m & (1 << k))
+        used_t = sum(1 << (2, 0, 1)[k] for k in range(3) if m & (1 << k))
+        opm = [f"const __m128 os{idx} = {RG.f(fs)};", f"const __m128 ot{idx} = {RG.f(ft)};"]
+        av = RG.fn(fs, clean, used_s)
+        va = [BND.last[1], BND.last[2], BND.last[0], BND.last[3]] if BND is not None else None
+        bv = RG.fn(ft, clean, used_t)
+        vb = [BND.last[2], BND.last[0], BND.last[1], BND.last[3]] if BND is not None else None
+        # the lanes outside DEST are zero: the exact engine computes the DEST lanes only, and a huge lane elsewhere would
+        # send maddc to its wide path for all four (other DEST values, see FAST_DEST_ONLY)
+        nm = 15 & ~m
+        def z(e):
+            return f"_mm_blend_ps({e}, _mm_setzero_ps(), {nm})" if nm else e
+        opm += [f"const __m128 oa{idx} = {av};", f"const __m128 ob{idx} = {bv};"]
+        a = z(f"_mm_shuffle_ps(oa{idx}, oa{idx}, _MM_SHUFFLE(3, 0, 2, 1))")
+        b = z(f"_mm_shuffle_ps(ob{idx}, ob{idx}, _MM_SHUFFLE(3, 1, 0, 2))")
+        zero = (ZERO_E, frozenset())
+        if BND is not None:
+            va = [va[k] if m & (1 << k) else zero for k in range(4)]
+            vb = [vb[k] if m & (1 << k) else zero for k in range(4)]
+        flags = q_around([f"VU1NativeAccess::opmFlags(n, {pc}u, 0x{u:08x}u, os{idx}, ot{idx}, om{idx});"])
+        kind = 'msub' if kind == 'opmsub' else 'mul'
+        src, mac_var = 'v', f"om{idx}"
+    elif kind in ('opmsub', 'opmula', 'other'):
+        call = f"VU1NativeAccess::callUpper(n, {pc}u, 0x{u:08x}u);"
+        if not RG.local:
+            return [call]
+        assert kind != 'other'
+        # OPMSUB: fd = ACC - fs.yzx * ft.zxy; OPMULA: ACC = fs.yzx * ft.zxy
+        reads = [('f', fs), ('f', ft)] + ([('acc',)] if kind == 'opmsub' else [])
+        writes = [('acc',)] if toacc else ([('f', fd)] if fd else [])
+        return RG.callout(call, reads, writes, m)
     # only the DEST lanes of a result are kept and flagged, and a broadcast reads one lane: those are the lanes an
     # operand needs normalised
     def opnd(r, lanes):
         return RG.fn(r, clean, lanes)
-    a = opnd(fs, m)
-    va = BND.last if BND is not None else None
-    vb = None
-    if src == 'bc':
+    if opm is None:
+        a = opnd(fs, m)
+        va = BND.last if BND is not None else None
+        vb = None
+    if opm is not None:
+        pass
+    elif src == 'bc':
         b = f"vu1n::bc<{bc}>({opnd(ft, 1 << bc)})"
         if BND is not None:
             vb = [BND.last[bc]] * 4
@@ -572,8 +667,22 @@ def emit_upper(u, pc, idx, mac_var, clip_var, prev_clip, clean=None):
         if BND is not None:
             vb = BND.last
     acc = RG.acc() if kind in ('madd', 'msub') else None
+    if opm is not None:
+        vacc = None
+        if acc is not None:
+            acc = z(acc)
+            if BND is not None:
+                vacc = [BND.st[('acc',)][k] if m & (1 << k) else zero for k in range(4)]
+        body = (emit_upper_fast(kind, src, toacc, m, fd, idx, mac_var, a, b, acc, va, vb, vacc) if BND is not None
+                else emit_upper_plain(kind, toacc, m, fd, idx, mac_var, a, b, acc))
+        return opm + body + flags
     if BND is not None:
         return emit_upper_fast(kind, src, toacc, m, fd, idx, mac_var, a, b, acc, va, vb)
+    return emit_upper_plain(kind, toacc, m, fd, idx, mac_var, a, b, acc)
+
+
+def emit_upper_plain(kind, toacc, m, fd, idx, mac_var, a, b, acc):
+    """ADD/SUB/MUL/MADD/MSUB/MAX/MINI without range analysis: operands a, b, raw acc"""
     if kind == 'add':
         r = f"_mm_add_ps({a}, {b})"
     elif kind == 'sub':
@@ -607,12 +716,13 @@ def emit_upper(u, pc, idx, mac_var, clip_var, prev_clip, clean=None):
     return out
 
 
-def emit_upper_fast(kind, src, toacc, m, fd, idx, mac_var, a, b, acc, va, vb):
-    """ADD/SUB/MUL/MADD/MSUB/MAX/MINI of a fast variant (Bounds): operands a, b (views va, vb per lane), raw acc"""
+def emit_upper_fast(kind, src, toacc, m, fd, idx, mac_var, a, b, acc, va, vb, vacc=None):
+    """ADD/SUB/MUL/MADD/MSUB/MAX/MINI of a fast variant (Bounds): operands a, b (views va, vb per lane), raw acc
+    (vacc: its bounds when not ACC's own)"""
     lm = [k for k in range(4) if m & (1 << k)]
     res = [None] * 4
     if kind in ('madd', 'msub'):
-        vacc = BND.st[('acc',)]
+        vacc = BND.st[('acc',)] if vacc is None else vacc
         # per DEST lane, as the exact engine (normalizeFmacResult) and the hardware: the other lanes are not written and
         # their MAC bits are masked off (maddc's test covers all four lanes, so a huge or NaN lane outside DEST sends it to
         # the wide path; with every DEST lane in range that gives the same DEST values unless the two-step and the wide
@@ -931,8 +1041,14 @@ def emit_lower(l, pc, upper, bkp, mac_expr, clip_expr, clip_var):
             return vi_set(ft, "(int32_t)(s.itop & 0x3FFu)")
         if sp == 0x6C:
             return [f"VU1NativeAccess::xgkick(n, (uint32_t)(uint16_t){VI(fs)});"]
-    assert not RG.local
-    return [f"VU1NativeAccess::callLower(n, {pc}u, 0x{l:08x}u, 0x{upper:08x}u);"]
+    call = f"VU1NativeAccess::callLower(n, {pc}u, 0x{l:08x}u, 0x{upper:08x}u);"
+    if not RG.local:
+        return [call]
+    if NATIVE_CALLOUTS:
+        v = "_mm_setzero_ps()" if lower_special(l) == 0x7B else V(fs)   # WAITP reads nothing
+        return q_around([f"VU1NativeAccess::efuOp(n, {pc}u, 0x{l:08x}u, {v});"])
+    # an EFU op / WAITP (callout_kind 'soft'): reads VF fs, writes only P
+    return RG.callout(call, [k for k in (('f', fs), ('f', ft)) if k[1]], [])
 
 
 def gen_block(pc0, pairs, tail_out=None, selfname=None, regs=None, pieces=None, trace=None):
@@ -967,20 +1083,22 @@ def gen_block(pc0, pairs, tail_out=None, selfname=None, regs=None, pieces=None, 
     LAST.clear()
     calls_out = any((not (u >> 31) and infos[i]['calls_out']) or classify(u)[0] in ('opmsub', 'opmula', 'other')
                     for i, (l, u) in enumerate(pairs))
+    # callouts that need the memory form (others are spilled around in the locals form, Regs.callout)
+    hard_calls = any(callout_kind(l, u) == 'hard' for (l, u) in pairs)
     if regs is not None:
         if calls_out:
             return None
         RG = regs
     else:
         inv = set()
-        if selfname and LOCALS and not calls_out:
+        if selfname and LOCALS and not hard_calls:
             # a block that may repeat itself: the VF registers it never writes get their operand view once (Regs.inv)
             pre = Regs(True)
             saved, BND = BND, None
             if gen_block(pc0, pairs, [], None, regs=pre, pieces={}) == 'pieces':
                 inv = {k[1] for k in pre.defined if k[0] == 'f' and k not in pre.dirty and k[1] != 0}
             BND = saved
-        RG = Regs(LOCALS and not calls_out)
+        RG = Regs(LOCALS and not hard_calls)
         RG.inv = inv
     # Flag model of the exact engine: an FMAC / CLIP / FCSET issued at pair j becomes visible to flag readers 4 cycles later
     # (kFmacLatency, on the exact engine's stall-model cycles n.cyc, computed at block entry from the pipeline state the
