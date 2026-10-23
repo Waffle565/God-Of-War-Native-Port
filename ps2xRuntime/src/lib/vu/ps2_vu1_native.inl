@@ -191,6 +191,86 @@ void VU1NativeAccess::callLower(VU1NativeCtx &n, uint32_t pc, uint32_t lower, ui
     VU1NativeAccess::importFlags(vu); // the callout's flag writes join the native blocks' ones
 }
 
+// The end of a callout (commitValuesKeepTiming) for the native replacements below: with no store / VF / VI / ACC write
+// queued (the native blocks write directly) commitEverythingNow only commits the FDIV / EFU results in flight (Q and
+// the status D/I bits, P in the order of the EFU entries) and their timing stays; otherwise the general function.
+VU1N_INLINE void VU1NativeAccess::calloutCommit(VU1Interpreter &vu)
+{
+    if ((vu.m_storePending | vu.m_vfPending | vu.m_viPending | vu.m_accPending) != 0u)
+    {
+        commitValuesKeepTiming(vu);
+        return;
+    }
+    uint64_t next = ~0ull;
+    if (vu.m_fdiv.valid)
+    {
+        vu.m_state.q = vu.m_fdiv.value;
+        const uint32_t currentDi = vu.m_fdiv.statusDi & 0x30u;
+        vu.m_state.status = (vu.m_state.status & 0xFCFu) | currentDi | (currentDi << 6);
+        next = vu.m_fdiv.readyCycle;
+    }
+    for (const VU1Interpreter::ScalarPipelineEntry &e : vu.m_efu)
+        if (e.valid)
+        {
+            vu.m_state.p = e.value;
+            next = std::min(next, e.readyCycle);
+        }
+    vu.m_nextCommitCycle = next;
+}
+
+// An EFU op or WAITP of a block in the locals form (vu1n_gen.py): callLower without its decode, vs = the block's value
+// of VF fs (execEfu: the same code as execLower).
+void VU1NativeAccess::efuOp(VU1NativeCtx &n, uint32_t pc, uint32_t lower, __m128 vs)
+{
+    VU1Interpreter &vu = *n.vu;
+    if (vu.m_native->specMode)
+        return VU1Split::specAbort(vu);
+    vu.m_state.pc = pc;
+    float v[4];
+    _mm_storeu_ps(v, vs);
+    vu.execEfu(lower, v);
+    calloutCommit(vu);
+    if (vu.m_flagCount != 0u)
+        importFlags(vu);
+}
+
+// OPMULA / OPMSUB generated natively (vu1n_gen.py: MUL / MSUB on swizzled operands, dest without w): what the callout
+// (callUpper) did besides the value: its MAC flags (mac: the native result's, dest lanes) join the ring at the block's
+// start cycle (the exact engine's flag entry issues at m_cycle, importFlags pushes it), status gets the current Z/S/U/O
+// and the sticky bits incl. OPMSUB's product bits (calculateFmacProductSticky), after the callout's commit. vs, vt:
+// the raw values of VF fs / ft the instruction read.
+void VU1NativeAccess::opmFlags(VU1NativeCtx &n, uint32_t pc, uint32_t upper, __m128 vs, __m128 vt, uint32_t mac)
+{
+    VU1Interpreter &vu = *n.vu;
+    if (vu.m_native->specMode)
+        return VU1Split::specAbort(vu);
+    vu.m_state.pc = pc;
+    uint32_t extraSticky = 0u;
+    if ((upper & 0x3Fu) == 0x2Eu) // OPMSUB (a product-sum); OPMULA (special 0x2E) has no product bits
+    {
+        static constexpr uint8_t crossLeft[4] = {1u, 2u, 0u, 3u};
+        static constexpr uint8_t crossRight[4] = {2u, 0u, 1u, 3u};
+        const uint32_t dest = (upper >> 21) & 0xFu;
+        float a[4], b[4];
+        _mm_storeu_ps(a, vs);
+        _mm_storeu_ps(b, vt);
+        for (uint32_t c = 0; c < 4u; ++c)
+        {
+            if ((dest & (8u >> c)) == 0u)
+                continue;
+            const float left = vu.normalizeOperand(a[crossLeft[c]]);
+            const float right = vu.normalizeOperand(b[crossRight[c]]);
+            extraSticky |= VU1Interpreter::productStickyFlags(left, right, left * right) & 0xFu;
+        }
+    }
+    calloutCommit(vu);
+    if (vu.m_flagCount != 0u)
+        importFlags(vu);
+    const uint32_t current = ((mac & 0xFu) ? 1u : 0u) | ((mac & 0xF0u) ? 2u : 0u) | ((mac & 0xF00u) ? 4u : 0u) | ((mac & 0xF000u) ? 8u : 0u);
+    ringPush(vu.m_native->macRing, vu.m_cycle, mac);
+    vu.m_state.status = (vu.m_state.status & 0xFF0u) | current | ((current | extraSticky) << 6);
+}
+
 void VU1NativeAccess::callUpper(VU1NativeCtx &n, uint32_t pc, uint32_t upper)
 {
     VU1Interpreter &vu = *n.vu;

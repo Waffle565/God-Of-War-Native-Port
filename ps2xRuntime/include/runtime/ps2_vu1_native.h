@@ -328,6 +328,11 @@ struct VU1NativeAccess
     static VU1NativeFn slotFn(const VU1NativeCtx &n); // the function of the slot chainDirect set up
     static void callLower(VU1NativeCtx &n, uint32_t pc, uint32_t lower, uint32_t upper);
     static void callUpper(VU1NativeCtx &n, uint32_t pc, uint32_t upper);
+    // native replacements of the soft callouts (vu1n_gen.py, blocks in the locals form): an EFU op / WAITP on the block's
+    // VF fs value, OPMULA / OPMSUB's flags and commit (the value is generated); calloutCommit: a callout's commit
+    static void efuOp(VU1NativeCtx &n, uint32_t pc, uint32_t lower, __m128 vs);
+    static void opmFlags(VU1NativeCtx &n, uint32_t pc, uint32_t upper, __m128 vs, __m128 vt, uint32_t mac);
+    static void calloutCommit(VU1Interpreter &vu);
     static void xgkick(VU1NativeCtx &n, uint32_t qwordAddress);
     // GOW_VU1N_RECORD / GOW_VU1N_REPLAY (bit-exact A/B of generator changes, see ps2_vu1_native.inl)
     static void recordReplay(VU1Interpreter &vu, void *context, uint32_t maxCycles);
@@ -743,6 +748,7 @@ VU1N_INLINE VU1NativeFn VU1NativeAccess::slotFn(const VU1NativeCtx &n)
 }
 #define VU1N_HAS_CHAIN_DIRECT 2 // 2: successors named by block key
 #define VU1N_HAS_CHAIN_JR 1     // chainJr (JR / JALR exits)
+#define VU1N_HAS_NATIVE_CALLOUTS 1 // efuOp / opmFlags (vu1n_gen.py NATIVE_CALLOUTS)
 
 VU1N_INLINE const void *VU1NativeAccess::tracePart(const VU1NativeCtx &n, uint32_t k)
 {

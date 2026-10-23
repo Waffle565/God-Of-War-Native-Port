@@ -380,6 +380,7 @@ private:
     void queueFcset(uint32_t clip);
     void queueQ(float value, uint32_t latency, uint32_t statusDi);
     void queueP(float value, uint32_t latency);
+    void execEfu(uint32_t instr, const float *vs); // GOW-Port: EFU ops / WAITP (execLower and the native blocks)
     void queueStore(uint32_t address, const uint32_t words[4], uint8_t laneMask);
     void queueVfWrite(uint8_t reg, uint8_t laneMask, const float value[4], uint32_t latency);
     void queueViWrite(uint8_t reg, int32_t value, uint32_t latency);

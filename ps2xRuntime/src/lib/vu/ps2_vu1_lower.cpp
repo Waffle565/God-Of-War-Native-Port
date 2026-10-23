@@ -704,112 +704,21 @@ void VU1Interpreter::execLower(uint32_t instr, uint8_t *vuData, uint32_t dataSiz
                 startXgkick(static_cast<uint32_t>(static_cast<uint16_t>(m_state.vi[viS])));
                 return;
             case 0x70: // ESADD
-            {
-                const float x = normalizeOperand(m_state.vf[vfS][0]);
-                const float y = normalizeOperand(m_state.vf[vfS][1]);
-                const float z = normalizeOperand(m_state.vf[vfS][2]);
-                queueP(x * x + y * y + z * z, 11u);
-                return;
-            }
             case 0x71: // ERSADD
-            {
-                const float x = normalizeOperand(m_state.vf[vfS][0]);
-                const float y = normalizeOperand(m_state.vf[vfS][1]);
-                const float z = normalizeOperand(m_state.vf[vfS][2]);
-                const float sum = x * x + y * y + z * z;
-                queueP(sum != 0.0f ? 1.0f / sum : sum, 18u);
-                return;
-            }
             case 0x72: // ELENG
-            {
-                const float x = normalizeOperand(m_state.vf[vfS][0]);
-                const float y = normalizeOperand(m_state.vf[vfS][1]);
-                const float z = normalizeOperand(m_state.vf[vfS][2]);
-                queueP(std::sqrt(x * x + y * y + z * z), 18u);
-                return;
-            }
             case 0x73: // ERLENG
-            {
-                const float x = normalizeOperand(m_state.vf[vfS][0]);
-                const float y = normalizeOperand(m_state.vf[vfS][1]);
-                const float z = normalizeOperand(m_state.vf[vfS][2]);
-                const float len = std::sqrt(x * x + y * y + z * z);
-                queueP(len != 0.0f ? 1.0f / len : len, 24u);
-                return;
-            }
             case 0x74: // EATANxy
-            {
-                const float x = normalizeOperand(m_state.vf[vfS][0]);
-                const float y = normalizeOperand(m_state.vf[vfS][1]);
-                queueP(x != 0.0f ? vuEatan(y / x) : 0.0f, 54u);
-                return;
-            }
             case 0x75: // EATANxz
-            {
-                const float x = normalizeOperand(m_state.vf[vfS][0]);
-                const float z = normalizeOperand(m_state.vf[vfS][2]);
-                queueP(x != 0.0f ? vuEatan(z / x) : 0.0f, 54u);
-                return;
-            }
             case 0x76: // ESUM
-            {
-                float sum = 0.0f;
-                for (uint32_t component = 0; component < 4u; ++component)
-                    sum += normalizeOperand(m_state.vf[vfS][component]);
-                queueP(sum, 12u);
-                return;
-            }
-            // GOW-Port: códigos EFU del LowerOP de PCSX2
-            // 32ac6e23e4aaf8c8c5e74a6c1ed750ee7672120e; 0x77 es reservado.
-            case 0x79: // ERSQRT
-            {
-                const uint32_t component = (instr >> 21) & 3u;
-                const float value = normalizeOperand(m_state.vf[vfS][component]);
-                float result = value;
-                if (result >= 0.0f)
-                {
-                    result = std::sqrt(result);
-                    if (result != 0.0f)
-                        result = 1.0f / result;
-                }
-                queueP(result, 18u);
-                return;
-            }
             case 0x78: // ESQRT
-            {
-                const uint32_t component = (instr >> 21) & 3u;
-                const float value = normalizeOperand(m_state.vf[vfS][component]);
-                queueP(value >= 0.0f ? std::sqrt(value) : value, 12u);
-                return;
-            }
-            case 0x7C: // ESIN
-            {
-                const uint32_t component = (instr >> 21) & 3u;
-                const float value = normalizeOperand(m_state.vf[vfS][component]);
-                queueP(vuEsin(value), 29u);
-                return;
-            }
+            case 0x79: // ERSQRT
             case 0x7A: // ERCPR
-            {
-                const uint32_t component = (instr >> 21) & 3u;
-                const float value = normalizeOperand(m_state.vf[vfS][component]);
-                queueP(value != 0.0f ? 1.0f / value : value, 12u);
-                return;
-            }
             case 0x7B: // WAITP
-                return;
+            case 0x7C: // ESIN
             case 0x7D: // EATAN
-            {
-                const uint32_t component = (instr >> 21) & 3u;
-                queueP(vuEatan(normalizeOperand(m_state.vf[vfS][component])), 54u);
-                return;
-            }
             case 0x7E: // EEXP
-            {
-                const uint32_t component = (instr >> 21) & 3u;
-                queueP(vuEexp(normalizeOperand(m_state.vf[vfS][component])), 44u);
+                execEfu(instr, m_state.vf[vfS]); // GOW-Port: shared with the native blocks (VU1NativeAccess::efuOp)
                 return;
-            }
             default:
                 reportReservedInstruction(false, instr);
                 return;
@@ -823,5 +732,125 @@ void VU1Interpreter::execLower(uint32_t instr, uint8_t *vuData, uint32_t dataSiz
     default:
         reportReservedInstruction(false, instr);
         break;
+    }
+}
+
+// GOW-Port: the EFU ops (lower specials 0x70-0x7E) on the VF register value vs, as execLower runs them: execLower
+// passes m_state.vf[fs], the native blocks their local copy (VU1NativeAccess::efuOp).
+void VU1Interpreter::execEfu(uint32_t instr, const float *vs)
+{
+    const uint8_t funct2 = (uint8_t)((instr & 0x3u) | ((instr >> 4) & 0x7Cu));
+    switch (funct2)
+    {
+        case 0x70: // ESADD
+        {
+            const float x = normalizeOperand(vs[0]);
+            const float y = normalizeOperand(vs[1]);
+            const float z = normalizeOperand(vs[2]);
+            queueP(x * x + y * y + z * z, 11u);
+            return;
+        }
+        case 0x71: // ERSADD
+        {
+            const float x = normalizeOperand(vs[0]);
+            const float y = normalizeOperand(vs[1]);
+            const float z = normalizeOperand(vs[2]);
+            const float sum = x * x + y * y + z * z;
+            queueP(sum != 0.0f ? 1.0f / sum : sum, 18u);
+            return;
+        }
+        case 0x72: // ELENG
+        {
+            const float x = normalizeOperand(vs[0]);
+            const float y = normalizeOperand(vs[1]);
+            const float z = normalizeOperand(vs[2]);
+            queueP(std::sqrt(x * x + y * y + z * z), 18u);
+            return;
+        }
+        case 0x73: // ERLENG
+        {
+            const float x = normalizeOperand(vs[0]);
+            const float y = normalizeOperand(vs[1]);
+            const float z = normalizeOperand(vs[2]);
+            const float len = std::sqrt(x * x + y * y + z * z);
+            queueP(len != 0.0f ? 1.0f / len : len, 24u);
+            return;
+        }
+        case 0x74: // EATANxy
+        {
+            const float x = normalizeOperand(vs[0]);
+            const float y = normalizeOperand(vs[1]);
+            queueP(x != 0.0f ? vuEatan(y / x) : 0.0f, 54u);
+            return;
+        }
+        case 0x75: // EATANxz
+        {
+            const float x = normalizeOperand(vs[0]);
+            const float z = normalizeOperand(vs[2]);
+            queueP(x != 0.0f ? vuEatan(z / x) : 0.0f, 54u);
+            return;
+        }
+        case 0x76: // ESUM
+        {
+            float sum = 0.0f;
+            for (uint32_t component = 0; component < 4u; ++component)
+                sum += normalizeOperand(vs[component]);
+            queueP(sum, 12u);
+            return;
+        }
+        // GOW-Port: códigos EFU del LowerOP de PCSX2
+        // 32ac6e23e4aaf8c8c5e74a6c1ed750ee7672120e; 0x77 es reservado.
+        case 0x79: // ERSQRT
+        {
+            const uint32_t component = (instr >> 21) & 3u;
+            const float value = normalizeOperand(vs[component]);
+            float result = value;
+            if (result >= 0.0f)
+            {
+                result = std::sqrt(result);
+                if (result != 0.0f)
+                    result = 1.0f / result;
+            }
+            queueP(result, 18u);
+            return;
+        }
+        case 0x78: // ESQRT
+        {
+            const uint32_t component = (instr >> 21) & 3u;
+            const float value = normalizeOperand(vs[component]);
+            queueP(value >= 0.0f ? std::sqrt(value) : value, 12u);
+            return;
+        }
+        case 0x7C: // ESIN
+        {
+            const uint32_t component = (instr >> 21) & 3u;
+            const float value = normalizeOperand(vs[component]);
+            queueP(vuEsin(value), 29u);
+            return;
+        }
+        case 0x7A: // ERCPR
+        {
+            const uint32_t component = (instr >> 21) & 3u;
+            const float value = normalizeOperand(vs[component]);
+            queueP(value != 0.0f ? 1.0f / value : value, 12u);
+            return;
+        }
+        case 0x7B: // WAITP
+            return;
+        case 0x7D: // EATAN
+        {
+            const uint32_t component = (instr >> 21) & 3u;
+            queueP(vuEatan(normalizeOperand(vs[component])), 54u);
+            return;
+        }
+        case 0x7E: // EEXP
+        {
+            const uint32_t component = (instr >> 21) & 3u;
+            queueP(vuEexp(normalizeOperand(vs[component])), 44u);
+            return;
+        }
+    default:
+        reportReservedInstruction(false, instr);
+        return;
     }
 }
