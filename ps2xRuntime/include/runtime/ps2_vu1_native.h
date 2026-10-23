@@ -158,6 +158,19 @@ struct VU1Interpreter::NativeState
         uint32_t next = 0;
     };
     std::unordered_map<uint64_t, BlockTiming> timings;
+    // slotFor / setupTrace look a block key up here first (VU1NativeAccess::keyInfo): the registry entry (null: no native
+    // block), its timing data (in `timings`, created on first use) and the traces starting with it, in one open-addressed
+    // table. Three std::unordered_map lookups per set-up (a few cache misses each) were ~3 % of the console's VU1 thread
+    // in fights, where every code change sets slots up again.
+    struct KeyInfo
+    {
+        uint64_t key = 0; // 0: free
+        void *entry = nullptr;
+        BlockTiming *bt = nullptr;
+        const void *traces = nullptr;
+    };
+    std::vector<KeyInfo> keyInfo;
+    uint32_t keyInfoCount = 0;
     // Per pc slot. The first cache line holds what the dispatch loop touches for every block; the entry-timing memo
     // (only blocks that read entry flags use it) is in the second.
     struct alignas(64) Slot
@@ -287,6 +300,8 @@ struct VU1NativeAccess
     static void scalarStart(VU1Interpreter &vu, uint64_t issue, uint32_t latency, bool fdiv);
     static void commitDue(VU1Interpreter &vu); // commitReadyPipelines after a native block (FDIV/EFU-only fast path)
     static VU1Interpreter::NativeState::Slot &slotFor(VU1Interpreter &vu, const uint8_t *code, uint32_t codeSize, uint32_t pc);
+    static VU1Interpreter::NativeState::KeyInfo &keyInfo(VU1Interpreter::NativeState &ns, uint64_t key);
+    static VU1Interpreter::NativeState::BlockTiming &timingFor(VU1Interpreter::NativeState &ns, uint64_t key);
     static void codeChanged(VU1Interpreter::NativeState &ns, const uint8_t *code); // micro memory (16 KB) rewritten
     // GOW_VU1_HLE (ps2_vu1_hle.inl): the kernel at pc, matched now (VU1HleState); a chain about to enter pc asks
     // hleStopAt whether it must hand pc to runNative instead (a kernel starts there)

@@ -372,16 +372,49 @@ extern "C"
     // GOW_PC_SAMPLE=<hz>: wall-time PC sampling of named threads (GOW_PC_SAMPLE_THREADS, comma list, default GSWorker =
     // the VIF1/VU1 thread): a thread on core GOW_PC_SAMPLE_CORE (default 0) pauses each one, reads its PC
     // (svcGetThreadContext3) and lets it run again. Every 5 s the histogram of PC offsets in the ELF is appended to
-    // sdmc:/switch/gow/pcs_<name>.txt ("w <ms since start> <samples>", then "<offset hex> <count>" lines); map them with
+    // sdmc:/switch/gow/pcs_<name>.txt ("w <ms since start> <samples> <failed>", "<offset hex> <count>" and caller lines); map them with
     // tools/switch_pcprof.py against the build's ps2EntryRunner.elf. Unlike the replay harness this sees the live A57:
     // cache misses, other cores' memory traffic, the code outside the VU1 programs. Each sample stops the thread ~10 us.
+    // open-addressed counts by a non-zero 64-bit key
+    struct PcHist
+    {
+        static constexpr u32 kSize = 16384;
+        u64 keys[kSize];
+        u32 counts[kSize];
+        u32 distinct;
+        void add(u64 key)
+        {
+            for (u32 h = static_cast<u32>((key * 0x9E3779B97F4A7C15ull) >> 50);; h = (h + 1u) & (kSize - 1u))
+                if (keys[h] == key || keys[h] == 0u)
+                {
+                    if (keys[h] == 0u)
+                    {
+                        if (distinct >= kSize - kSize / 8u) // nearly full: drop rather than probe forever
+                            return;
+                        ++distinct;
+                        keys[h] = key;
+                    }
+                    ++counts[h];
+                    return;
+                }
+        }
+        void clear()
+        {
+            std::memset(keys, 0, sizeof(keys));
+            std::memset(counts, 0, sizeof(counts));
+            distinct = 0;
+        }
+    };
     struct PcSampled
     {
         Handle handle;
         char name[16];
-        u32 offsets[16384];
-        u32 counts[16384]; // open addressing on offset (0 = free)
-        u32 samples, failed, distinct;
+        PcHist pcs;
+        // samples stopped in a system call (waits, mutex arbitration): the svc number and the first two return
+        // addresses found on the thread's stack (words in the code whose previous instruction is a BL / BLR; a scan,
+        // so a stale frame can show up), "c <svc> <ra1> <ra2> <count>" lines: who waits or contends
+        PcHist callers;
+        u32 samples, failed;
     };
     static PcSampled *s_pcSampled[4];
     static int s_pcSampledCount = 0;
@@ -393,6 +426,19 @@ extern "C"
     {
         const u64 periodNs = 1000000000ull / reinterpret_cast<uintptr_t>(arg);
         const u64 base = moduleBase();
+        u64 textEnd = base;
+        {
+            MemoryInfo info{};
+            u32 page = 0;
+            if (R_SUCCEEDED(svcQueryMemory(&info, &page, base)))
+                textEnd = info.addr + info.size;
+        }
+        const auto isCall = [&](u64 ra) {
+            if (ra < base + 4u || ra >= textEnd || (ra & 3u) != 0u)
+                return false;
+            const u32 insn = *reinterpret_cast<const u32 *>(ra - 4u);
+            return (insn & 0xFC000000u) == 0x94000000u || (insn & 0xFFFFFC1Fu) == 0xD63F0000u; // BL / BLR
+        };
         const u64 t0 = armGetSystemTick();
         u64 lastWrite = t0;
         for (;;)
@@ -409,26 +455,31 @@ extern "C"
                     continue;
                 }
                 const Result rc = svcGetThreadContext3(&ctx, t.handle);
+                if (R_SUCCEEDED(rc) && ctx.pc.x >= base + 4u && ctx.pc.x < textEnd)
+                {
+                    // in a system call: pc is at or after the svc instruction
+                    u32 svcInsn = *reinterpret_cast<const u32 *>(ctx.pc.x);
+                    if ((svcInsn & 0xFFE0001Fu) != 0xD4000001u)
+                        svcInsn = *reinterpret_cast<const u32 *>(ctx.pc.x - 4u);
+                    if ((svcInsn & 0xFFE0001Fu) == 0xD4000001u)
+                    {
+                        u64 ra[2] = {};
+                        int found = 0;
+                        const u64 *stack = reinterpret_cast<const u64 *>(ctx.sp & ~7ull);
+                        for (int k = 0; k < 96 && found < 2; ++k) // the stack is ours and the thread is paused
+                            if (isCall(stack[k]))
+                                ra[found++] = stack[k] - base;
+                        t.callers.add((static_cast<u64>((svcInsn >> 5) & 0xFFu) << 56) | ((ra[0] & 0xFFFFFFFu) << 28) |
+                                      (ra[1] & 0xFFFFFFFu) | 1ull << 63);
+                    }
+                }
                 svcSetThreadActivity(t.handle, ThreadActivity_Runnable);
                 if (R_FAILED(rc))
                 {
                     ++t.failed;
                     continue;
                 }
-                const u32 off = static_cast<u32>(ctx.pc.x - base) | 1u; // odd: never 0 (the free marker)
-                for (u32 h = (off * 2654435761u) >> 18;; h = (h + 1u) & 16383u)
-                    if (t.offsets[h] == off || t.offsets[h] == 0u)
-                    {
-                        if (t.offsets[h] == 0u)
-                        {
-                            if (t.distinct >= 15000u) // nearly full: drop rather than probe forever
-                                break;
-                            ++t.distinct;
-                        }
-                        t.offsets[h] = off;
-                        ++t.counts[h];
-                        break;
-                    }
+                t.pcs.add(static_cast<u32>(ctx.pc.x - base) | 1u); // odd: never 0 (the free marker)
                 ++t.samples;
             }
             mutexUnlock(&s_pcLock);
@@ -445,14 +496,18 @@ extern "C"
                 if (std::FILE *f = std::fopen(path, "a"))
                 {
                     std::fprintf(f, "w %llu %u %u\n", static_cast<unsigned long long>(armTicksToNs(now - t0) / 1000000u), t.samples, t.failed);
-                    for (u32 h = 0; h < 16384u; ++h)
-                        if (t.offsets[h] != 0u)
-                            std::fprintf(f, "%x %u\n", t.offsets[h] & ~1u, t.counts[h]);
+                    for (u32 h = 0; h < PcHist::kSize; ++h)
+                        if (t.pcs.keys[h] != 0u)
+                            std::fprintf(f, "%x %u\n", static_cast<u32>(t.pcs.keys[h]) & ~1u, t.pcs.counts[h]);
+                    for (u32 h = 0; h < PcHist::kSize; ++h)
+                        if (const u64 k = t.callers.keys[h])
+                            std::fprintf(f, "c %x %x %x %u\n", static_cast<u32>((k >> 56) & 0x7Fu), static_cast<u32>((k >> 28) & 0xFFFFFFFu),
+                                         static_cast<u32>(k & 0xFFFFFFFu), t.callers.counts[h]);
                     std::fclose(f);
                 }
-                std::memset(t.offsets, 0, sizeof(t.offsets));
-                std::memset(t.counts, 0, sizeof(t.counts));
-                t.samples = t.failed = t.distinct = 0;
+                t.pcs.clear();
+                t.callers.clear();
+                t.samples = t.failed = 0;
             }
             mutexUnlock(&s_pcLock);
         }

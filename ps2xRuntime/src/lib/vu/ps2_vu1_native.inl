@@ -769,6 +769,68 @@ void VU1NativeAccess::codeChanged(VU1Interpreter::NativeState &ns, const uint8_t
     std::memcpy(ns.code, code, sizeof(ns.code));
 }
 
+// The registry entry, timing data and traces of a block key (NativeState::keyInfo). Key 0 (no FNV result in practice) is
+// looked up every time in a scratch record.
+VU1Interpreter::NativeState::KeyInfo &VU1NativeAccess::keyInfo(VU1Interpreter::NativeState &ns, uint64_t key)
+{
+    using KI = VU1Interpreter::NativeState::KeyInfo;
+    const auto fill = [&](KI &k) {
+        k.key = key;
+        const auto it = nativeRegistry().find(key);
+        k.entry = it != nativeRegistry().end() ? &it->second : nullptr;
+        const auto tr = traceRegistry().find(key);
+        k.traces = tr != traceRegistry().end() ? &tr->second : nullptr;
+    };
+    if (key == 0u)
+    {
+        static KI scratch;
+        scratch = {};
+        fill(scratch);
+        scratch.bt = &ns.timings[0u];
+        return scratch;
+    }
+    if (ns.keyInfo.empty())
+        ns.keyInfo.resize(4096u);
+    for (;;)
+    {
+        const size_t mask = ns.keyInfo.size() - 1u;
+        for (size_t h = static_cast<size_t>((key * 0x9E3779B97F4A7C15ull) >> 40) & mask;; h = (h + 1u) & mask)
+        {
+            KI &k = ns.keyInfo[h];
+            if (k.key == key)
+                return k;
+            if (k.key != 0u)
+                continue;
+            if ((ns.keyInfoCount + 1u) * 2u <= ns.keyInfo.size())
+            {
+                ++ns.keyInfoCount;
+                fill(k);
+                return k;
+            }
+            break; // half full: grow, then probe again
+        }
+        std::vector<KI> old(ns.keyInfo.size() * 2u);
+        old.swap(ns.keyInfo);
+        const size_t mask2 = ns.keyInfo.size() - 1u;
+        for (const KI &k : old)
+            if (k.key != 0u)
+                for (size_t h = static_cast<size_t>((k.key * 0x9E3779B97F4A7C15ull) >> 40) & mask2;; h = (h + 1u) & mask2)
+                    if (ns.keyInfo[h].key == 0u)
+                    {
+                        ns.keyInfo[h] = k;
+                        break;
+                    }
+    }
+}
+
+VU1Interpreter::NativeState::BlockTiming &VU1NativeAccess::timingFor(VU1Interpreter::NativeState &ns, uint64_t key)
+{
+    VU1Interpreter::NativeState::KeyInfo &k = keyInfo(ns, key);
+    if (!k.bt)
+        k.bt = &ns.timings[key];
+    return *k.bt;
+}
+
 // The dispatch slot of pc, set up on first use (native block lookup, timing tables).
 VU1Interpreter::NativeState::Slot &VU1NativeAccess::slotFor(VU1Interpreter &vu, const uint8_t *code, uint32_t codeSize, uint32_t pc)
 {
@@ -792,23 +854,25 @@ VU1Interpreter::NativeState::Slot &VU1NativeAccess::slotFor(VU1Interpreter &vu, 
         sl.pairs = static_cast<uint16_t>(count);
         if (count != 0u)
         {
-            const auto it = nativeRegistry().find(vu1n::blockKey(pc, words, count * 2u));
-            if (it != nativeRegistry().end())
+            const uint64_t key = vu1n::blockKey(pc, words, count * 2u);
+            const VU1Interpreter::NativeState::KeyInfo ki = keyInfo(ns, key); // a copy: the table may grow below
+            if (ki.entry)
             {
-                if (it->second.cyc.empty())
-                    vu.nativeTiming(code, pc, count, it->second.cyc);
-                VU1Interpreter::NativeState::BlockTiming &bt = ns.timings[it->first];
+                NativeEntry &entry = *static_cast<NativeEntry *>(ki.entry);
+                if (entry.cyc.empty())
+                    vu.nativeTiming(code, pc, count, entry.cyc);
+                VU1Interpreter::NativeState::BlockTiming &bt = timingFor(ns, key);
                 if (bt.dec.empty())
-                    prepareBlockTiming(vu, bt, code, pc, count, it->second.cyc.data());
-                bt.readsEntryFlags = it->second.readsEntryFlags;
-                sl.fn = it->second.fn;
-                sl.key = it->first;
-                sl.idle = it->second.cyc.data();
+                    prepareBlockTiming(vu, bt, code, pc, count, entry.cyc.data());
+                bt.readsEntryFlags = entry.readsEntryFlags;
+                sl.fn = entry.fn;
+                sl.key = key;
+                sl.idle = entry.cyc.data();
                 sl.idleEnd = static_cast<uint16_t>(sl.idle[count - 1u] + 1u);
                 sl.bt = &bt;
                 sl.readsEntryFlags = bt.readsEntryFlags;
                 sl.memoable = bt.scalarRead == 0u;
-                sl.tail = it->second.tail;
+                sl.tail = entry.tail;
                 if (bt.scalarPairs.size() > std::size(sl.scalar))
                     sl.scalarCount = VU1Interpreter::NativeState::kScalarMany;
                 else
@@ -816,9 +880,8 @@ VU1Interpreter::NativeState::Slot &VU1NativeAccess::slotFor(VU1Interpreter &vu, 
                         sl.scalar[sl.scalarCount++] = {i, static_cast<uint8_t>(bt.dec[i].lowerUsage.latency),
                                                        bt.dec[i].lowerUsage.pipeline == VU1Interpreter::PipelineFdiv};
                 // a trace starting with this block whose other parts are in place replaces it
-                const auto tr = traceRegistry().find(it->first);
-                if (tr != traceRegistry().end() && !g_vu1nTracesOff)
-                    for (const auto &te : tr->second)
+                if (ki.traces && !g_vu1nTracesOff)
+                    for (const auto &te : *static_cast<const std::vector<std::unique_ptr<VU1TraceEntry>> *>(ki.traces))
                         if (setupTrace(vu, sl, code, codeSize, *te))
                             break;
             }
@@ -858,7 +921,7 @@ bool VU1NativeAccess::setupTrace(VU1Interpreter &vu, VU1Interpreter::NativeState
         const uint32_t count = nativeExtent(code, codeSize, te.pcs[k], words);
         if (count != te.counts[k] || vu1n::blockKey(te.pcs[k], words, count * 2u) != te.keys[k])
             return false;
-        if (nativeRegistry().find(te.keys[k]) == nativeRegistry().end())
+        if (!keyInfo(ns, te.keys[k]).entry)
             return false;
     }
     if (te.idle.empty())
@@ -866,7 +929,7 @@ bool VU1NativeAccess::setupTrace(VU1Interpreter &vu, VU1Interpreter::NativeState
         uint32_t base = 0u;
         for (uint32_t k = 0; k < te.parts; ++k)
         {
-            NativeEntry &pe = nativeRegistry().find(te.keys[k])->second;
+            NativeEntry &pe = *static_cast<NativeEntry *>(keyInfo(ns, te.keys[k]).entry);
             if (pe.cyc.empty())
                 vu.nativeTiming(code, te.pcs[k], te.counts[k], pe.cyc);
             for (uint32_t j = 0; j < te.counts[k]; ++j)
@@ -884,7 +947,7 @@ bool VU1NativeAccess::setupTrace(VU1Interpreter &vu, VU1Interpreter::NativeState
     }
     const uint32_t n0 = te.counts[0], total = static_cast<uint32_t>(te.idle.size());
     const auto prep = [&](uint64_t key, uint32_t count) -> NS::BlockTiming & {
-        NS::BlockTiming &bt = ns.timings[key];
+        NS::BlockTiming &bt = timingFor(ns, key);
         if (bt.dec.empty())
         {
             prepareBlockTiming(vu, bt, code, te.pcs[0], count, te.idle.data(), te.pairPcs.data(), n0);
@@ -946,11 +1009,10 @@ uint32_t VU1NativeAccess::hleMatch(VU1Interpreter::NativeState &ns, const uint8_
         return off != ~0u && pc >= off && pc - off + kn.regionPairs * 8u <= codeSize &&
                vu1hle::fnv(code + (pc - off), kn.regionPairs * 8u) == kn.regionHash;
     };
-    const uint64_t key = vu1hle::windowKey(code, codeSize, pc);
-    const auto known = hs.byKey.find(key);
+    uint8_t &known = hs.byKey(vu1hle::windowKey(code, codeSize, pc));
     uint8_t kv = 0u;
-    if (known != hs.byKey.end() && (known->second == 0u || matches((known->second >> 1) - 1u, known->second & 1u)))
-        kv = known->second;
+    if (known != 0xFFu && (known == 0u || matches((known >> 1) - 1u, known & 1u)))
+        kv = known;
     else
     {
         for (uint32_t k = 0; k < vu1hle::kKernelCount && !kv; ++k)
@@ -958,7 +1020,7 @@ uint32_t VU1NativeAccess::hleMatch(VU1Interpreter::NativeState &ns, const uint8_
                 for (uint32_t e = 0; e < 2 && !kv; ++e)
                     if (matches(k, e))
                         kv = static_cast<uint8_t>(((k + 1u) << 1) | e);
-        hs.byKey[key] = kv;
+        known = kv; // (no table access in between: the reference is still valid)
     }
     hs.tried[pc >> 3] = 1u;
     hs.kernel[pc >> 3] = kv;

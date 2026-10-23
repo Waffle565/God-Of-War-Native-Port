@@ -688,7 +688,46 @@ struct VU1HleState
     uint8_t tried[2048] = {};
     uint8_t kernel[2048] = {}; // (index + 1) << 1 | entry
     uint8_t stop[2048];        // !tried || kernel (NativeState::hleStop: chained blocks stop there)
-    std::unordered_map<uint64_t, uint8_t> byKey;
+    // byKey: open-addressed (key 0 = free; a key of 0 is stored as 1, a collision that only costs speed)
+    std::vector<uint64_t> keys = std::vector<uint64_t>(4096u);
+    std::vector<uint8_t> vals = std::vector<uint8_t>(4096u);
+    uint32_t count = 0;
     VU1HleState() { std::memset(stop, 1, sizeof(stop)); }
+    // the value slot of key (inserted with value 0xFF = unknown when new)
+    uint8_t &byKey(uint64_t key)
+    {
+        key = key ? key : 1u;
+        for (;;)
+        {
+            const size_t mask = keys.size() - 1u;
+            for (size_t h = static_cast<size_t>((key * 0x9E3779B97F4A7C15ull) >> 40) & mask;; h = (h + 1u) & mask)
+            {
+                if (keys[h] == key)
+                    return vals[h];
+                if (keys[h] != 0u)
+                    continue;
+                if ((count + 1u) * 2u > keys.size())
+                    break;
+                ++count;
+                keys[h] = key;
+                vals[h] = 0xFFu;
+                return vals[h];
+            }
+            std::vector<uint64_t> ok(keys.size() * 2u);
+            std::vector<uint8_t> ov(keys.size() * 2u);
+            ok.swap(keys);
+            ov.swap(vals);
+            const size_t mask2 = keys.size() - 1u;
+            for (size_t i = 0; i < ok.size(); ++i)
+                if (ok[i] != 0u)
+                    for (size_t h = static_cast<size_t>((ok[i] * 0x9E3779B97F4A7C15ull) >> 40) & mask2;; h = (h + 1u) & mask2)
+                        if (keys[h] == 0u)
+                        {
+                            keys[h] = ok[i];
+                            vals[h] = ov[i];
+                            break;
+                        }
+        }
+    }
     void reset(uint32_t i) { tried[i] = kernel[i] = 0u, stop[i] = 1u; }
 };
