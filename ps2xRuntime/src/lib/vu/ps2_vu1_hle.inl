@@ -427,12 +427,158 @@ inline uint32_t kCull(Ctx &c, uint32_t)
     return c.base + 0x18u + 13u * 8u; // fall-through: vi8 = 3, jalr vi15, vi14 (batch switch, returns to the prologue)
 }
 
+// --- kernel: skinned lit vertices without the perspective stage (self-loop of 28 pairs, the title menu's main loop) ----
+// Region (28 pairs): the loop block (its delay slot is the last pair); the fall-through is `jr vi14` into the batch switch.
+// Same inputs as skin_lit_st (ST, normal, RGBA, XYZ + weight in w, doubled) but no perspective divide: the output is
+// STQ.xy, the position xyz as floats (M_B * p + w * (M_A * p)) and the lit colour (clamped at 255.0).
+inline uint32_t kSkinLit28(Ctx &c, uint32_t)
+{
+    VU1State &s = c.s;
+    uint8_t *d = c.data;
+    __m128 f1 = ldv(s, 1), f2 = ldv(s, 2), f3 = ldv(s, 3), f4 = ldv(s, 4), f6 = ldv(s, 6), f7 = ldv(s, 7), f8 = ldv(s, 8),
+           f9 = ldv(s, 9), f10 = ldv(s, 10), acc = _mm_loadu_ps(s.acc);
+    const __m128 m11 = ldv(s, 11), m12 = ldv(s, 12), m13 = ldv(s, 13), m14 = ldv(s, 14), m15 = ldv(s, 15), m16 = ldv(s, 16),
+                 m17 = ldv(s, 17), m18 = ldv(s, 18), m20 = ldv(s, 20), m21 = ldv(s, 21), m22 = ldv(s, 22), m23 = ldv(s, 23),
+                 m24 = ldv(s, 24), m25 = ldv(s, 25), m26 = ldv(s, 26), m27 = ldv(s, 27), m28 = ldv(s, 28), m29 = ldv(s, 29),
+                 m31 = ldv(s, 31);
+    const uint32_t ibits = 0x437F8000u; // 255.0
+    float iv;
+    std::memcpy(&iv, &ibits, 4);
+    const __m128 I = _mm_set1_ps(iv);
+    const __m128 z = _mm_setzero_ps();
+    int32_t vi1 = s.vi[1], vi2 = s.vi[2], vi3 = s.vi[3], vi5 = s.vi[5];
+    if (vi5 <= 0) // the loop would wrap the 16-bit counter: left to the native blocks
+        return kDecline;
+    const int32_t vi4 = s.vi[4];
+    uint64_t cyc = c.cycle;
+    do
+    {
+        f9 = bl<3>(f9, itof<12>(f10));                                     // p0
+        f10 = bl<3>(f10, ldq(d, vi2 + 1));
+        f2 = bl<7>(f2, madd(acc, m14, bc<2>(f1)));                         // p1
+        f7 = _mm_max_ps(f6, m11);                                          // p2
+        f3 = bl<7>(f3, ldq(d, vi2 + 2));
+        acc = bl<7>(acc, _mm_add_ps(m23, z));                              // p3
+        acc = bl<7>(acc, madd(acc, m20, bc<0>(f1)));                       // p4
+        {
+            uint32_t w;
+            std::memcpy(&w, d + qa(vi2 + 4) + 12, 4);
+            vi1 = static_cast<int16_t>(w & 0xFFFFu);
+        }
+        acc = bl<7>(acc, madd(acc, m21, bc<1>(f1)));                       // p5
+        acc = bl<7>(acc, madd(acc, m22, bc<2>(f1)));                       // p6
+        f2 = madd(acc, f2, bc<3>(f1));                                     // p7
+        f3 = bl<7>(f3, itof<15>(f3));                                      // p8
+        acc = bl<7>(acc, _mm_mul_ps(m27, bc<0>(f7)));                      // p9
+        vi1 = sx(vi1 + vi1);
+        acc = bl<7>(acc, madd(acc, m28, bc<1>(f7)));                       // p10
+        acc = bl<8>(acc, _mm_add_ps(f7, bc<2>(f7)));                       // p11
+        f7 = _mm_add_ps(acc, _mm_mul_ps(m29, _mm_set1_ps(1.0f)));          // p12
+        f1 = bl<8>(f1, _mm_castsi128_ps(_mm_set1_epi32(vi1)));
+        acc = _mm_mul_ps(m24, bc<0>(f3));                                  // p13
+        f1 = bl<7>(f1, ldq(d, vi2 + 4));
+        acc = madd(acc, m25, bc<1>(f3));                                   // p14
+        f6 = madd(acc, m26, bc<2>(f3));                                    // p15
+        f4 = ldq(d, vi2 + 3);
+        acc = _mm_add_ps(m31, z);                                          // p16
+        f7 = madd(acc, f8, f7);                                            // p17
+        f1 = itof<4>(f1);                                                  // p18
+        f8 = itof<0>(f4);                                                  // p19
+        vi2 = sx(vi2 + vi4);
+        acc = _mm_mul_ps(m16, bc<0>(f3));                                  // p20
+        f7 = _mm_min_ps(f7, I);                                            // p21
+        stq<7>(d, vi3 + 1, f9);
+        acc = madd(acc, m17, bc<1>(f3));                                   // p22
+        acc = madd(acc, m18, bc<2>(f3));                                   // p23
+        stq<7>(d, vi3 + 4, f2);
+        f6 = madd(acc, f6, bc<3>(f1));                                     // p24
+        vi5 = sx(vi5 - 1);
+        acc = bl<7>(acc, _mm_add_ps(m15, z));                              // p25
+        stq<15>(d, vi3 + 3, f7);
+        acc = bl<7>(acc, madd(acc, m12, bc<0>(f1)));                       // p26
+        acc = bl<7>(acc, madd(acc, m13, bc<1>(f1)));                       // p27
+        vi3 = sx(vi3 + vi4);
+        cyc += 28u;
+    } while (vi5 != 0);
+    stv(s, 1, f1); stv(s, 2, f2); stv(s, 3, f3); stv(s, 4, f4); stv(s, 6, f6); stv(s, 7, f7); stv(s, 8, f8); stv(s, 9, f9);
+    stv(s, 10, f10);
+    _mm_storeu_ps(s.acc, acc);
+    s.i = iv;
+    s.vi[1] = vi1;
+    s.vi[2] = vi2;
+    s.vi[3] = vi3;
+    s.vi[5] = vi5;
+    c.cycle = cyc;
+    return c.base + 28u * 8u; // fall-through: jr vi14 (batch switch)
+}
+
+// --- kernel: unlit vertices with ST, plain transform (self-loop of 11 pairs, Q from the previous pass) -----------------
+// Region (11 pairs). Input: ST ints (xy, 12 fractional bits) at vi2 + 1, XYZ ints at vi2, a qword at vi2 - 1;
+// output at vi3: ST*Q, position*Q, a converted qword; the DIV is vf0w / vf1z of this pass, used by the next one.
+inline uint32_t kUnlit11(Ctx &c, uint32_t)
+{
+    VU1State &s = c.s;
+    uint8_t *d = c.data;
+    __m128 f1 = ldv(s, 1), f2 = ldv(s, 2), f3 = ldv(s, 3), f4 = ldv(s, 4), f5 = ldv(s, 5), f6 = ldv(s, 6), f7 = ldv(s, 7),
+           f8 = ldv(s, 8), f9 = ldv(s, 9), f10 = ldv(s, 10), acc = _mm_loadu_ps(s.acc);
+    const __m128 m20 = ldv(s, 20), m21 = ldv(s, 21), m22 = ldv(s, 22), m23 = ldv(s, 23);
+    const __m128 z = _mm_setzero_ps();
+    float q = s.q;
+    int32_t vi2 = s.vi[2], vi3 = s.vi[3], vi5 = s.vi[5];
+    if (vi5 <= 0)
+        return kDecline;
+    const int32_t vi4 = s.vi[4];
+    uint64_t cyc = c.cycle;
+    do
+    {
+        f8 = bl<3>(f8, _mm_add_ps(f7, z));                                 // p0
+        f7 = bl<3>(f7, ldq(d, vi2 + 1));
+        acc = bl<7>(acc, _mm_mul_ps(m21, bc<2>(f1)));                      // p1
+        vi2 = sx(vi2 + vi4);
+        f2 = bl<7>(f2, _mm_sub_ps(acc, _mm_mul_ps(m20, f2)));             // p2
+        f1 = bl<7>(f1, ldq(d, vi2));
+        f6 = _mm_add_ps(f5, z);                                            // p3
+        vi5 = sx(vi5 - 1);
+        f4 = bl<7>(f4, ftoi<4>(f3));                                       // p4
+        stq<7>(d, vi3 + 1, f9);
+        f9 = bl<7>(f9, _mm_mul_ps(f8, _mm_set1_ps(q)));                    // p5
+        vi3 = sx(vi3 + vi4);
+        f3 = bl<7>(f3, _mm_mul_ps(f2, _mm_set1_ps(q)));                    // p6
+        f5 = ldq(d, vi2 - 1);
+        acc = bl<4>(acc, _mm_add_ps(z, bc<3>(m22)));                       // p7
+        {
+            const float w = vu1n::lane<2>(f1);
+            q = w == 0.0f ? (std::signbit(w) ? -FLT_MAX : FLT_MAX) : 1.0f / w;
+        }
+        acc = bl<3>(acc, _mm_sub_ps(z, z));                                // p8
+        stq<7>(d, vi3, f4);
+        f2 = bl<7>(f2, madd(acc, f1, m23));                                // p9
+        {                                                                  // p10
+            const __m128 old = f10;
+            f10 = ftoi<0>(f6);
+            stq<15>(d, vi3 - 1, old);
+        }
+        cyc += 11u;
+    } while (vi5 != 0);
+    stv(s, 1, f1); stv(s, 2, f2); stv(s, 3, f3); stv(s, 4, f4); stv(s, 5, f5); stv(s, 6, f6); stv(s, 7, f7); stv(s, 8, f8);
+    stv(s, 9, f9); stv(s, 10, f10);
+    _mm_storeu_ps(s.acc, acc);
+    s.q = q;
+    s.vi[2] = vi2;
+    s.vi[3] = vi3;
+    s.vi[5] = vi5;
+    c.cycle = cyc;
+    return c.base + 11u * 8u; // fall-through: jr vi14 (batch switch)
+}
+
 inline const Kernel kKernels[] = {
     {"unlit_st", 0x2e8bdf18116c01cdull, 20u, {0x00u, 0x58u}, kUnlitSt},
     {"lit_st", 0x7c187fbcd9b8ba29ull, 24u, {0x00u, ~0u}, kLitSt},
     {"skin_lit_st", 0xb8138c8401f6f173ull, 33u, {0x00u, ~0u}, kSkinLitSt},
     {"cull", 0xe0b2f1a1fa9e29fbull, 19u, {0x18u, ~0u}, kCull<false>},
     {"cull_swap", 0x4e6af90f38ca205bull, 19u, {0x18u, ~0u}, kCull<true>},
+    {"skin_lit28", 0x5181a0b08a6d0989ull, 28u, {0x00u, ~0u}, kSkinLit28},
+    {"unlit11", 0xa2eaa96b750883ceull, 11u, {0x00u, ~0u}, kUnlit11},
 };
 constexpr uint32_t kKernelCount = sizeof(kKernels) / sizeof(kKernels[0]);
 
