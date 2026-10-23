@@ -281,3 +281,78 @@ Handoff: worktree ext/PS2Recomp-kl-core1 (branch agent/sw-core1), PC build `out/
   4.35 s per 5 s) is the limit. Core 0 now has ~1.8 s per 5 s free.
 - Note: the `[gs-gl]` `clut` op time is mostly the draws it flushes (the CLUT load itself is `[gs-hw-cpu] clut_ms`,
   ~10 us each); `?` is the `Kicks` op (strip/fan vertex runs, 360 k per 5 s).
+
+## Core 1 budget: idle IOP batches and the import cache (ext agent/sw-core1, 2026-10-23, PC only)
+Why: in the console fight core 1 runs the EE thread: `ee_ms` ~2.05 s + `iop_ms` ~1.6 s per 5 s at 29 fps (`update_con2`).
+60 fps needs EE game code + IOP under 16.7 ms per frame. The IOP is paid per wall second (~5.3 ms per 16.7 ms
+frame at today's cost) and the EE per frame (~14 ms), so both have to shrink.
+
+**What the IOP time is** (PC, Release, `PS2X_IOP_NATIVE_STATS=1`, the new-game fight on the Aegean ship = the console
+bot's fight, inline IOP as on the Switch): per 5 s ~17 M IOP instructions, ~185 k import calls (libsd `sceSdGetParam`
+52 k, thbase 27 k, `sceSdGetAddr` 24 k, intrman suspend/resume 18 k each, thsemap 10 k), 360 k `runCycles` calls of which
+~348 k found no ready thread. Sampling profile of the IOP part of the EE thread (tools/sample_prof.py, linked with
+`/MAP`): generated IRX code 38 %, sound mixing done inline in `SoundEngine::sync` (a libsd read mixes the samples the
+worker has not been handed yet) 34 %, import decode/dispatch 8 %, the step loop 6.5 %, the IOP kernel 5 %.
+The console fight (1.6 s) is ~5x the PC fight (~0.24-0.33 s); per IOP instruction the console is ~2.6x the PC, as
+for the EE.
+
+**Idle batches** (iop_emulator.cpp `deferIdleBatch` / `flushDeferredIdle`, iop_subsystem.cpp `IdleEntry`,
+ps2_runtime.cpp `advanceIopEeCycles`; `GOW_IOP_IDLE_DEFER=<IOP cycles>`, default 16384 ~0.44 ms of IOP time,
+`0` = off). The EE grants the IOP its cycles in batches of >= 512 at checkpoints (docs/iop-thread.md); ~97 % of
+those batches find no ready IOP thread and only move the IOP clock (and the sound clock) to their end. When a run ends
+that way, `runCycles` records the IOP's next event (`idleHorizon`: the earliest Delay-thread wake, timer compare or
+overflow, pending DMA completion, scheduled guest callback). A later due batch that ends at or before it is not run:
+the inline path adds it to `deferredIdleCycles` (no perf scope, no run) up to the limit. The deferred cycles run as one
+`runCycles` call before the next real batch (`takePendingIopCycles`) and at the start of every EE-side IOP entry
+(RPC, SIF transfer, module load/stop, IOP memory alloc/free/write/zero: `IdleEntry` in IopSubsystem, so HLE services
+that run IOP code are covered too). Exactness: a run of idle batches ends in the same state whether it is run batch by
+batch or as one call (the idle loop jumps straight to the end; the sound engine's `advanceTo` is monotonic and mixes
+the same samples), and every entry sees the IOP clock where batch-by-batch running has it. The entry guard also drops
+the horizon at the end of the entry, because an RPC's nested `runReadyThreads` runs recompute it and the server code
+can schedule events after them (the first version missed this: a SIF DMA completion callback 2000 cycles after an
+RPC). Check built in: every deferred run must be exactly one idle step with no thread run; otherwise `[iop-idle]
+violation ...` is printed (first 20) and counted (`[IOP:native] ... idle_defer batches= runs= violations=`, with
+`PS2X_IOP_NATIVE_STATS=1`). The deferral hands the sound clock to the mixer at once (`advanceTo(soundBase +
+deferred)`), so the worker mixes while the EE runs. Only the inline IOP defers; with `GOW_IOP_THREAD=1` nothing changes.
+- PC results: `runCycles` calls 360 k -> ~30 k (save scene) / ~37 k (fight) per 5 s, violations 0 over whole runs
+  (title, menus, loading, gameplay). `iop_ms` without stats, last 5 windows: save scene (perf_run default script)
+  113 -> 96 ms per 5 s (-15 %), fight 241.6 -> 219.0 ms (-9 %). With the stats on (which make every call dearer)
+  188 -> 118 and 331 -> ~250.
+- Checks (inline IOP, deferral on): zone gate `port/core1/gate-idle/20261023_200157` slots 0-4 ok, 60 fps, game speed
+  1.01, no `[iop-idle]` line; savetest `port/core1/savetest-idle` 129 pages changed, card directory intact, violations 0
+  (the save screens are the heaviest RPC path); devkitA64 `-fsyntax-only` with the Switch build's flags on the three
+  touched files: ok. Not yet run on the console.
+- Side effect: `waits` in the sound line rose (0 -> 13-48 ms per 5 s on PC): the IOP code now reaches its next libsd
+  read sooner after a batch was handed to the mixer and waits for it. Already counted in the numbers above.
+
+**Import decode cache** (iop_emulator.cpp `decodeImport`): `IopImportRegistry::decode` walked back up to 64 KB of IOP
+RAM to the import table on every import call (and as far for a plain `jr ra` that is not a stub); the result is now
+kept per address (keyed on the delay-slot word) and dropped when a module is loaded or stopped, ~200 misses per 5 s.
+PC: decode 5-6 -> 3 ms per 5 s with stats (most of what is left is the stats' own clock reads). Always on.
+
+**Tried, not kept**: static load-delay tracking in tools/iop/iopn_gen.py (the commit check of a pending load emitted
+only where a load can precede; dispatch hands an entry with a pending load to the interpreter): 86 % fewer checks,
+989snd 10.8 -> 7.1 MB of source, but no measurable PC gain (IOP cpu 155 ms for 17.3 M instructions vs 162 ms for
+17.7 M), so the generated files stay as they are (the patched generator is in the sw-core1 handoff scratchpad only;
+worth a console A/B only if the A57's instruction cache turns out to matter).
+
+**Where the rest of core 1 goes and what is left**:
+- The IOP on its own thread on core 0 is now the largest core-1 lever: the 2026-10-19 test (above, "Core 1: GS stage
+  fast path...") was slower only because core 0 was full (deko3d 2.2-2.7 s per 5 s) and fps were bound by VU1. Since
+  `update_con2` core 0 has ~1.8 s per 5 s free; the `IopRun` thread needs ~0.6-0.8 s. Console A/B to run (sw-vu1k
+  owns the console): env.txt `GOW_IOP_THREAD=1 GOW_IOP_SPIN=0 GOW_IOP_LEAD=4194304`; expected `iop_ms` 1.6 -> ~0.2 s
+  per 5 s on core 1. Idle deferral does not apply there (the thread runs every batch).
+- Inline sound mixing (34 % of the PC IOP time): the Switch already hands the mixer 32-sample batches
+  (`GOW_SOUND_BATCH=32`, docs/sound.md); reads must see exactly the samples mixed so far, so the remainder is mixed
+  in the reading thread. Moving more to the worker needs earlier hand-offs at a wake (svc) each.
+- Generated IRX code (38 %): the generated code keeps the guest registers in `cpu.gpr[]` behind every memory access
+  (IOP RAM is a byte array, so the compiler cannot keep them in host registers) and does an `m_owned` memset per
+  store; a register-caching generator is the next step there.
+- EE game code (~14 ms per frame on the console) has a flat profile (docs/vu1-gpu.md "EE thread profile"); PC sample:
+  `dispatchGuestBranch` ~5 % of the EE game code (branch ring, checkpoint, table lookup), VCRUNTIME memcpy/memset ~8 %
+  (callers not resolved by the flat profile). No single cut brings the EE to 60 fps.
+- Handoff: worktree ext/PS2Recomp-kl-core1 (branch agent/sw-core1: fe3ccc3 = the IOP change on 06b18e2, 7da6cae = merge of
+  agent/sw-vu1gpu a26a44a, the lock-free sound hand-off; rebuilt and re-checked on PC after the merge), PC build
+  `out/build-pc` (now links with `/MAP` for tools/sample_prof.py); module dumps and the fight pad script in the
+  session scratchpad (`core1/iopdump`, `core1/fight_guion.txt`); Switch syntax check of the touched files with the
+  build's flags: scratchpad `core1/syn.sh` (WSL, uses /root/gow-switch-vgpu's compile_commands.json).
