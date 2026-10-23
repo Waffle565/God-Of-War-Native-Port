@@ -36,6 +36,7 @@ struct Kernel
     uint32_t regionPairs;
     uint32_t entryOff[2]; // byte offsets of the entry blocks (second: ~0u when only one)
     KernelFn fn;
+    bool keepsQ = false; // runs no DIV/EFU: an FDIV/EFU entry in flight stays valid (else the kernel's Q replaces it)
 };
 
 // --- plain float helpers (SSE; sse2neon on the Switch) -----------------------------------------------------------------
@@ -571,6 +572,90 @@ inline uint32_t kUnlit11(Ctx &c, uint32_t)
     return c.base + 11u * 8u; // fall-through: jr vi14 (batch switch)
 }
 
+// --- kernel: batch-front scatter loops (the skinned module's per-batch set-up: qwords to the offsets of a packed list) ----
+// Head (pair 0): itof12 vf12, vf11 | mtir vi1, vf11x; lqi.<Ld> vf1, (vi2++); ibgtz vi1 -> tail; mr32 vf11, vf11 (delay);
+// pair 4: ftoi4 vf12, vf12 | ibeq vi1, vi0 -> exit; nop; then vf11 = mr32(ftoi4(itof12(vf12))) (the next 16-bit offsets of
+// the packed lanes) and the tail; tail (pair 9): [iadd vi3, vi1, vi12 when Based]; b -> head; sq.<St> vf1, 0(vi3 | vi1).
+// No FMAC flags are written (ITOF/FTOI/MR32 leave MAC and status alone) and no Q: values are exact by construction (the
+// native blocks' own helpers). Cycles as the native blocks count them: each block's idle-pipeline issue table (stalls
+// inside a block only, 4-cycle FMAC / MR32 latency; none across block starts): head block 4, tail 3 (Based) / 2,
+// pair-4 block 2, reload block 12 / 11, i.e. positive pass 7 / 6, reload pass 18 / 17, exit pass 6 (head to exit pc). Entries: the tail (0x48, after a positive head) and
+// pair 4 (0x20, after a non-positive head). Exit pc: head + 0x60 (Based) / + 0x58.
+template <int Ld, bool Based>
+inline uint32_t kScatter(Ctx &c, uint32_t entry)
+{
+    VU1State &s = c.s;
+    uint8_t *d = c.data;
+    __m128 f1 = ldv(s, 1), f11 = ldv(s, 11), f12 = ldv(s, 12);
+    int32_t vi1 = s.vi[1], vi2 = s.vi[2], vi3 = s.vi[3];
+    const int32_t vi12 = s.vi[12];
+    uint64_t cyc = c.cycle;
+    const uint32_t exitPc = c.base + (Based ? 0x60u : 0x58u);
+    const auto store = [&]() {
+        if constexpr (Based)
+        {
+            vi3 = sx(vi1 + vi12);
+            stq<Ld>(d, vi3, f1);
+        }
+        else
+            stq<Ld>(d, vi1, f1);
+    };
+    // the reload pass from pair 4 on (vi1 < 0): returns true at the exit (vi1 == 0)
+    const auto pair4 = [&]() {
+        f12 = ftoi<4>(f12);
+        if ((vi1 & 0xFFFF) == 0)
+            return true;
+        f11 = itof<12>(f12);
+        f11 = ftoi<4>(f11);
+        f11 = _mm_shuffle_ps(f11, f11, _MM_SHUFFLE(0, 3, 2, 1));
+        store();
+        return false;
+    };
+    uint32_t next = c.base; // the head
+    if (entry == 0u) // tail: the store of a positive pass
+    {
+        store();
+        cyc += Based ? 3u : 2u;
+    }
+    else if (pair4())
+    {
+        cyc += 2u;
+        next = exitPc;
+    }
+    else
+        cyc += Based ? 14u : 13u;
+    for (uint32_t n = 0; next != exitPc && n < 65536u; ++n)
+    {
+        f12 = itof<12>(f11);
+        vi1 = vu1n::laneBits16<0>(f11);
+        if constexpr (Ld == 15)
+            f1 = ldq(d, static_cast<uint16_t>(vi2));
+        else
+            f1 = bl<Ld>(f1, ldq(d, static_cast<uint16_t>(vi2)));
+        vi2 = sx(vi2 + 1);
+        f11 = _mm_shuffle_ps(f11, f11, _MM_SHUFFLE(0, 3, 2, 1));
+        if (static_cast<int16_t>(vi1) > 0)
+        {
+            store();
+            cyc += Based ? 7u : 6u;
+        }
+        else if (pair4())
+        {
+            cyc += 6u;
+            next = exitPc;
+        }
+        else
+            cyc += Based ? 18u : 17u;
+    }
+    stv(s, 1, f1); stv(s, 11, f11); stv(s, 12, f12);
+    s.vi[1] = vi1;
+    s.vi[2] = vi2;
+    if constexpr (Based)
+        s.vi[3] = vi3;
+    c.cycle = cyc;
+    return next;
+}
+
 inline constexpr Kernel kKernels[] = {
     {"unlit_st", 0x2e8bdf18116c01cdull, 20u, {0x00u, 0x58u}, kUnlitSt},
     {"lit_st", 0x7c187fbcd9b8ba29ull, 24u, {0x00u, ~0u}, kLitSt},
@@ -579,6 +664,10 @@ inline constexpr Kernel kKernels[] = {
     {"cull_swap", 0x4e6af90f38ca205bull, 19u, {0x18u, ~0u}, kCull<true>},
     {"skin_lit28", 0x5181a0b08a6d0989ull, 28u, {0x00u, ~0u}, kSkinLit28},
     {"unlit11", 0xa2eaa96b750883ceull, 11u, {0x00u, ~0u}, kUnlit11},
+    {"scat_b", 0x30421310a686ffb1ull, 12u, {0x48u, 0x20u}, kScatter<15, true>, true},
+    {"scat_bw", 0xfb0e4fb24245d179ull, 12u, {0x48u, 0x20u}, kScatter<8, true>, true},
+    {"scat", 0x8fb4c370967d9ff8ull, 11u, {0x48u, 0x20u}, kScatter<15, false>, true},
+    {"scat_w", 0x8b442df4a19fae58ull, 11u, {0x48u, 0x20u}, kScatter<8, false>, true},
 };
 constexpr uint32_t kKernelCount = sizeof(kKernels) / sizeof(kKernels[0]);
 // the reach of a match around its pc (VU1NativeAccess::codeChanged resets only the pcs a code change can affect)

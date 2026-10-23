@@ -1177,7 +1177,8 @@ bool VU1Interpreter::runNative(StepContext &context)
                     // the passes ran without the cycle model: nothing is in flight any more at the kernel's end
                     ns.histCount = 0u;
                     ns.arraysReadyBy = 0u;
-                    m_fdiv.valid = false; // Q is the kernel's last DIV (an FDIV entry from before would commit an old Q)
+                    if (!kn.keepsQ)
+                        m_fdiv.valid = false; // Q is the kernel's last DIV (an FDIV entry from before would commit an old Q)
                     m_state.pc = r & 0x3FFFu;
                     ++blocks;
                     continue;
