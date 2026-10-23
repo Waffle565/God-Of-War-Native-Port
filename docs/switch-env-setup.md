@@ -61,4 +61,4 @@ recording; the `.rec` recordings themselves live under the Windows scratchpad / 
   `port/switch/nsp/out/update_vgpu1/atmosphere/contents/0100D0D0600A0000/exefs/{main 47.2 MB, main.npdm 992 B}` (the
   vsplit5 package was 47.2 MB, same npdm size). Not run on the console in this task.
 - Harnesses `/root/vu1h/vg0` (x86) and `vga0` (aarch64 under qemu-user) rebuilt and start.
-- Backup: `wsl --export Ubuntu D:wsl-backupBuntu-20261023.tar` (9.2 GB), taken after the build.
+- Backup: `wsl --export Ubuntu D:\wsl-backup\ubuntu-20261023.tar` (9.2 GB), taken after the build.
