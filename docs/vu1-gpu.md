@@ -5,6 +5,11 @@ look the same (pixel comparison against the CPU path, tolerances documented). Pl
 (2) a plain-float CPU reference (HLE) compared with the exact path on the recordings, which also says whether a fast
 CPU HLE alone reaches the target, (3) GPU path, (4) console fps / per-core busy / screenshots.
 
+## Addendum (2026-10-23, step 1 + fight replay A/B)
+- Second fight run (DIRECT+TRACES, HLE off, update_vgpu3): menu 40 fps again (31 without), fight 16-26 (scenes vary); not worse than the baseline 15-24 -> `GOW_VU1N_TRACES=1 DIRECT=1` is now the Switch default (ext 3df92c2).
+- Deterministic fight replay on the console (`fight.rec`, 6000 warm runs): no env 137.2 ms, DIRECT+TRACES 128.6, DIRECT+TRACES+HLE 108.4 (-21 %), HLE alone 118.1.
+- Leftover on fight.rec with HLE on (x86 harness block profile): the batch switch / per-object code (pc 00d8/00e0/0458/1258/1748/0350), ~73 dispatches and ~10 pairs per block per record, ~315 A57 cycles per block: this is the next target (step 3), not another loop kernel.
+
 ## Handoff (2026-10-23 later: menu kernels, ext agent/sw-vu1gpu)
 - Two new kernels in ps2_vu1_hle.inl: `skin_lit28` (hash 5181a0b08a6d0989, 28-pair self-loop, no perspective divide: STQ.xy, position
   M_B*p + w*(M_A*p) as floats, lit colour min 255.0; entered after the batch-switch jalr) and `unlit11` (a2eaa96b750883ce, 11-pair
