@@ -1039,6 +1039,135 @@ bool VU1NativeAccess::hleStopAt(const VU1NativeCtx &n, uint32_t pc)
     return hleMatch(ns, context.vuCode, context.codeSize, pc) != 0u;
 }
 
+// One kernel call (kv: hleMatch's value at pc) as runNative makes it between two blocks; returns the kernel's next pc,
+// or vu1hle::kDecline (nothing changed: the block at pc runs natively).
+VU1N_INLINE uint32_t VU1NativeAccess::hleRun(VU1Interpreter &vu, uint32_t pc, uint32_t kv, uint64_t budgetEnd, uint8_t *data)
+{
+    using NS = VU1Interpreter::NativeState;
+    NS &ns = *vu.m_native;
+    const uint32_t k = (kv >> 1) - 1u, e = kv & 1u;
+    const vu1hle::Kernel &kn = vu1hle::kKernels[k];
+    vu1hle::Ctx hc{vu.m_state, data, vu.m_cycle, budgetEnd, pc - kn.entryOff[e], &ns.macRing, &ns.clipRing, &vu.m_workingClip};
+    const uint64_t c0 = vu.m_cycle;
+    static const bool timeK = std::getenv("GOW_VU1_HLE_TIME") != nullptr; // two clock reads per call: opt-in (the Switch has GOW_PERF_DIAG on)
+    const uint64_t t0 = timeK ? vu1hle::nowNs() : 0u;
+    const uint32_t r = kn.fn(hc, e);
+    if (timeK)
+        vu1hle::stats().ns[k].fetch_add(vu1hle::nowNs() - t0, std::memory_order_relaxed);
+    if (r == vu1hle::kDecline)
+        return r;
+    vu1hle::stats().calls[k].fetch_add(1u, std::memory_order_relaxed);
+    vu1hle::stats().cycles[k].fetch_add(vu.m_cycle - c0, std::memory_order_relaxed);
+    // the passes ran without the cycle model: nothing is in flight any more at the kernel's end. One history entry stands
+    // for the kernel (every lane written, ready at its start: no stalls, the same timing as an empty history), so the next
+    // block's entry timing is memoised by predecessor (entryTimingAfter) instead of computed by blockTiming after every
+    // kernel call.
+    static const NS::BlockTiming hleBt = [] {
+        NS::BlockTiming b;
+        b.writeMask[0] = b.writeMask[1] = b.writeMask[2] = ~0ull;
+        return b;
+    }();
+    static const uint8_t zeroCyc[1] = {0u};
+    NS::Hist &h = ns.hist[ns.histNext];
+    h.bt = &hleBt;
+    h.cyc = zeroCyc;
+    h.start = c0;
+    h.end = vu.m_cycle;
+    h.cycId = 0u;
+    ns.histNext = (ns.histNext + 1u) % NS::kHist;
+    ns.histCount = 1u;
+    ns.arraysReadyBy = 0u;
+    if (!kn.keepsQ)
+        vu.m_fdiv.valid = false; // Q is the kernel's last DIV (an FDIV entry from before would commit an old Q)
+    return r;
+}
+
+namespace
+{
+    // the block a chain "returns from" when it ran kernels and must hand the pc after them to runNative (hleChain): no
+    // pairs, its timing finished (kVu1nFinished), the pc in VU1NativeCtx::resume
+    uint32_t vu1nHleResume(VU1NativeCtx &n) { return n.resume | kVu1nFinished; }
+}
+
+// A direct chain (chainStep) about to enter pc, whose hleStop byte is set: runs the kernel there itself, as runNative
+// would right after the finished block (the chain has stored its registers and done finishBlockTiming / commitDue, so
+// the state is the one runNative's loop would see), then further kernels at the pcs they return, and sets the block
+// after them up as chainStep sets up a successor (runNative's order: the slot must hold a function, the stop / budget
+// test before each kernel). Returns 0: no kernel at pc (or it declined: nothing changed), the chain goes on as before;
+// 1: the next block is set up (a generated block, or a stub slot whose function hands the pc to runNative); 2: runNative
+// dispatches pc (bisecting / split mode / a slot runNative must set up first).
+uint32_t VU1NativeAccess::hleChain(VU1NativeCtx &n, uint32_t pc)
+{
+    using NS = VU1Interpreter::NativeState;
+    VU1Interpreter &vu = *n.vu;
+    NS &ns = *vu.m_native;
+    if (ns.limit != ~0u) // bisecting: runNative skips the kernels
+        return 0u;
+    if (ns.splitMode == 1) // GOW_VU1_SPLIT: runNative's split hooks around each dispatch (the former hand-over)
+        return hleStopAt(n, pc) ? 2u : 0u;
+    VU1HleState &hs = *ns.hle;
+    const auto &context = *static_cast<const VU1Interpreter::StepContext *>(n.context);
+    if (!hs.tried[pc >> 3])
+        hleMatch(ns, context.vuCode, context.codeSize, pc);
+    uint32_t kv = hs.kernel[pc >> 3];
+    if (kv == 0u)
+        return 0u;
+    if (!ns.slots[pc >> 3].known || !ns.slots[pc >> 3].fn)
+        return 2u; // runNative sets the slot up (or leaves for the exact engine) before it looks for a kernel
+    uint32_t cur = pc;
+    for (bool first = true;; first = false)
+    {
+        const uint32_t r = hleRun(vu, cur, kv, context.budgetEnd, n.data);
+        if (r == vu1hle::kDecline)
+        {
+            if (first)
+                return 0u; // the block at pc runs natively, as runNative does after a decline
+            break;         // runNative calls it again (a decline changes nothing) and runs the block
+        }
+        if (ns.diag)
+            ++ns.nativeBlocks; // runNative counts each kernel call as a block
+        cur = r & 0x3FFFu;
+        const uint32_t cpc = cur & 0x3FF8u;
+        if (vu.m_stopRequested || vu.m_cycle >= n.budgetEnd)
+            break;
+        NS::Slot &next = ns.slots[cpc >> 3];
+        if (!next.known || !next.fn)
+            break;
+        if (!hs.tried[cpc >> 3])
+            hleMatch(ns, context.vuCode, context.codeSize, cpc);
+        kv = hs.kernel[cpc >> 3];
+        if (kv != 0u)
+            continue;
+        if (cur != cpc)
+            break;
+        const uint64_t nstart = vu.m_cycle;
+        n.slot = &next;
+        n.start = nstart;
+        uint32_t cycId = 0u;
+        const uint8_t *ncyc = next.readsEntryFlags ? entryTiming(vu, next, cycId) : next.idle;
+        n.cyc = ncyc;
+        n.cycId = cycId;
+        if (const VU1TailDesc *desc = next.tail)
+        {
+            VU1FlagTail &t = ns.hist[ns.histNext].tail;
+            t.desc = desc;
+            t.cyc = ncyc;
+            t.start = nstart;
+            n.tail = &t;
+        }
+        return 1u;
+    }
+    static const NS::Slot resumeSlot = [] {
+        NS::Slot s;
+        s.fn = &vu1nHleResume;
+        s.known = true;
+        return s;
+    }();
+    n.resume = cur;
+    n.slot = &resumeSlot;
+    return 1u;
+}
+
 void VU1Interpreter::commitEverythingNow()
 {
     const uint64_t keep = m_cycle;
@@ -1161,42 +1290,9 @@ bool VU1Interpreter::runNative(StepContext &context)
                 VU1NativeAccess::hleMatch(ns, context.vuCode, context.codeSize, pc);
             if (const uint32_t kv = hs.kernel[pc >> 3])
             {
-                const uint32_t k = (kv >> 1) - 1u, e = kv & 1u;
-                const vu1hle::Kernel &kn = vu1hle::kKernels[k];
-                vu1hle::Ctx hc{m_state, context.vuData, m_cycle, context.budgetEnd, pc - kn.entryOff[e], &ns.macRing, &ns.clipRing, &m_workingClip};
-                const uint64_t c0 = m_cycle;
-                static const bool timeK = std::getenv("GOW_VU1_HLE_TIME") != nullptr; // two clock reads per call: opt-in (the Switch has GOW_PERF_DIAG on)
-                const uint64_t t0 = timeK ? vu1hle::nowNs() : 0u;
-                const uint32_t r = kn.fn(hc, e);
-                if (timeK)
-                    vu1hle::stats().ns[k].fetch_add(vu1hle::nowNs() - t0, std::memory_order_relaxed);
+                const uint32_t r = VU1NativeAccess::hleRun(*this, pc, kv, context.budgetEnd, context.vuData);
                 if (r != vu1hle::kDecline)
                 {
-                    vu1hle::stats().calls[k].fetch_add(1u, std::memory_order_relaxed);
-                    vu1hle::stats().cycles[k].fetch_add(m_cycle - c0, std::memory_order_relaxed);
-                    // the passes ran without the cycle model: nothing is in flight any more at the kernel's end. One
-                    // history entry stands for the kernel (every lane written, ready at its start: no stalls, the same
-                    // timing as an empty history), so the next block's entry timing is memoised by predecessor
-                    // (entryTimingAfter) instead of computed by blockTiming after every kernel call.
-                    {
-                        static const NativeState::BlockTiming hleBt = [] {
-                            NativeState::BlockTiming b;
-                            b.writeMask[0] = b.writeMask[1] = b.writeMask[2] = ~0ull;
-                            return b;
-                        }();
-                        static const uint8_t zeroCyc[1] = {0u};
-                        NativeState::Hist &h = ns.hist[ns.histNext];
-                        h.bt = &hleBt;
-                        h.cyc = zeroCyc;
-                        h.start = c0;
-                        h.end = m_cycle;
-                        h.cycId = 0u;
-                        ns.histNext = (ns.histNext + 1u) % NativeState::kHist;
-                        ns.histCount = 1u;
-                    }
-                    ns.arraysReadyBy = 0u;
-                    if (!kn.keepsQ)
-                        m_fdiv.valid = false; // Q is the kernel's last DIV (an FDIV entry from before would commit an old Q)
                     m_state.pc = r & 0x3FFFu;
                     ++blocks;
                     continue;

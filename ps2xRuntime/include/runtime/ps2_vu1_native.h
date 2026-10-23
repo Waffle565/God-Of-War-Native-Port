@@ -90,6 +90,7 @@ struct VU1NativeCtx
     uint32_t cycId = 0;          // its timing id (finishBlockTiming)
     uint64_t budgetEnd = 0;      // the run's cycle budget (StepContext::budgetEnd)
     uint32_t chainLeft = 0;      // direct chain steps (chainDirect) left before runNative dispatches again (0: none)
+    uint32_t resume = 0;         // the pc a chain hands to runNative after running kernels (VU1NativeAccess::hleChain)
     struct VU1SpecMem *spec = nullptr; // split helper (GOW_VU1_SPLIT): memory accesses logged (ps2_vu1_split.inl)
 };
 
@@ -307,6 +308,10 @@ struct VU1NativeAccess
     // hleStopAt whether it must hand pc to runNative instead (a kernel starts there)
     static uint32_t hleMatch(VU1Interpreter::NativeState &ns, const uint8_t *code, uint32_t codeSize, uint32_t pc);
     static bool hleStopAt(const VU1NativeCtx &n, uint32_t pc);
+    // one kernel call as runNative makes it (kv: hleMatch's value); a direct chain entering a kernel pc runs it (and any
+    // kernels after it) itself through hleChain instead of returning to runNative
+    static uint32_t hleRun(VU1Interpreter &vu, uint32_t pc, uint32_t kv, uint64_t budgetEnd, uint8_t *data);
+    static uint32_t hleChain(VU1NativeCtx &n, uint32_t pc);
     static uint64_t &laneWord(VU1Interpreter &vu, uint32_t lane);
     template <typename F>
     static void walkHistory(VU1Interpreter::NativeState &ns, uint64_t now, uint64_t want[3], F &&ready);
@@ -691,8 +696,23 @@ VU1N_INLINE uint32_t VU1NativeAccess::chainStep(VU1NativeCtx &n, uint32_t pc, ui
         commitDue(vu);
     // the slot holds the expected block (its own function or a trace starting with it); a slot whose code changed has key 0
     NS::Slot &next = ns.slots[pc >> 3];
-    if (vu.m_stopRequested || vu.m_cycle >= n.budgetEnd || (any ? (!next.known || !next.fn) : next.key != key) ||
-        (ns.hleStop && ns.hleStop[pc >> 3] && hleStopAt(n, pc)))
+    if (vu.m_stopRequested || vu.m_cycle >= n.budgetEnd)
+        return 2u;
+    if (ns.hleStop && ns.hleStop[pc >> 3])
+    {
+        // a kernel (or an untried pc) here: the chain runs the kernel itself (hleChain), runNative is not involved
+        n.chainLeft = left - 1u;
+        if (const uint32_t r = hleChain(n, pc))
+        {
+            if (r == 1u && ns.diag)
+            {
+                ++ns.nativeBlocks; // runNative counts the block the chain returns from
+                ns.nativePairs += sl.pairs;
+            }
+            return r;
+        }
+    }
+    if (any ? (!next.known || !next.fn) : next.key != key)
         return 2u;
     n.chainLeft = left - 1u;
     if (ns.diag)
