@@ -5,6 +5,20 @@ look the same (pixel comparison against the CPU path, tolerances documented). Pl
 (2) a plain-float CPU reference (HLE) compared with the exact path on the recordings, which also says whether a fast
 CPU HLE alone reaches the target, (3) GPU path, (4) console fps / per-core busy / screenshots.
 
+## Handoff (2026-10-23 later: menu kernels, ext agent/sw-vu1gpu)
+- Two new kernels in ps2_vu1_hle.inl: `skin_lit28` (hash 5181a0b08a6d0989, 28-pair self-loop, no perspective divide: STQ.xy, position
+  M_B*p + w*(M_A*p) as floats, lit colour min 255.0; entered after the batch-switch jalr) and `unlit11` (a2eaa96b750883ce, 11-pair
+  self-loop, Q of the previous pass). Both transcribe the pairs in order (reads before writes inside a pair), cycles = pairs per pass
+  (identical to the exact path's total on menu.rec: 4557336 / 1714647). Note: the title menu profile is 5181a0b0 34 %, eae77e32 (the
+  batch-switch routine itself, pc 1258, 11 pairs, 23 %), a2eaa96b 13 %, 515a4959 8 %.
+- Verification (x86 harness, menu.rec, reference dump with HLE off): GIF 342142 writes exact, 0 beyond tolerance; 482 data words
+  differ by 1 ulp (float results in the VU buffers, the exact path rounds wide MADDs differently).
+- Console, replay benchmark of menu.rec (6000 warm runs): no env 191.6 ms, DIRECT+TRACES 146.9, + `GOW_VU1_HLE=1` 115.2 (fight.rec before
+  this change: 137 / 128.6 / 108.4). Live title menu with DIRECT+TRACES+HLE: **44-46 fps** (38-40 with DIRECT+TRACES only), screen correct;
+  the VU thread is still ~3.3 s / 5 s busy: the batch switch (eae77e32 and the pc 00d8/00e0/0458 blocks) is what is left (step 3).
+- Switch default DIRECT=1 TRACES=1 is set (ext commit "Switch default"); `GOW_VU1_HLE` is still off by default (flag in env.txt).
+- Package: port/switch/nsp/out/update_vgpu4 (local only).
+
 ## Handoff (2026-10-23, console measurements of the HLE kernels; ext agent/sw-vu1gpu 556db41 + the diagnostics commit)
 - State: `update_vgpu3` (= `update_vgpu1` + the intro-movie fix 3873093 merged as 556db41 + diagnostics) is on the console. Build:
   `bash port/switch/env_sync.sh ... vgpu`, `VU1_PREGEN=/root/vu1pregen-vgpu BUILD_DIR=/root/gow-switch-vgpu ./switch/build.sh` (docs/switch-env-setup.md).
