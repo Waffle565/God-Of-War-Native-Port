@@ -701,26 +701,37 @@ void VU1NativeAccess::codeChanged(VU1Interpreter::NativeState &ns, const uint8_t
     {
         for (NS::Slot &sl : ns.slots)
             sl.known = false, sl.fn = nullptr, sl.key = 0u;
+        std::memset(ns.traceSlots, 0, sizeof(ns.traceSlots));
+        if (ns.hle)
+            for (uint32_t i = 0; i < kPairs; ++i)
+                ns.hle->reset(i);
         std::memcpy(ns.code, code, sizeof(ns.code));
         ns.codeValid = true;
         return;
     }
     // changedBefore[i]: changed pairs among 0..i-1 (prefix count), so a slot's range test is one subtraction
     thread_local uint16_t changedBefore[kPairs + 1];
-    uint32_t changed = 0;
+    uint32_t changed = 0, first = kPairs, last = 0;
     for (uint32_t i = 0; i < kPairs; ++i)
     {
         changedBefore[i] = static_cast<uint16_t>(changed);
-        changed += std::memcmp(ns.code + i * 8u, code + i * 8u, 8u) != 0;
+        uint64_t a, b;
+        std::memcpy(&a, ns.code + i * 8u, 8u);
+        std::memcpy(&b, code + i * 8u, 8u);
+        if (a != b)
+        {
+            ++changed;
+            first = std::min(first, i);
+            last = i;
+        }
     }
     changedBefore[kPairs] = static_cast<uint16_t>(changed);
     if (changed == 0u)
         return;
-    for (uint32_t i = 0; i < kPairs; ++i)
-    {
+    const auto check = [&](uint32_t i) {
         NS::Slot &sl = ns.slots[i];
         if (!sl.known)
-            continue;
+            return;
         bool hit = false;
         if (sl.trace)
             for (uint32_t k = 0; k < sl.trace->parts && !hit; ++k)
@@ -735,7 +746,26 @@ void VU1NativeAccess::codeChanged(VU1Interpreter::NativeState &ns, const uint8_t
         }
         if (hit)
             sl.known = false, sl.fn = nullptr, sl.key = 0u; // chainDirect compares only the key
-    }
+    };
+    // a plain block covers its pairs and the one after (<= 65 + 1, nativeExtent), so it starts at most 66 pairs before a
+    // changed pair it covers; traces can have parts anywhere
+    for (uint32_t i = first > 66u ? first - 66u : 0u; i <= last; ++i)
+        check(i);
+    for (uint32_t w = 0; w < std::size(ns.traceSlots); ++w)
+        for (uint64_t bits = ns.traceSlots[w]; bits != 0u; bits &= bits - 1u)
+        {
+            const uint32_t i = w * 64u + static_cast<uint32_t>(std::countr_zero(bits));
+            if (!ns.slots[i].known || !ns.slots[i].trace)
+                ns.traceSlots[w] &= ~(1ull << (i & 63u)); // set up again as a plain block, or not at all
+            else
+                check(i);
+        }
+    // GOW_VU1_HLE: a kernel matched at pc covers [pc - entry offset, + region pairs): pcs up to 11 pairs before / 33 after
+    // a changed pair are matched again (VU1HleState); the others keep their result
+    if (ns.hle)
+        for (uint32_t i = first > vu1hle::kMaxRegionPairs ? first - vu1hle::kMaxRegionPairs : 0u;
+             i < std::min<uint32_t>(kPairs, last + vu1hle::kMaxEntryPairs + 1u); ++i)
+            ns.hle->reset(i);
     std::memcpy(ns.code, code, sizeof(ns.code));
 }
 
@@ -896,7 +926,55 @@ bool VU1NativeAccess::setupTrace(VU1Interpreter &vu, VU1Interpreter::NativeState
     slotScalars(sl, bt);
     sl.trace = &te;
     sl.parts = parts.data();
+    if (&sl >= ns.slots && &sl < ns.slots + std::size(ns.slots))
+    {
+        const size_t i = static_cast<size_t>(&sl - ns.slots);
+        ns.traceSlots[i >> 6] |= 1ull << (i & 63u);
+    }
     return true;
+}
+
+// GOW_VU1_HLE: whether a kernel starts at pc (VU1HleState), matched once per code change near pc; returns the kernel
+// value (0: none). Also called from a chain about to enter an untried pc (hleStopAt), so loops reached through direct
+// chaining get their kernel too.
+uint32_t VU1NativeAccess::hleMatch(VU1Interpreter::NativeState &ns, const uint8_t *code, uint32_t codeSize, uint32_t pc)
+{
+    VU1HleState &hs = *ns.hle;
+    const auto matches = [&](uint32_t k, uint32_t e) {
+        const vu1hle::Kernel &kn = vu1hle::kKernels[k];
+        const uint32_t off = kn.entryOff[e];
+        return off != ~0u && pc >= off && pc - off + kn.regionPairs * 8u <= codeSize &&
+               vu1hle::fnv(code + (pc - off), kn.regionPairs * 8u) == kn.regionHash;
+    };
+    const uint64_t key = vu1hle::windowKey(code, codeSize, pc);
+    const auto known = hs.byKey.find(key);
+    uint8_t kv = 0u;
+    if (known != hs.byKey.end() && (known->second == 0u || matches((known->second >> 1) - 1u, known->second & 1u)))
+        kv = known->second;
+    else
+    {
+        for (uint32_t k = 0; k < vu1hle::kKernelCount && !kv; ++k)
+            if ((vu1hle::kernelMask() >> k) & 1u)
+                for (uint32_t e = 0; e < 2 && !kv; ++e)
+                    if (matches(k, e))
+                        kv = static_cast<uint8_t>(((k + 1u) << 1) | e);
+        hs.byKey[key] = kv;
+    }
+    hs.tried[pc >> 3] = 1u;
+    hs.kernel[pc >> 3] = kv;
+    hs.stop[pc >> 3] = kv != 0u;
+    return kv;
+}
+
+bool VU1NativeAccess::hleStopAt(const VU1NativeCtx &n, uint32_t pc)
+{
+    VU1Interpreter::NativeState &ns = *n.vu->m_native;
+    if (ns.limit != ~0u) // bisecting: runNative skips the kernels
+        return false;
+    if (ns.hle->tried[pc >> 3])
+        return ns.hle->kernel[pc >> 3] != 0u;
+    const auto &context = *static_cast<const VU1Interpreter::StepContext *>(n.context);
+    return hleMatch(ns, context.vuCode, context.codeSize, pc) != 0u;
 }
 
 void VU1Interpreter::commitEverythingNow()
@@ -918,7 +996,10 @@ bool VU1Interpreter::runNative(StepContext &context)
         m_native = new NativeState();
     NativeState &ns = *m_native;
     if (!ns.hle && vu1hle::enabled())
+    {
         ns.hle = new VU1HleState();
+        ns.hleStop = ns.hle->stop;
+    }
     if (!ns.enabled)
         return false;
     if (m_state.branchPending || m_state.ebit || m_state.haltAfterDelaySlot || m_stopRequested)
@@ -928,12 +1009,7 @@ bool VU1Interpreter::runNative(StepContext &context)
     if (generation != ns.generation)
     {
         ns.generation = generation;
-        VU1NativeAccess::codeChanged(ns, context.vuCode);
-        if (ns.hle) // kernels are matched again against the new code (VU1HleState::tried)
-        {
-            std::memset(ns.hle->tried, 0, sizeof(ns.hle->tried));
-            std::memset(ns.hle->kernel, 0, sizeof(ns.hle->kernel));
-        }
+        VU1NativeAccess::codeChanged(ns, context.vuCode); // also resets the kernel matches near the change (VU1HleState)
     }
 
     const uint64_t savedFpMode = vu_fpmode::get();
@@ -1020,26 +1096,7 @@ bool VU1Interpreter::runNative(StepContext &context)
         {
             VU1HleState &hs = *ns.hle;
             if (!hs.tried[pc >> 3])
-            {
-                hs.tried[pc >> 3] = 1u;
-                for (uint32_t k = 0; k < vu1hle::kKernelCount && !hs.kernel[pc >> 3]; ++k)
-                {
-                    if (!((vu1hle::kernelMask() >> k) & 1u))
-                        continue;
-                    const vu1hle::Kernel &kn = vu1hle::kKernels[k];
-                    for (uint32_t e = 0; e < 2; ++e)
-                    {
-                        const uint32_t off = kn.entryOff[e];
-                        if (off == ~0u || pc < off || pc - off + kn.regionPairs * 8u > context.codeSize)
-                            continue;
-                        if (vu1hle::fnv(context.vuCode + (pc - off), kn.regionPairs * 8u) == kn.regionHash)
-                        {
-                            hs.kernel[pc >> 3] = static_cast<uint8_t>(((k + 1u) << 1) | e);
-                            break;
-                        }
-                    }
-                }
-            }
+                VU1NativeAccess::hleMatch(ns, context.vuCode, context.codeSize, pc);
             if (const uint32_t kv = hs.kernel[pc >> 3])
             {
                 const uint32_t k = (kv >> 1) - 1u, e = kv & 1u;

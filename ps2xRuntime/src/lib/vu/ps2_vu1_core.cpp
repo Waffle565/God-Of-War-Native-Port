@@ -312,20 +312,22 @@ void VU1Interpreter::normalizeFmacResult(float *result, uint8_t dest,
 
     const uint8_t fs = FS(upper);
     const uint8_t ft = FT(upper);
-    long double vs[4];
-    long double vt[4];
-    long double acc[4];
+    // GOW-Port: the operands stay float; only the lanes that need the exact result convert them to long double (on
+    // AArch64 a 128-bit software type: twelve conversions per instruction showed up as ~1 % of the console's VU1 thread)
+    float vs[4];
+    float vt[4];
+    float acc[4];
     for (uint32_t component = 0; component < 4u; ++component)
     {
-        vs[component] = static_cast<long double>(normalizeOperand(m_state.vf[fs][component]));
-        vt[component] = static_cast<long double>(normalizeOperand(m_state.vf[ft][component]));
-        acc[component] = static_cast<long double>(normalizeOperand(m_state.acc[component]));
+        vs[component] = normalizeOperand(m_state.vf[fs][component]);
+        vt[component] = normalizeOperand(m_state.vf[ft][component]);
+        acc[component] = normalizeOperand(m_state.acc[component]);
     }
-    long double scalar = 0.0L;
+    float scalar = 0.0f;
     if (source == Source::Q)
-        scalar = static_cast<long double>(normalizeOperand(m_state.q));
+        scalar = normalizeOperand(m_state.q);
     else if (source == Source::I)
-        scalar = static_cast<long double>(normalizeOperand(m_state.i));
+        scalar = normalizeOperand(m_state.i);
     else if (source == Source::Broadcast)
         scalar = vt[code & 3u];
 
@@ -350,32 +352,35 @@ void VU1Interpreter::normalizeFmacResult(float *result, uint8_t dest,
                 continue;
             }
         }
-        const long double right = source == Source::Vector ? vt[component] : scalar;
+        const float right = source == Source::Vector ? vt[component] : scalar;
         if (kind == Kind::Madd || kind == Kind::Msub)
         {
-            const float product = static_cast<float>(vs[component]) * static_cast<float>(right);
+            const float product = vs[component] * right;
             if (productSumFlagsFast(result[component], product, laneFlags[component]))
                 continue;
         }
         else if (kind == Kind::Opmsub && component != 3u)
         {
-            const float product = static_cast<float>(vs[crossLeft[component]]) * static_cast<float>(vt[crossRight[component]]);
+            const float product = vs[crossLeft[component]] * vt[crossRight[component]];
             if (productSumFlagsFast(result[component], product, laneFlags[component]))
                 continue;
         }
+        const long double s = vs[component], r = right, a = acc[component];
         long double exact = 0.0L;
         switch (kind)
         {
-        case Kind::Add: exact = vs[component] + right; break;
-        case Kind::Sub: exact = vs[component] - right; break;
-        case Kind::Madd: exact = acc[component] + vs[component] * right; break;
-        case Kind::Msub: exact = acc[component] - vs[component] * right; break;
-        case Kind::Mul: exact = vs[component] * right; break;
+        case Kind::Add: exact = s + r; break;
+        case Kind::Sub: exact = s - r; break;
+        case Kind::Madd: exact = a + s * r; break;
+        case Kind::Msub: exact = a - s * r; break;
+        case Kind::Mul: exact = s * r; break;
         case Kind::Opmsub:
-            exact = component == 3u ? 0.0L : acc[component] - vs[crossLeft[component]] * vt[crossRight[component]];
+            exact = component == 3u ? 0.0L
+                                    : a - static_cast<long double>(vs[crossLeft[component]]) * static_cast<long double>(vt[crossRight[component]]);
             break;
         case Kind::Opmula:
-            exact = component == 3u ? 0.0L : vs[crossLeft[component]] * vt[crossRight[component]];
+            exact = component == 3u ? 0.0L
+                                    : static_cast<long double>(vs[crossLeft[component]]) * static_cast<long double>(vt[crossRight[component]]);
             break;
         default: break;
         }

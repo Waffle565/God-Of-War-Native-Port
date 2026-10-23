@@ -571,7 +571,7 @@ inline uint32_t kUnlit11(Ctx &c, uint32_t)
     return c.base + 11u * 8u; // fall-through: jr vi14 (batch switch)
 }
 
-inline const Kernel kKernels[] = {
+inline constexpr Kernel kKernels[] = {
     {"unlit_st", 0x2e8bdf18116c01cdull, 20u, {0x00u, 0x58u}, kUnlitSt},
     {"lit_st", 0x7c187fbcd9b8ba29ull, 24u, {0x00u, ~0u}, kLitSt},
     {"skin_lit_st", 0xb8138c8401f6f173ull, 33u, {0x00u, ~0u}, kSkinLitSt},
@@ -581,12 +581,43 @@ inline const Kernel kKernels[] = {
     {"unlit11", 0xa2eaa96b750883ceull, 11u, {0x00u, ~0u}, kUnlit11},
 };
 constexpr uint32_t kKernelCount = sizeof(kKernels) / sizeof(kKernels[0]);
+// the reach of a match around its pc (VU1NativeAccess::codeChanged resets only the pcs a code change can affect)
+constexpr uint32_t kMaxRegionPairs = [] {
+    uint32_t m = 0;
+    for (const Kernel &k : kKernels)
+        m = k.regionPairs > m ? k.regionPairs : m;
+    return m;
+}();
+constexpr uint32_t kMaxEntryPairs = [] {
+    uint32_t m = 0;
+    for (const Kernel &k : kKernels)
+        for (const uint32_t off : k.entryOff)
+            m = off != ~0u && off / 8u > m ? off / 8u : m;
+    return m;
+}();
 
 inline uint64_t fnv(const uint8_t *p, uint32_t n)
 {
     uint64_t h = 1469598103934665603ull;
     for (uint32_t i = 0; i < n; ++i)
         h = (h ^ p[i]) * 1099511628211ull;
+    return h;
+}
+
+// The match result at pc depends only on pc and the pairs [pc - kMaxEntryPairs, pc + kMaxRegionPairs): a 64-bit hash of
+// them, eight bytes at a time (VU1HleState::byKey; ~10x cheaper than the byte-wise FNV of every kernel's region)
+inline uint64_t windowKey(const uint8_t *code, uint32_t codeSize, uint32_t pc)
+{
+    const uint32_t lo = pc >= kMaxEntryPairs * 8u ? pc - kMaxEntryPairs * 8u : 0u;
+    const uint32_t hi = std::min<uint32_t>(codeSize, pc + kMaxRegionPairs * 8u);
+    uint64_t h = 0x9E3779B97F4A7C15ull ^ pc;
+    for (uint32_t a = lo; a + 8u <= hi; a += 8u)
+    {
+        uint64_t w;
+        std::memcpy(&w, code + a, 8u);
+        h = (h ^ w) * 0xFF51AFD7ED558CCDull;
+        h ^= h >> 32;
+    }
     return h;
 }
 
@@ -649,9 +680,15 @@ inline void report(bool force = false)
 } // namespace vu1hle
 
 // Per VU1 interpreter: which pcs start a kernel (kernel index + 1 and entry in the low bit pair, 0 none), checked once
-// per slot and code generation.
+// per slot and code change near it. The game streams the same modules into its slots again and again: `byKey` keeps the
+// result per windowKey (pc + every pair a match can read) so code seen before is not matched again; a remembered kernel
+// is still confirmed by its region hash before it runs (a 64-bit key collision then only costs speed).
 struct VU1HleState
 {
     uint8_t tried[2048] = {};
     uint8_t kernel[2048] = {}; // (index + 1) << 1 | entry
+    uint8_t stop[2048];        // !tried || kernel (NativeState::hleStop: chained blocks stop there)
+    std::unordered_map<uint64_t, uint8_t> byKey;
+    VU1HleState() { std::memset(stop, 1, sizeof(stop)); }
+    void reset(uint32_t i) { tried[i] = kernel[i] = 0u, stop[i] = 1u; }
 };

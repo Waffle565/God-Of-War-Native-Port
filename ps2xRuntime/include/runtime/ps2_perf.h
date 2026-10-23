@@ -57,8 +57,16 @@ namespace ps2_perf
     inline thread_local Accounting accounting;
     inline uint64_t nowNanos()
     {
+#if defined(__SWITCH__) && defined(__aarch64__)
+        // the system counter (19.2 MHz, shared by all cores) instead of clock_gettime: the VU1 thread takes the time
+        // twice per microprogram run (~1.4 % of its samples on the console, GOW_PC_SAMPLE 2026-10-23)
+        uint64_t ticks;
+        __asm__ volatile("mrs %0, cntpct_el0" : "=r"(ticks)); // as libnx armGetSystemTick (cntvct_el0 traps at EL0)
+        return ticks * 625u / 12u;
+#else
         return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
             std::chrono::steady_clock::now().time_since_epoch()).count());
+#endif
     }
     inline void switchTo(Bucket next)
     {
