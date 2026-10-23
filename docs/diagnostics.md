@@ -37,6 +37,9 @@ All are opt-in environment variables (added by us; implementations noted).
 | `GOW_GS_HW_DISPLOG=1` | the display registers (PMODE, SMODE2, DISPFB1/2, DISPLAY1/2) each time they change, with the present number | gs_hw_backend.cpp (Present) |
 | `GOW_GS_HW_DISPDUMP=<n>` | the n-th present after the displayed size changed (e.g. a movie starts) writes the whole displayed render target to `gs_hw_disp_<fbp>_<w>x<h>.ppm` | gs_hw_backend.cpp (Present) |
 | `GOW_GS_HW_RTDUMPFBP=<n>` | with `GOW_GS_HW_RTDUMP`/`RTDUMPAT`: dump that render target instead of fbp 0 / 208 | gs_hw_backend.cpp |
+| `GOW_GS_HW_SEQDUMP=<first>:<count>` | composed picture of presents first..first+count-1 (`gs_seq_<present>_<fbp>_<dispfb1 fbp>.ppm`; count > 100: one thumbnail per present in `gs_seq_thumbs.bin`); finds one-frame glitches (docs/fmv.md) | gs_hw_backend.cpp (Present) |
+| `GOW_GS_HW_SKIPCHECK=1` | evaluates the Switch's unchanged-frame test on the PC without skipping; the SEQDUMP thumbnail header flags the presents it would skip | gs_hw_backend.cpp (Present) |
+| `GOW_DISP_STORE_LOG=1` | every store to a GS display register (host thread id) and every register sample of the presentation, to see torn reads | ps2_memory.cpp gsDisplayStore, gs_frontend.cpp |
 | `GOW_MPEG_PICDUMP=<n>` | decoded picture n of each movie to `mpeg_pic_<n>.ppm` (decoder output, before the GS) | ps2xRuntime Kernel/Stubs/MPEG.cpp |
 | `GOW_GS_HW_RTLOG=1` | each render target created or grown (`[gs-hw-rt] new/grow fbp fbw`) | gs_hw_backend.cpp |
 | `GOW_GS_HW_XFERWATCH=<hex block>`, `GOW_GS_HW_XFERRANGE=<lo>-<hi>` | log the image transfers whose block range holds that block / whose destination lies in [lo, hi), with the first bytes of the next upload | gs_hw_backend.cpp |

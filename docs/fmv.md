@@ -234,3 +234,29 @@ adaptation, so a movie can be compared with its source track sample by sample.
 - In some in-game runs (port/movies4/newgame/20261013_171528) the GS stalled for seconds while A01MP05 waited
   preloaded (host 11 fps): the sound starved (up to 3.8 s) and the backlog was then cut. Not reproduced in a run without
   other runners on the machine (port/movies4/gsstats); the same fight with movies skipped did not stall.
+
+## Intro movie flashed the in-engine cliff picture for one frame (fixed 2026-10-23, ext gow-usa-kl)
+- Symptom (user, probably on the Switch): during the new-game intro movie (Semo01) a picture of Kratos standing on the
+  cliff showed for a single frame, again and again through the whole movie. That picture is the in-engine scene the
+  game rendered before the movie (in fbp 208) and left in the second buffer.
+- Cause: a torn read of the display registers. The movie's VBlank handler (0x26CF20 -> 0x26E798) writes PMODE,
+  SMODE2, DISPLAY1/2, DISPFB1 and DISPFB2 one store at a time, and DISPFB2 first takes the other buffer (0x14D0, fbp
+  208) and a few instructions later 0x1468 again (`GOW_DISP_STORE_LOG=1` shows the stores with the host thread id). On
+  the PS2 that is atomic for the beam. The port sampled the live registers on the host thread right after the tick
+  counter moved, so whenever the EE thread was slower (or descheduled) in the handler, the sample caught DISPFB2 =
+  fbp 208 and presented the old engine frame. On a fast PC the window is a few microseconds and never hit in an
+  unthrottled run (2860 presents of the movie, none wrong); under `tools/switch_throttle` (ratio 0.15, 3 cores) it
+  showed on every 10-30 pictures. So it is not deko3d specific: any slow machine, the Switch most of all. The deko3d
+  "unchanged frame is not presented" test is innocent (`GOW_GS_HW_SKIPCHECK=1` evaluates it on the PC: 1428 skips in
+  the movie, all of them identical pictures).
+- Fix: the EE scheduler copies the display registers at the start of each VBlank (`ps2_gs_display::latchDisplay`,
+  EeScheduler.cpp VBlankStart, before the tick counter moves and before the guest handler runs); the presentation
+  request reads that copy (`latchedDisplay`, gs_frontend.cpp buildPresentationRequestUnlocked). The sampled state is
+  what the previous handler left, as on the console, and no longer depends on thread timing. Check with the same
+  throttled run: every present of the movie shows fbp 104, no stray picture.
+- Tools added: `GOW_GS_HW_SEQDUMP=<first>:<count>` (gs_hw_backend.cpp Present: composed picture of presents
+  first..first+count-1 as ppm; with count > 100 one 80x56 thumbnail record per present in `gs_seq_thumbs.bin`, header
+  = present, fbp, dispfb1 fbp | 0x10000 if the unchanged-frame test would skip, width, height in 16-pixel cells),
+  `GOW_GS_HW_SKIPCHECK=1`, `GOW_DISP_STORE_LOG=1` (docs/diagnostics.md). A flash shows as a picture that differs by
+  more than 8 from both neighbours while the neighbours match each other (port/introglitch).
+- The Switch build needs a rebuild with this ext change merged into its branch (the code is in the shared runtime).
