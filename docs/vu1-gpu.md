@@ -5,6 +5,45 @@ look the same (pixel comparison against the CPU path, tolerances documented). Pl
 (2) a plain-float CPU reference (HLE) compared with the exact path on the recordings, which also says whether a fast
 CPU HLE alone reaches the target, (3) GPU path, (4) console fps / per-core busy / screenshots.
 
+## Handoff (2026-10-24 night 8, sw-vu1k4 stopped here: ext agent/sw-vu1gpu 19da740 + generator eb1bf2a blocks (`/root/vu1pregen-gen3`), package `update_kd3`)
+- **Re-profile (kc3, fight 150-180 s, line level: the Switch ELF has `-g`, so `switch_pcprof.py --lines FUNC` works
+  without a special build)**: the dispatch / bookkeeping share was mostly small fixed costs per call, not the loop logic:
+  hleChain's samples sat ~45 % on `fetch_add`s of the kernel stats (LDXR/STXR loops on the A57) and the guard checks of
+  three function-local statics; finishXgkick ~54 % on the two `gsw` counter adds (those counters shared cache lines
+  with the EE thread's `[gsw-chain]` counters: false sharing across cores); kCullClip ~28 % on `macN % 5` ring
+  indexing; per XGKICK packet two `std::this_thread::get_id()` (pthread_self -> __syscall_thread_self, ~0.6 %);
+  codeChanged compared and copied all 16 KB of micro memory on every code generation.
+- **memmove (2.0 %) callers** (new `GOW_PC_SAMPLE_LR`, docs/diagnostics.md): 1.7 of the 2.0 points are
+  `ps2_gs_stage::push <- GifArbiter::submitAndDrain`, the copy of each XGKICK packet into the GS stage queue (memcpy and
+  memmove are one function in newlib). The copy is the hand-off to the stage thread; not removable without the stage
+  reading VU1 memory that the next program overwrites.
+- **Changes (ext 19da740, all exact: x86 replay dumps of fight.rec / menu.rec, HLE=1 and HLE=0, DIRECT=1 TRACES=1,
+  byte-identical to 529de89 and to a61de30, cycles included)**: stats as relaxed load + store (one writer), no static
+  guards in hleRun / vu1hle::report (clock read every 64th call), one `hleStop` byte test per runNative dispatch, perf
+  counters on their own cache lines (`ps2_perf::PaddedCounter`), kCullClip rings of 8 (`& 7`), VIF1 diagnostic env
+  reads out of the per-UNPACK path, PS2Memory records each VU1 code generation's changed pair range
+  (`markVU1CodeModified(offset, size)`, `vu1CodeChangedRange`: MPG passes its range, other writers the whole memory) and
+  codeChanged compares / copies only the union since the slots' generation, thread_local role flags for
+  `onGsWorkerThread` / `ps2_gs_stage::onStageThread`.
+- Console (handheld, bot fight, sampler env `c/env_pcs.txt`; title = 10-20 s at the 60 fps cap, so its vu_ms is the
+  stable per-frame cost; fights differ per run):
+  | package | change | title fps / vu_ms per 5 s | fight fps | VU1 thread (fight) |
+  |---|---|---|---|---|
+  | `update_kc3` (before) | a61de30 | 60.0 / 3775-3780 | 38.6-42.8 (150-180 s, avg 40.6) | dispatch 14.0 %, kCullClip 4.9, VIF 8.8, codeChanged 2.05, idle 6.9 |
+  | `update_kd1` | stats / guards / padded counters | 60.0 / 3704-3706 | 39.6-43.2 (150-170 s, avg 41.7); died at ~205 s | dispatch 11.7 % (hleChain 4.1 -> 2.1) |
+  | `update_kd2` | + kCullClip & 7, hleStop byte, VIF env | 60.0 / 3712-3720 | 39.6-40.8 (155-185 s, avg 40.3) | dispatch 11.4, kCullClip 4.1, VIF 8.3 |
+  | `update_kd3` | + code-change ranges, thread_local roles | 60.0 / **3631-3641 (-3.8 % vs kc3)** | **43.0-45.4 (150-165 s, avg 44.2)**, 36-38.6 (165-185 s, gsq_wait ~1100 ms = GS/GL bound), 41.4-46.0 (185-215 s) | dispatch 10.4, codeChanged 1.56, idle 9.3, blocks 35.2, kernels 16.7, VIF 8.4 |
+- **VIF unpack on another core (assessed, not built)**: VIF decode + unpack is 8.4 % of the VU1 thread (~0.42 s per
+  5 s); that is the most an overlap can remove. The hardware order needs the VIF side to stop at each MSCAL until the
+  previous program ended (~50 k runs per second in fights, ~16 us each), so producer and consumer meet ~50 k times a
+  second; a condition-variable hand-off costs more than the ~2 us of VIF work per run (as PS2X_VU1_ASYNC=1 measured),
+  so both sides would have to spin, and core 0 has ~1.8 s per 5 s free, not a spinning core. Only worth a prototype if
+  core 3 is usable (next item).
+- Tools (scratchpad): `ln.sh <pkg> <lo> <hi> FUNC...` (per-line profile), `chk.sh <harness>` (x86 harness from the
+  worktree with gen3's blocks, dumps vs h5 = 529de89 and k3g = a61de30), `bk.sh <pkg> <harness>` (package + chk),
+  `c/cycle4.sh` (cycle3.sh + a title screenshot at 15 s), `neon.sh` (arm_neon.h line -> intrinsic). WSL: call scripts by
+  path (`wsl -- bash -c '... $VAR ...'` loses `$VAR`: the outer shell expands it).
+
 ## Handoff (2026-10-23 night 7, sw-vu1k3 stopped here: ext agent/sw-vu1gpu a61de30 + tools/vu1/vu1n_gen.py eb1bf2a, package `update_kc3` installed)
 - **Kernels entered from direct chains** (dcbc523): chainStep, at a pc whose `hleStop` byte is set, calls
   `VU1NativeAccess::hleChain`, which runs the kernel there itself (shared `hleRun`, the same code runNative runs between

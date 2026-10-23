@@ -82,7 +82,9 @@ def main():
         ctot = sum(callers.values())
         print(f'--- in system calls: {ctot} samples ({100 * ctot / tot:.1f} %), by svc and the first two stack callers')
         for (svc, a, b), n in callers.most_common(top):
-            print(f'{100 * n / tot:6.2f}% svc {svc:#04x}  {name(a)}  <-  {name(b)}')
+            # svc 0x7f: not a system call, a GOW_PC_SAMPLE_LR sample (link register <- first return address on the stack)
+            what = 'lr      ' if svc == 0x7f else f'svc {svc:#04x}'
+            print(f'{100 * n / tot:6.2f}% {what}  {name(a)}  <-  {name(b)}')
     if lines_fn:
         a2l = os.environ.get('ADDR2LINE', 'aarch64-linux-gnu-addr2line')
         offs = [o for o, _ in in_fn.most_common(300)]
