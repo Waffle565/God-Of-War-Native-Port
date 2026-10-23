@@ -5,7 +5,7 @@ look the same (pixel comparison against the CPU path, tolerances documented). Pl
 (2) a plain-float CPU reference (HLE) compared with the exact path on the recordings, which also says whether a fast
 CPU HLE alone reaches the target, (3) GPU path, (4) console fps / per-core busy / screenshots.
 
-## Handoff (2026-10-23 night 7, sw-vu1k3, in progress: ext agent/sw-vu1gpu dcbc523, package `update_kc1`)
+## Handoff (2026-10-23 night 7, sw-vu1k3 stopped here: ext agent/sw-vu1gpu a61de30 + tools/vu1/vu1n_gen.py eb1bf2a, package `update_kc3` installed)
 - **Kernels entered from direct chains** (dcbc523): chainStep, at a pc whose `hleStop` byte is set, calls
   `VU1NativeAccess::hleChain`, which runs the kernel there itself (shared `hleRun`, the same code runNative runs between
   two blocks: stats, the one history entry, `arraysReadyBy`, Q validity), then any kernel at the pc it returns, then
@@ -44,6 +44,34 @@ CPU HLE alone reaches the target, (3) GPU path, (4) console fps / per-core busy 
   (e.g. 0x530, the subroutine 0x350 calls; the 0x1238 dispatch table). The generator's `--jr` (JR / JALR exits chain
   to their profiled targets, then to any block; off since "measured no gain" in an older state) takes fight.rec's
   runNative dispatches **97201 -> 11649**, dumps byte-identical (gen4 = gen3 + `--jr`, package `update_kc4`).
+- **`--jr` is slower on the console, not made default** (`update_kc4` = gen4): VU1 thread categories (fight 150-180 s,
+  scratchpad `cat.sh` over pp.sh output) kc3 -> kc4: dispatch (runNative + hleChain) 14.1 -> 6.7 %, **generated
+  blocks 33.3 -> 43.7 %**, kernels 16.0 -> 14.5, idle 6.9 -> 6.2; title 10-20 s **59.2-59.4** (kc3 60.0, vu_ms 4100 vs
+  3780), fight 34.8-38.0 (bot died at 195 s, as sc5). A chain step inlined in thousands of block functions (timing,
+  history, successor set-up, an indirect call) costs more than runNative's one hot loop doing the same per dispatch
+  (i-cache / branch-predictor footprint), so removing dispatches by chaining more does not pay; the per-dispatch
+  work itself (finishBlockTiming / entry timing / hist / slot loads, cache misses on the 128-byte slots) is what
+  costs. `--jr --no-jr-any` (predicted targets only) leaves 33437 dispatches on fight.rec, dumps identical, not
+  measured on the console.
+- **Console package recipe (the state measured as kc3)**: ext agent/sw-vu1gpu a61de30 + the vu1n blocks of the
+  default generator command (`python3 -I tools/vu1/vu1n_gen.py <dir>/vu1n_generado port/vu1_micro --heads
+  port/vu1n_heads.txt --parts 6 --locals`, no `--jr`) next to vu1pregen-vgpu's vu1_generado: in WSL
+  `/root/vu1pregen-gen3` (scratchpad `gen.sh <name>` + `mkpre.sh <name>` + `PRE=/root/vu1pregen-<name> bp9.sh
+  <pkg>`). **The ext runtime a61de30 needs blocks from eb1bf2a's generator or older ones; blocks from eb1bf2a need
+  a61de30** (efuOp / opmFlags). `/root/vu1pregen-vgpu` still holds the old blocks (pre-eb1bf2a, also fine with
+  a61de30: they only use callUpper / callLower).
+- Next levers (VU1 thread kc3, fight): runNative + hleChain 14.1 % = per-dispatch bookkeeping, not the loop: make
+  the per-block timing work cheaper (the slots' first cache line, hist ring writes, entry-timing memo) rather than
+  chaining more; kCullClip 4.8 %; VIF decode/unpack 8.7 %; codeChanged 2.0 % + slotFor 1.0 % + setupTrace 0.5 %
+  (code swaps); memmove 2.2 % (callers unknown: the sampler keeps only the PC; a build with `-g` would allow
+  `switch_pcprof.py --lines`); idle 6.9 %.
+- Tools (scratchpad): `hb5.sh <name> [src]` (x86 harness, `GEN=` generated dir), `hr5.sh <name> <base>` (dumps
+  vs a baseline harness, HLE=1/0, DIRECT=1 TRACES=1; baseline `h5` = 529de89 from `git archive`), `gen.sh` / `gen2.sh`
+  (`GENARGS=`) + `gcmp.sh` (generated dirs, CR ignored), `mkpre.sh`, `bp9.sh` (`PRE=` pregen dir), `bpf.sh` + `dsum.sh`
+  (replay runNative dispatch counts: a dispatch with 0 cycles at the blockprof point returned without a chain step),
+  `fdis.py` (sample counts on a function's disassembly), `cat.sh` (VU1 thread categories), `c/cycle3.sh` (cycle2.sh
+  that retries HOME after the fight until the HOME menu screenshot shows).
+- Console left on DBI's MTP screen with `update_kc3` installed; env.txt and the pcs_*.txt deleted from the SD.
 - Console note: the HOME click after the fight did not register (game kept running ~10 min); `c/recover3.sh <name>`
   (NOHOME=1 when the HOME menu is already up) closes the game, opens DBI's MTP and pulls the log. HOME toggles: check
   the screenshot (hbmenu/HOME menu jpg ~190 KB, game ~95 KB) before pressing again.
