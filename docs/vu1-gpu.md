@@ -12,6 +12,10 @@ CPU HLE alone reaches the target, (3) GPU path, (4) console fps / per-core busy 
   both 22.5 / 19.4 (core 0 overloaded: deko3d 2.0 -> 3.0 s / 5 s, gsq_wait doubles); GSStage=0 + IOP thread on core 1
   (`GOW_CORE_IopRun=1`) 24.2 / 17.4; GSStage=0 + `PS2X_GS_QUEUE_CHUNKS=32` 24.2 / 22.6 (gsq_wait 0.36 -> 0.29 s, no fps gain).
   Kept: GSStage on core 0 (ext agent/sw-con 85bd55d, to be put on top of fast1).
+- update_fast1 (PIE, VU1 -O3, raw-FPCR div/sqrt) vs update_ee3, no env, console handheld (`[switch] mode handheld`, EMC
+  1331 MHz, GPU 307 MHz): title 47.6 vs 47.3 fps, VU1 19.2 vs 21.0 us per run (-9 %); fight 150-190 s 24.0 / 22.2 vs 23.2 / 22.0,
+  25.1 vs 25.7 us per run. fast1 + `GOW_EMC_MHZ=max GOW_GPU_MHZ=max` (EMC 1600, GPU 460.8 handheld): title 48.4, fight
+  26.2 / 25.2 (150-250 s: 27.1 / 25.2, no death), deko3d 2.09 -> 1.80 s / 5 s, hitches 21 -> 18 per 5 s.
 - `[ee-wait]` (update_ee3, `GOW_EE_SAMPLE`): in the fight ALL EE idle is cause 7 = pacing (1.0-1.6 s / 5 s), none is DMAC/vblank
   wait. With the VU1 thread 3.6 s / 5 s busy (~29 ms per frame) the VU1 path is the per-frame limiter; the EE gets ahead and
   sleeps in the pacing wait.
