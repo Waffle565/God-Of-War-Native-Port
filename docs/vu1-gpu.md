@@ -22,6 +22,38 @@ CPU HLE alone reaches the target, (3) GPU path, (4) console fps / per-core busy 
   worker thread was a potential hitch. Also new: `[gsw-chain]` (EE time to walk+copy the DMA source chains before the worker
   job is queued, per 5 s).
 
+## Handoff (2026-10-23 late night: cheap compiler/code fixes, package `update_fast1`; ext agent/sw-vu1gpu 1b9a06d)
+Console-free round (the console was asleep): four audit items, each its own ext commit, verified off the console; they
+need the console A/B (fight + title menu fps, `gsw-split` vu_ms per run, `[ee-prof]` not needed).
+- e9daace + PIE fix **-fPIE instead of -fPIC** for `ps2_runtime`, `ps2_iop`, `libmpeg2` (Switch; plain non-PIC fails the
+  `-pie` link: "read-only segment has dynamic relocations", vtables in .rodata): the cause was devkitPro's
+  `Platform/NintendoSwitch.cmake:21` (`CMAKE_POSITION_INDEPENDENT_CODE ON`), not raylib (its line 69 is the Android branch).
+  build.ninja: 121 `-fPIC` compile lines -> 7 (raylib only); before: `libps2_runtime.a` 3852 `ADR_GOT_PAGE` relocations,
+  `libps2_iop.a` 1146, .got 0x13398 bytes; with -fPIE 2240 / 185, .got 0x12d28 (the rest are extern data, which -fPIE
+  still reaches through the GOT). VU1 harness with the core files `-fPIC` vs not: +0.4 % instructions only
+  (the VU1 core has few interposable calls); the gain, if any, is in the GS stage / IOP / runtime helpers (console only).
+- 77976fe **-O3** on `ps2_vu1_core/upper/lower.cpp` and `vu1n_part*.cpp` (`PS2X_SWITCH_VU1_OPT`). aarch64 harness under qemu
+  (`icount.sh`, 100 records, HLE+DIRECT+TRACES, minus the harness's own `silentNativeHash`): fight 2.36 -> 2.24 M insns per
+  warm pass (-5 %; runNative -12 %, generated blocks -2.4 %), menu 4.17 -> 4.05 M (-3 %). Replay exact (400 records fight +
+  menu, HLE off: 0 differ; HLE on: dumps byte-identical to the -O2 build). Generated EE code not tried (no harness for it,
+  and 88 MB of text). `-fno-plt` is moot (static link, no PLT); `-fomit-frame-pointer` is already the -O2 default.
+  The -O3 vu1n parts need more compiler memory: the 14-job build was OOM-killed once (cc1plus on vu1n_part4 beside the
+  unity batches); resumed with `taskset -c 0-7` (scratchpad `bp8.sh`).
+- d5c14fa **EE FPU div/sqrt** (`ps2FpuDivideNearest` / `ps2FpuSqrtNearest`, ps2_runtime_macros.h): on AArch64 one `mrs fpcr`
+  + two `msr` around an asm `fdiv`/`fsqrt` (sse2neon did fegetround/fesetround calls + extra FPCR reads, 4 FPCR writes per
+  divide); no write when the thread already rounds to nearest (only with `GOW_EE_FPU_NEAREST=1`: the EE runs RZ+FZ, so the
+  two writes stay). Exactness: 10 M random + edge-case pairs (div and sqrt) under RZ+FZ and RN+FZ, old vs new bit-identical,
+  FPCR restored (aarch64 test under qemu, scratchpad `fpt/`). qemu time for 1 M divides 194 -> 46 ms (instruction count
+  only; the real cost is the FPCR-write serialisation, console only). `PS2X_FPU_CSR_SSE2NEON` brings back the old code.
+- b0d4e2a + 82a4a63 **Clocks**: start-up line `[switch] mode docked|handheld; clocks (Hz, start -> now): cpu .. emc .. gpu ..`.
+  `GOW_EMC_MHZ` / `GOW_GPU_MHZ` (MHz or `max`: EMC 1600, GPU 768 docked / 460.8 handheld) set those rates and the 2 s keeper
+  re-applies them (a re-apply is logged); default stays the system's rates (not verified on hardware, so not on by default).
+- env.txt: no package carries one (make_update.sh writes exefs only). The SD's `sdmc:/switch/gow/env.txt` still holds
+  `GOW_EE_SAMPLE=200 GOW_CORE_EeSampler=1 GOW_PRIO_EeSampler=3` from update_ee2: the console agent must replace it
+  (scratchpad `c/env_fast1.txt` = defaults, `c/env_fast1_clk.txt` = `GOW_EMC_MHZ=max GOW_GPU_MHZ=max`).
+- A/B for the console agent: `update_ee3` (c7337ec, the same code minus these four; sampler off without the env) vs `update_fast1` (exefs main 49.3 MB, built 15:44) with env_fast1.txt, then
+  update_fast1 with env_fast1_clk.txt; read the `[switch] mode` line first (docked or handheld decides the GPU max).
+
 ## Handoff (2026-10-23 night: EE thread profile, structural-lever study; ext agent/sw-vu1gpu c7337ec)
 - New tool (ext c7337ec, `update_ee2`/`update_ee3`): `GOW_EE_SAMPLE=<hz>` starts a sampler thread that every 5 s prints `[ee-prof]` (exclusive guest
   function = the innermost function entered through `dispatchGuestBranch`, or the resume pc when the scheduler re-enters a function after a

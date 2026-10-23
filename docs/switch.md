@@ -245,7 +245,9 @@ The PAKs are 4 GB each: the SD card must be exFAT (FAT32 has a 4 GB file limit).
 - Changes from it: `GSStage` moved to core 1 one priority step above the EE (ThreadNaming.h; it preempts the spin
   whenever it has work); `clampv` uses ARMv8 FMAXNM/FMINNM on ARM (the x86 maxps/minps result for every input
   arithmetic can produce); `Ps2IsSpecialAddress` answers RAM addresses (< 32 MB) with one compare; the CPU runs at
-  1785 MHz (Nintendo's boost clock; `GOW_CPU_MHZ`, re-applied every 2 s, restored at exit); bilinear presentation
+  1785 MHz (Nintendo's boost clock; `GOW_CPU_MHZ`, re-applied every 2 s, restored at exit; memory and GPU stay at
+  the system's rates unless env.txt sets `GOW_EMC_MHZ` / `GOW_GPU_MHZ`, MHz or `max` = EMC 1600, GPU 768 docked /
+  460.8 handheld; the start-up line `[switch] mode docked|handheld; clocks ...` logs the mode and all three rates); bilinear presentation
   and the speed lines (`GOW_PERF_DIAG`, `GOW_DELTA_DIAG`, `GOW_GS_HW_STATS`) are on by default on the Switch.
 
 ## Switch-speed test on PC (tools/switch_throttle)

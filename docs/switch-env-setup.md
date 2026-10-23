@@ -45,6 +45,20 @@ What it installs:
    x86|arm <vg0|vga0> /root/src-<name> /root/vu1pregen-<name>/vu1n_generado` (build.sh only globs `gow-switch-build*`, hence
    `SSE2NEON`), see docs/vu1-gpu.md "Commands".
 
+## Compiler flags of the Switch build (ext ps2xRuntime/CMakeLists.txt, `if(PS2X_IS_SWITCH)`)
+- Base: devkitPro's `Switch.cmake` (`-march=armv8-a+crc+crypto -mtune=cortex-a57 -mtp=soft -ftls-model=local-exec
+  -ffunction-sections -fdata-sections`), Release `-O2 -DNDEBUG`, `-g`; the NRO is one static `-pie` link.
+- `-fPIE`, not `-fPIC`, on the static libraries: devkitPro's `Platform/NintendoSwitch.cmake:21` sets `CMAKE_POSITION_INDEPENDENT_CODE ON`
+  globally, so `ps2_runtime`, `ps2_iop` and `libmpeg2` were built `-fPIC` (GOT loads for global data, no inlining of
+  interposable functions) while the executable's own objects (generated EE code, vu1n blocks) never were. The build
+  compiles those three `-fPIE` instead (`PS2X_SWITCH_PIC=ON` restores `-fPIC`); raylib keeps its own setting. Plain non-PIC
+  does not link: ps2_runtime's vtables and const pointer tables then sit in `.rodata` with absolute relocations
+  ("read-only segment has dynamic relocations" in the `-pie` link); `-fPIE` puts them in `.data.rel.ro`. Check:
+  `grep -c fPIC build.ninja` and `aarch64-none-elf-readelf -rW libps2_runtime.a | grep -c ADR_GOT_PAGE`.
+- `-O3` (cache variable `PS2X_SWITCH_VU1_OPT`, empty = the build type's level) on `ps2_vu1_core.cpp`, `ps2_vu1_upper.cpp`,
+  `ps2_vu1_lower.cpp` and the pregenerated `vu1n_part*.cpp` (source `COMPILE_OPTIONS`, placed after the `-O2`).
+- The VU1 harness (`tools/vu1_harness/build.sh`) takes `OPT=-O3` and `CORE_EXTRA=-fPIC` to reproduce either choice.
+
 ## What was lost with the distro, and what is regenerable
 Regenerable from the repo / Windows side: the toolchain (this page), `/root/src-*` (env_sync.sh), the VU1 pregenerated
 blocks (copies of `ext/PS2Recomp-kl-vu1*/out/vu1pregen`, also kept on Windows), build trees (`switch/build.sh`), the
