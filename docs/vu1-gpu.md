@@ -5,26 +5,47 @@ look the same (pixel comparison against the CPU path, tolerances documented). Pl
 (2) a plain-float CPU reference (HLE) compared with the exact path on the recordings, which also says whether a fast
 CPU HLE alone reaches the target, (3) GPU path, (4) console fps / per-core busy / screenshots.
 
-## Handoff (2026-10-24 night 9, sw-vu1k5: core 3 as a resource; in progress)
-- **npdm `highest_cpu_id` 3 is the default now** (port/switch/nsp/gow.json): the application may pin threads to core 3.
-- **GS-limited fight phase (165-200 s, gsq_wait ~1100 ms) = the GPU, not a CPU core.** In kd3's log that phase has
-  `[gs-dk-time] present_submit_ms` ~0.7-1.1 s per 5 s (`dkQueuePresentImage` blocks, ~4 ms per present; 150-165 s: 60 ms),
-  while draws and vertices are *lower* than in the VU1-bound windows. Same package with `GOW_GPU_MHZ=max` (handheld
-  307 -> 460.8 MHz, run `s3g`): present_submit 45-53 ms in every window, gsq_wait ~6 ms, **hitches (frames >= 2.3
-  fields) 8-15 -> 0-1 per 5 s**, and the fight is VU1-bound throughout (40-44.6 fps, vu 4.1 s). No core can absorb it;
-  the GPU clock (or less GPU work) does. Not made default here (handheld battery/heat: the user's call, see
-  docs/switch.md clocks).
-- **GSStage on core 3** (`GOW_CORE_GSStage=3`, run `s3a`, kd3c3 package): the deko3d thread's busy time 3.7 -> 2.2-2.6 s
-  per 5 s (on core 0 the stage, one priority step above, preempted it: deko3d's wall-clock busy included that);
-  fight 165-200 s 36-41 -> 38-46 fps (gsq_wait 1100 -> 500-800 at the default GPU clock), 150-165 s unchanged (VU1);
-  title 60.0, vu_ms 3635 -> 3718 (+2 %: the stage reads the queue from another core). Made the default (ext ThreadNaming.h).
-- **VU1 programs on their own thread with a spinning VIF producer on core 3** (`PS2X_VU1_ASYNC=1`, new
-  `PS2X_VU1_ASYNC_WAIT_SPIN_US` = the worker spins for the program's end instead of 4096 pauses + condvar, VU1Run spins
-  for the next job, package `update_ka1`): **slower**. Worker alone on core 3 (`as1g`): title 53.4-54.4 fps (60), fight
-  35.4-38.2 (40-44); worker + stage on core 3 (`as2g`): title 44, fight 28-35. The VU1 thread's execute time per run is
-  unchanged (18.1 us) but a run cycle takes ~27 us instead of ~20: 176838 of 183512 MSCALs wait for the previous program
-  (the VIF work between two MSCALs is ~2 us, so the worker is always at the next MSCAL first) and each hand-off costs
-  more than the overlap. Dropped (kept as an option).
+## Handoff (2026-10-24 night 9, sw-vu1k5 stopped here: ext agent/sw-vu1gpu 76b4fff + gen3 blocks (`/root/vu1pregen-gen3`), package `update_ka3`, main repo npdm highest_cpu_id 3)
+- **What changed.** npdm `highest_cpu_id` 3 by default (port/switch/nsp/gow.json); **GSStage pinned to core 3 by default**
+  (ext ThreadNaming.h, `GOW_CORE_GSStage=0` restores core 0); `PS2X_VU1_ASYNC_WAIT_SPIN_US` (the worker spins for the
+  program's end instead of 4096 pauses + condvar) and a thread_local VU1Run role (no `get_id` per kick) for the async
+  option; single-writer `gsw` counters as relaxed load + store (`PaddedCounter::addOwned`). x86 replay dumps fight.rec /
+  menu.rec, HLE=1 and HLE=0, byte-identical to 529de89 and a61de30, cycles included (harnesses `ka2h`, `ka3h`).
+- Console runs (handheld, bot fight `PLAY=1 BOOT=45`, 180 s; logs port/switch/logs/20261023_<run>; scratchpad `sum.py <log>`
+  prints per window fps / vu_ms / gsq_wait / present_submit / deko3d busy / hitches (frames >= 2.3 fields) / audio):
+  | run | package + env | title 10-20 s fps / vu_ms | fight fps (windows) | other |
+  |---|---|---|---|---|
+  | kd3 (sw-vu1k4) | kd3, stage core 0 | 60.0 / 3631-3641 | 43.0-45.4 (150-165), **36-41 (165-200, gsq_wait ~1100)** | hitches 8-16 / 5 s |
+  | `s3a` | kd3c3 + `GOW_CORE_GSStage=3` | 58.4-60.2 / 3715-3738 | 40.2-45.2 (150-165), **38-46 (165-240, gsq 500-800)** | deko3d busy 3.7 -> 2.2-2.6 s; hitches 8-13 |
+  | `s3g` | + `GOW_GPU_MHZ=max` | 59.2-60.2 / 3720-3767 | 39.6-44.6 (145-200, avg 41.5), VU1-bound throughout | gsq_wait ~6, present_submit ~50 ms, **hitches 0-1** |
+  | `as2g` | ka1 + `PS2X_VU1_ASYNC=1`, worker + stage core 3 | 43.8-44.4 | 28-35.6 | async_wait 4.1 s / 5 s |
+  | `as1g` / `as1p` | ka1 async, worker alone on core 3 (`as1p`: both threads +9 priority) | 53.4-54.4 / 54.2-54.8 | 35.4-38.2 | 176838 of 183512 MSCALs wait |
+  | `k2g` / `k3g` | ka2 / ka3 (stage core 3 default) + GPU max | 59.2-60.2 / 3765-3839 | 40.6-44.6 (avg 42.6) / 41.2-44.8 (avg 42.3) | hitches 0-1 |
+  | `i3g` / `k3i` | ka2 / ka3 + IOP thread on core 3 + GPU max | 59.2-60.0 / 3769-3821 | 38.8-42.0 (avg 40.2) / 39.6-43.6 (avg 41.6) | iop_ms (core 1) ~800 -> 150-220; IopRun ~1.1-1.2 s busy |
+  Audio (`GOW_AUDIO_STATS=1`): missing frames only in window 0 (boot) and window 22 (the load before the fight) in every
+  run, IOP thread or not.
+- **Task 1, core 3 / IOP thread**: core 3 works (no pin failure, no extra hitches in any run). The IOP thread on core 3
+  frees ~0.6 s per 5 s of core 1 but the fight is VU1-bound and came out 0.7-2.4 fps *lower* in both pairs (k2g/i3g,
+  k3g/k3i; per frame the VU1 thread took ~1.5 % longer, maybe L2 sharing with the stage + IOP), so **IOP stays inline by
+  default**; use it when core 1 becomes the limit (60 fps needs EE + IOP time, docs/iop-thread.md).
+- **Task 2, work off the VU1 thread onto core 3**: the only win measured is the GS stage (above); nothing taken from the
+  VU1 thread itself paid. Async VU1 with a spinning VIF producer on core 3: execute time per run unchanged (18.1 us) but
+  a run cycle ~27 us instead of ~20 (the VIF work between two MSCALs is ~2 us, so the worker is always at the next MSCAL
+  first and every program end is a cross-core hand-off), also with raised priorities: dropped (option kept). VIF
+  pipelining = the same mechanism (MSCAL k+1 must wait for program k; the overlap is only the ~2 us of VIF work).
+  Kick hand-off: one copy left (`ps2_gs_stage::push`, 1.7 %), the rest is the tag walk and counters (finishXgkick's
+  counter adds now plain stores); moving the copy to the stage would need the stage to read VU1 memory before the next
+  program overwrites it (no exact way found), cap ~2-3 %. Remaining VU1 levers are on the thread itself (see night 8:
+  blocks 35 %, kernels 17 %, dispatch 10 %, per-run entry/exit ~6 %).
+- **Task 3, the GS-limited phase (165-200 s, gsq_wait ~1100 ms) is the GPU, not a CPU core.** In kd3's log that phase
+  has `[gs-dk-time] present_submit_ms` 0.7-1.1 s per 5 s (`dkQueuePresentImage` blocks ~4 ms per present; 150-165 s:
+  60 ms) with *fewer* draws and vertices than the VU1-bound windows. `GOW_GPU_MHZ=max` (handheld 307 -> 460.8 MHz):
+  present_submit ~50 ms in every window, gsq_wait ~6 ms, hitches 8-15 -> 0-1 per 5 s, fight VU1-bound throughout. No
+  core can absorb it; part of the old gsq_wait was also the stage preempting deko3d on core 0 (fixed by core 3). **Not
+  made default**: handheld GPU clock is battery/heat, the user's decision (docs/switch.md "clocks"); recommended.
+- Console left on DBI's MTP screen with `update_ka3` installed (stage core 3, npdm 0-3); env.txt deleted from the SD.
+- Next: VU1 thread itself (night 8 levers); GPU work in the 165-200 s scene (which passes cost: deko3d timestamp
+  counters per op kind would tell) if the GPU clock stays at the default.
 
 ## Handoff (2026-10-24 night 8, sw-vu1k4 stopped here: ext agent/sw-vu1gpu 19da740 + generator eb1bf2a blocks (`/root/vu1pregen-gen3`), package `update_kd3`)
 - **Re-profile (kc3, fight 150-180 s, line level: the Switch ELF has `-g`, so `switch_pcprof.py --lines FUNC` works

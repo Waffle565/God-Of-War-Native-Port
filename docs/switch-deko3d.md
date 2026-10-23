@@ -90,7 +90,9 @@ Gameplay on the console (log `port/switch/logs/20261019_s16`, ship fight, ~21 fp
   per 5 s the IRX code ~55 ms, sound mixing ~80-170 ms, services ~20 ms and ~50 ms of per-call overhead (~72000
   `runCycles` calls per second, one per 512 IOP cycles). A batch of 2048 IOP cycles cut the call overhead to a third
   but the memory card load then never finished (zone gate slots 1-4): kept at 512.
-- `GOW_CORE_<thread>=<0-2>` in env.txt overrides a thread's core (ThreadNaming.h): `GOW_CORE_GSStage=0` moves the GS
+- (2026-10-24) The npdm allows core 3 now (`highest_cpu_id` 3) and the GS stage runs there by default, which leaves core
+  0 to the deko3d thread (docs/vu1-gpu.md sw-vu1k5 handoff).
+- `GOW_CORE_<thread>=<0-3>` in env.txt overrides a thread's core (ThreadNaming.h): `GOW_CORE_GSStage=0` moves the GS
   frontend next to the deko3d backend on core 0, which deko3d made light, and leaves core 1 to the EE and the IOP.
   On the console it helps the title menu a little but not fights: there the deko3d thread fills core 0 (167-211k
   draws per 5 s) and the stage blocks on its queue; same build, same bot fight: 25.4-27.6 fps by default, 20.6-22.0

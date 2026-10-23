@@ -115,6 +115,9 @@ IOP entry point), `ps2_iop_host.cpp` (deferred EE effects), `Kernel/EeScheduler.
 - The RPC calls (~120 a second in gameplay, ~2100 on the save/load menus) still run their IOP server code on the EE
   thread; an asynchronous RPC (`sceSifCallRpc` with the nowait flag) could go to the thread, a synchronous one
   cannot without the EE waiting anyway.
-- Switch core 3 (2026-10-24, docs/vu1-gpu.md sw-vu1k4 handoff): with `highest_cpu_id` 3 in the npdm the application may
-  pin threads to core 3 (`GOW_CORE_IopRun=3`; ThreadNaming accepts 0-3). The IOP thread there is ~22 % busy in a fight
-  and takes ~0.7 s per 5 s off the EE core; fight fps unchanged (VU1-bound), title 60. Not the default yet.
+- Switch core 3 (2026-10-24, docs/vu1-gpu.md sw-vu1k4 / sw-vu1k5 handoffs): the npdm now has `highest_cpu_id` 3, so
+  `GOW_CORE_IopRun=3` works (ThreadNaming accepts 0-3); the GS stage sits on core 3 by default. The IOP thread there
+  (`GOW_IOP_THREAD=1 GOW_CORE_IopRun=3 GOW_IOP_LEAD=4194304`) is ~1.1-1.2 s busy per 5 s in a fight and takes the EE
+  core's iop_ms from ~800 to 150-220 ms, no lead waits, no extra audio underruns (`GOW_AUDIO_STATS`) or hitches; but
+  with the fight VU1-bound it measured 0.7-2.4 fps lower in two pairs of bot fights (42.6 vs 40.2, 42.3 vs 41.6), so
+  inline stays the default. Turn it on once core 1 limits (60 fps needs the EE's time).
