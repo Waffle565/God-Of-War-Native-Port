@@ -780,6 +780,23 @@ if(PS2X_IS_SWITCH)
         target_compile_definitions(ps2EntryRunner PRIVATE PS2X_DK)
     endif()
     set_source_files_properties(src/lib/ps2_switch_runtime.cpp PROPERTIES SKIP_UNITY_BUILD_INCLUSION TRUE)
+    # devkitPro's Platform/NintendoSwitch.cmake sets CMAKE_POSITION_INDEPENDENT_CODE ON, so every static library was
+    # built -fPIC (global data through the GOT, no inlining of interposable functions); the executable's own objects
+    # never were. The NRO is one static -pie link, so the libraries do not need it either (PS2X_SWITCH_PIC=ON restores it).
+    option(PS2X_SWITCH_PIC "Switch: build ps2_runtime / ps2_iop / libmpeg2 as PIC (devkitPro default)" OFF)
+    if(NOT PS2X_SWITCH_PIC)
+        set_target_properties(ps2_runtime ps2_iop libmpeg2 PROPERTIES POSITION_INDEPENDENT_CODE OFF)
+    endif()
+    # the VU1 thread's code at -O3 (aarch64 harness, fight.rec, HLE+DIRECT+TRACES: -5 % instructions, bit-identical);
+    # source COMPILE_OPTIONS come after the -O2 of CMAKE_CXX_FLAGS_RELEASE
+    set(PS2X_SWITCH_VU1_OPT "-O3" CACHE STRING "Switch: optimisation level of the VU1 sources (empty: the build type's)")
+    if(PS2X_SWITCH_VU1_OPT)
+        set(PS2X_SWITCH_VU1N_SOURCES ${PS2X_VU1N_PARTS} ${PS2X_VU1_PREGENERATED_PARTS})
+        list(FILTER PS2X_SWITCH_VU1N_SOURCES INCLUDE REGEX "vu1n_part[0-9]+\\.cpp$")
+        set_property(SOURCE src/lib/vu/ps2_vu1_core.cpp src/lib/vu/ps2_vu1_upper.cpp src/lib/vu/ps2_vu1_lower.cpp
+            ${PS2X_SWITCH_VU1N_SOURCES}
+            APPEND PROPERTY COMPILE_OPTIONS "${PS2X_SWITCH_VU1_OPT}")
+    endif()
     # host threads get 1 MiB stacks like on Windows (libnx default 128 KiB): ps2_switch_runtime.cpp __wrap_pthread_create
     target_link_options(ps2EntryRunner PRIVATE -Wl,--wrap=pthread_create)
     nx_generate_nacp(ps2EntryRunner.nacp
