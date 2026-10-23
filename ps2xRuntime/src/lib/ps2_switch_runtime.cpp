@@ -439,6 +439,13 @@ extern "C"
             const u32 insn = *reinterpret_cast<const u32 *>(ra - 4u);
             return (insn & 0xFC000000u) == 0x94000000u || (insn & 0xFFFFFC1Fu) == 0xD63F0000u; // BL / BLR
         };
+        u64 lrLo = 0, lrHi = 0;
+        if (const char *lr = std::getenv("GOW_PC_SAMPLE_LR"))
+        {
+            char *end = nullptr;
+            lrLo = std::strtoull(lr, &end, 16);
+            lrHi = end && *end == '-' ? std::strtoull(end + 1, nullptr, 16) : 0u;
+        }
         const u64 t0 = armGetSystemTick();
         u64 lastWrite = t0;
         for (;;)
@@ -471,6 +478,17 @@ extern "C"
                                 ra[found++] = stack[k] - base;
                         t.callers.add((static_cast<u64>((svcInsn >> 5) & 0xFFu) << 56) | ((ra[0] & 0xFFFFFFFu) << 28) |
                                       (ra[1] & 0xFFFFFFFu) | 1ull << 63);
+                    }
+                    // GOW_PC_SAMPLE_LR=<lo>-<hi> (ELF offsets, hex): samples in that range (a leaf such as memmove) also
+                    // record the link register and the first return address on the stack, as "c 7f <lr> <ra>" lines
+                    else if (ctx.pc.x - base >= lrLo && ctx.pc.x - base < lrHi)
+                    {
+                        u64 ra1 = 0;
+                        const u64 *stack = reinterpret_cast<const u64 *>(ctx.sp & ~7ull);
+                        for (int k = 0; k < 64 && !ra1; ++k)
+                            if (isCall(stack[k]) && stack[k] != ctx.lr)
+                                ra1 = stack[k] - base;
+                        t.callers.add((0x7Full << 56) | (((ctx.lr - base) & 0xFFFFFFFu) << 28) | (ra1 & 0xFFFFFFFu) | 1ull << 63);
                     }
                 }
                 svcSetThreadActivity(t.handle, ThreadActivity_Runnable);
@@ -539,7 +557,7 @@ extern "C"
             started = true;
             mutexInit(&s_pcLock);
             const char *coreVar = std::getenv("GOW_PC_SAMPLE_CORE");
-            const int core = coreVar && coreVar[0] >= '0' && coreVar[0] <= '2' ? coreVar[0] - '0' : 0;
+            const int core = coreVar && coreVar[0] >= '0' && coreVar[0] <= '3' ? coreVar[0] - '0' : 0;
             // priority 0x20: above the game threads, so the sampler wakes on time on a busy core (it sleeps otherwise)
             s_pcThreadUp = R_SUCCEEDED(threadCreate(&s_pcThread, pcSamplerMain, reinterpret_cast<void *>(static_cast<uintptr_t>(std::atoi(hz))),
                                                     nullptr, 0x8000, 0x20, core)) &&

@@ -52,7 +52,15 @@ namespace ps2_perf
         }();
         return on;
     }
-    inline std::array<std::atomic<uint64_t>, bucketCount> nanos{};
+    // One cache line per counter: the buckets and the GS worker counters are written by different threads on different
+    // cores (EE, IOP, GS worker / VU1, GS stage); packed together, every relaxed fetch_add of one thread pulled the line
+    // away from the others (on the console ~1 % of the VU1 thread sat in finishXgkick's two counter adds alone).
+    struct alignas(64) PaddedCounter : std::atomic<uint64_t>
+    {
+        using std::atomic<uint64_t>::atomic;
+        using std::atomic<uint64_t>::operator=;
+    };
+    inline std::array<PaddedCounter, bucketCount> nanos{};
     inline std::atomic<uint64_t> guestFlips{0}, hostFrames{0};
     inline thread_local Accounting accounting;
     inline uint64_t nowNanos()
@@ -149,10 +157,10 @@ namespace ps2_perf
     // is on the VU1 thread, vif_ms is not meaningful, and async_wait_ms is the worker waiting for the VU1 thread.
     namespace gsw
     {
-        inline std::atomic<uint64_t> jobNs{0}, vuNs{0}, kickNs{0}, runs{0}, kicks{0}, jobs{0}, asyncWaitNs{0}, asyncWaits{0};
+        inline PaddedCounter jobNs{0}, vuNs{0}, kickNs{0}, runs{0}, kicks{0}, jobs{0}, asyncWaitNs{0}, asyncWaits{0};
         // EE side: DMA source chains walked and copied by PS2Memory::sendDmaChain before the worker job is queued (VU1
         // cannot start on a chain until this is done), printed as [gsw-chain]
-        inline std::atomic<uint64_t> chainNs{0}, chains{0}, chainBytes{0}, chainMaxNs{0};
+        inline PaddedCounter chainNs{0}, chains{0}, chainBytes{0}, chainMaxNs{0};
         inline void reportFromWorker()
         {
             static uint64_t last = nowNanos();

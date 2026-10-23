@@ -61,7 +61,7 @@ namespace ThreadNaming
         // core 0. The EE spends most of a frame spinning in vid::WaitForDMAComplete (profile 2026-10-16: ~85 % of its
         // samples), so the GS frontend shares its core one priority step above it: it runs whenever it has work and
         // the spin only gets what is left. On core 0 it starved behind the GL backend and the presentation.
-        // GOW_CORE_<thread>=<core 0-2> in env.txt (GOW_CORE_GSStage, GOW_CORE_GameThread, GOW_CORE_GSWorker, other
+        // GOW_CORE_<thread>=<core 0-3> in env.txt (GOW_CORE_GSStage, GOW_CORE_GameThread, GOW_CORE_GSWorker, other
         // names) moves a thread for console tests without a rebuild: with deko3d the backend on core 0 got light while
         // core 1 is full (gameplay per 5 s: EE 2.9 s + IOP 1.2 s + GS frontend 0.9 s, docs/switch-deko3d.md).
         int core = 0, boost = 0;
@@ -79,8 +79,8 @@ namespace ThreadNaming
         else if (name == "IopRun")
             boost = 1; // GOW_IOP_THREAD=1: above GSThread (deko3d) on core 0, which never yields to an equal priority
         const std::string variable = "GOW_CORE_" + std::string(name);
-        if (const char *value = std::getenv(variable.c_str()); value && value[0] >= '0' && value[0] <= '2' && value[1] == '\0')
-            core = value[0] - '0';
+        if (const char *value = std::getenv(variable.c_str()); value && value[0] >= '0' && value[0] <= '3' && value[1] == '\0')
+            core = value[0] - '0'; // 3: only with highest_cpu_id 3 in the npdm (port/switch/nsp/gow.json), else the pin fails
         // GOW_PRIO_<thread>=<0-9>: priority steps above the default thread priority (console tests without a rebuild)
         const std::string prioVariable = "GOW_PRIO_" + std::string(name);
         if (const char *value = std::getenv(prioVariable.c_str()); value && value[0] >= '0' && value[0] <= '9' && value[1] == '\0')

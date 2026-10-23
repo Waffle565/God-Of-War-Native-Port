@@ -763,7 +763,7 @@ const uint8_t *VU1NativeAccess::blockTiming(VU1Interpreter &vu, VU1Interpreter::
 
 // The micro memory has a new generation (VIF MPG, EE writes): slots whose extent scan read a changed pair are set up again
 // on their next use; the others keep their block (the game swaps one microprogram while the rest stays resident).
-void VU1NativeAccess::codeChanged(VU1Interpreter::NativeState &ns, const uint8_t *code)
+void VU1NativeAccess::codeChanged(VU1Interpreter::NativeState &ns, const uint8_t *code, uint32_t lo, uint32_t hi)
 {
     using NS = VU1Interpreter::NativeState;
     constexpr uint32_t kPairs = sizeof(ns.code) / 8u;
@@ -789,10 +789,14 @@ void VU1NativeAccess::codeChanged(VU1Interpreter::NativeState &ns, const uint8_t
         ns.codeValid = true;
         return;
     }
-    // changedBefore[i]: changed pairs among 0..i-1 (prefix count), so a slot's range test is one subtraction
+    // only pairs [lo, hi) can differ (the changes recorded since the slots' generation, PS2Memory::vu1CodeChangedRange)
+    hi = std::min<uint32_t>(hi, kPairs);
+    lo = std::min<uint32_t>(lo, hi);
+    // changedBefore[i] (lo <= i <= hi): changed pairs among lo..i-1 (prefix count), so a slot's range test is one
+    // subtraction; outside [lo, hi] the count is 0 before lo and the total from hi on (changedTo)
     thread_local uint16_t changedBefore[kPairs + 1];
     uint32_t changed = 0, first = kPairs, last = 0;
-    for (uint32_t i = 0; i < kPairs; ++i)
+    for (uint32_t i = lo; i < hi; ++i)
     {
         changedBefore[i] = static_cast<uint16_t>(changed);
         uint64_t a, b;
@@ -805,9 +809,10 @@ void VU1NativeAccess::codeChanged(VU1Interpreter::NativeState &ns, const uint8_t
             last = i;
         }
     }
-    changedBefore[kPairs] = static_cast<uint16_t>(changed);
+    changedBefore[hi] = static_cast<uint16_t>(changed);
     if (changed == 0u)
         return;
+    const auto changedTo = [&](uint32_t i) -> uint32_t { return i <= lo ? 0u : i >= hi ? changed : changedBefore[i]; };
     const auto check = [&](uint32_t i) {
         NS::Slot &sl = ns.slots[i];
         if (!sl.known)
@@ -817,12 +822,12 @@ void VU1NativeAccess::codeChanged(VU1Interpreter::NativeState &ns, const uint8_t
             for (uint32_t k = 0; k < sl.trace->parts && !hit; ++k)
             {
                 const uint32_t b = sl.trace->pcs[k] >> 3, e = std::min<uint32_t>(kPairs, b + sl.trace->counts[k] + 1u);
-                hit = changedBefore[e] != changedBefore[b];
+                hit = changedTo(e) != changedTo(b);
             }
         else
         {
             const uint32_t end = std::min<uint32_t>(kPairs, i + sl.pairs + 1u); // the pair after the block ends the scan
-            hit = changedBefore[end] != changedBefore[i];
+            hit = changedTo(end) != changedTo(i);
         }
         if (hit)
             sl.known = false, sl.fn = nullptr, sl.key = 0u; // chainDirect compares only the key
@@ -846,7 +851,7 @@ void VU1NativeAccess::codeChanged(VU1Interpreter::NativeState &ns, const uint8_t
         for (uint32_t i = first > vu1hle::kMaxRegionPairs ? first - vu1hle::kMaxRegionPairs : 0u;
              i < std::min<uint32_t>(kPairs, last + vu1hle::kMaxEntryPairs + 1u); ++i)
             ns.hle->reset(i);
-    std::memcpy(ns.code, code, sizeof(ns.code));
+    std::memcpy(ns.code + first * 8u, code + first * 8u, (last + 1u - first) * 8u); // the pairs outside are equal
 }
 
 // The registry entry, timing data and traces of a block key (NativeState::keyInfo). Key 0 (no FNV result in practice) is
@@ -1119,6 +1124,13 @@ bool VU1NativeAccess::hleStopAt(const VU1NativeCtx &n, uint32_t pc)
     return hleMatch(ns, context.vuCode, context.codeSize, pc) != 0u;
 }
 
+const VU1Interpreter::NativeState::BlockTiming VU1NativeAccess::s_hleHistBt = [] {
+    VU1Interpreter::NativeState::BlockTiming b;
+    b.writeMask[0] = b.writeMask[1] = b.writeMask[2] = ~0ull;
+    return b;
+}();
+const uint8_t VU1NativeAccess::s_hleZeroCyc[1] = {0u};
+
 // One kernel call (kv: hleMatch's value at pc) as runNative makes it between two blocks; returns the kernel's next pc,
 // or vu1hle::kDecline (nothing changed: the block at pc runs natively).
 VU1N_INLINE uint32_t VU1NativeAccess::hleRun(VU1Interpreter &vu, uint32_t pc, uint32_t kv, uint64_t budgetEnd, uint8_t *data)
@@ -1129,28 +1141,25 @@ VU1N_INLINE uint32_t VU1NativeAccess::hleRun(VU1Interpreter &vu, uint32_t pc, ui
     const vu1hle::Kernel &kn = vu1hle::kKernels[k];
     vu1hle::Ctx hc{vu.m_state, data, vu.m_cycle, budgetEnd, pc - kn.entryOff[e], &ns.macRing, &ns.clipRing, &vu.m_workingClip};
     const uint64_t c0 = vu.m_cycle;
-    static const bool timeK = std::getenv("GOW_VU1_HLE_TIME") != nullptr; // two clock reads per call: opt-in (the Switch has GOW_PERF_DIAG on)
+    // GOW_VU1_HLE_TIME: two clock reads per call, opt-in (the Switch has GOW_PERF_DIAG on). Read once into a plain byte
+    // (no function-local static guard per call: hleRun runs for every kernel dispatch)
+    const bool timeK = vu1hle::timeKernels();
     const uint64_t t0 = timeK ? vu1hle::nowNs() : 0u;
     const uint32_t r = kn.fn(hc, e);
+    vu1hle::Stats &st = vu1hle::g_stats;
     if (timeK)
-        vu1hle::stats().ns[k].fetch_add(vu1hle::nowNs() - t0, std::memory_order_relaxed);
+        vu1hle::statAdd(st.ns[k], vu1hle::nowNs() - t0);
     if (r == vu1hle::kDecline)
         return r;
-    vu1hle::stats().calls[k].fetch_add(1u, std::memory_order_relaxed);
-    vu1hle::stats().cycles[k].fetch_add(vu.m_cycle - c0, std::memory_order_relaxed);
+    vu1hle::statAdd(st.calls[k], 1u);
+    vu1hle::statAdd(st.cycles[k], vu.m_cycle - c0);
     // the passes ran without the cycle model: nothing is in flight any more at the kernel's end. One history entry stands
     // for the kernel (every lane written, ready at its start: no stalls, the same timing as an empty history), so the next
     // block's entry timing is memoised by predecessor (entryTimingAfter) instead of computed by blockTiming after every
-    // kernel call.
-    static const NS::BlockTiming hleBt = [] {
-        NS::BlockTiming b;
-        b.writeMask[0] = b.writeMask[1] = b.writeMask[2] = ~0ull;
-        return b;
-    }();
-    static const uint8_t zeroCyc[1] = {0u};
+    // kernel call. (g_hleHistBt: namespace scope, built at start-up: no guard check per call)
     NS::Hist &h = ns.hist[ns.histNext];
-    h.bt = &hleBt;
-    h.cyc = zeroCyc;
+    h.bt = &s_hleHistBt;
+    h.cyc = s_hleZeroCyc;
     h.start = c0;
     h.end = vu.m_cycle;
     h.cycId = 0u;
@@ -1279,8 +1288,12 @@ bool VU1Interpreter::runNative(StepContext &context)
     const uint64_t generation = context.memory ? context.memory->getVU1CodeGeneration() : 0u;
     if (generation != ns.generation)
     {
+        // only the pairs the changes since our generation wrote can differ (an MPG's range; everything without a record)
+        uint32_t lo = 0u, hi = sizeof(ns.code) / 8u;
+        if (context.memory && ns.generation < generation)
+            context.memory->vu1CodeChangedRange(ns.generation, generation, lo, hi);
         ns.generation = generation;
-        VU1NativeAccess::codeChanged(ns, context.vuCode); // also resets the kernel matches near the change (VU1HleState)
+        VU1NativeAccess::codeChanged(ns, context.vuCode, lo, hi); // also resets the kernel matches near the change (VU1HleState)
     }
 
     const uint64_t savedFpMode = vu_fpmode::get();
@@ -1363,7 +1376,9 @@ bool VU1Interpreter::runNative(StepContext &context)
             ++ns.count;
             ns.trace.push_back(pc);
         }
-        if (ns.hle && !bisecting) // GOW_VU1_HLE: a hot vertex loop runs as a plain-float kernel (ps2_vu1_hle.inl)
+        // GOW_VU1_HLE: a hot vertex loop runs as a plain-float kernel (ps2_vu1_hle.inl). hleStop (= !tried || kernel) is
+        // one byte for the usual case, no kernel at a tried pc, instead of two (tried and kernel)
+        if (ns.hle && !bisecting && ns.hleStop[pc >> 3])
         {
             VU1HleState &hs = *ns.hle;
             if (!hs.tried[pc >> 3])
@@ -1403,14 +1418,16 @@ bool VU1Interpreter::runNative(StepContext &context)
         // GOW_VU1N_PEEK=<code hash hex>[:n]: registers and data memory around vi2 / vi3 before and after the first n
         // dispatches of the block with that code (the "k" hash of GOW_VU1N_BLOCKPROF): reading a vertex loop's layout
         bool peekThis = false;
-        if (peekKey && peekLeft > 0 && pc + sl.pairs * 8u <= context.codeSize)
+        int peekBase[2] = {0, 0};
+        if (peekKey != 0u && peekLeft > 0 && pc + sl.pairs * 8u <= context.codeSize)
         {
             uint64_t h = 1469598103934665603ull;
             for (uint32_t b = 0; b < sl.pairs * 8u; ++b)
                 h = (h ^ context.vuCode[pc + b]) * 1099511628211ull;
             peekThis = h == peekKey;
+            peekBase[0] = m_state.vi[2];
+            peekBase[1] = m_state.vi[3];
         }
-        int peekBase[2] = {m_state.vi[2], m_state.vi[3]};
         const auto peek = [&](const char *when) {
             std::fprintf(stderr, "[vu1n-peek] %s pc=%x cycle=%llu vi:", when, pc, static_cast<unsigned long long>(m_cycle));
             for (int r = 1; r < 16; ++r)

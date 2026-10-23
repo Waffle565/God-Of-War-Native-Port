@@ -1,6 +1,7 @@
 #ifndef PS2_MEMORY_H
 #define PS2_MEMORY_H
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <array>
@@ -285,6 +286,26 @@ public:
     uint64_t vifWriteCount() const { return m_vifWriteCount.load(std::memory_order_relaxed); }
     uint64_t getVU0CodeGeneration() const { return m_vu0CodeGeneration.load(std::memory_order_relaxed); }
     uint64_t getVU1CodeGeneration() const { return m_vu1CodeGeneration.load(std::memory_order_relaxed); }
+    // The pairs [lo, hi) of the micro memory that can differ between generation `from` and generation `to` (the union of
+    // the changes recorded in between); the whole memory when one of them is no longer (or not yet) recorded. Lets the
+    // native VU1 layer compare and copy only an MPG's range after a code change instead of all 16 KB.
+    void vu1CodeChangedRange(uint64_t from, uint64_t to, uint32_t &lo, uint32_t &hi) const
+    {
+        constexpr uint32_t kPairs = PS2_VU1_CODE_SIZE / 8u;
+        lo = 0u, hi = kPairs;
+        if (to <= from || to - from > kVu1ChangeLog)
+            return;
+        uint32_t l = kPairs, h = 0u;
+        for (uint64_t g = from + 1u; g <= to; ++g)
+        {
+            const uint64_t e = m_vu1CodeChanges[g & (kVu1ChangeLog - 1u)].load(std::memory_order_acquire);
+            if ((e >> 32) != (g & 0xFFFFFFFFu))
+                return; // overwritten, or the writer has not stored it yet: everything
+            l = (std::min<uint32_t>)(l, static_cast<uint32_t>(e >> 12) & 0xFFFu);
+            h = (std::max<uint32_t>)(h, static_cast<uint32_t>(e) & 0xFFFu);
+        }
+        lo = l, hi = h;
+    }
 
     // Read/write memory
     uint8_t read8(uint32_t address);
@@ -407,9 +428,12 @@ public:
     void stopGsWorker();
     bool onGsWorkerThread() const
     {
+        // s_gsWorkerOf: set by gsWorkerLoop on its own thread (a thread_local read instead of std::this_thread::get_id,
+        // which on the Switch is pthread_self -> __syscall_thread_self -> the TLS read; asked per XGKICK packet)
         return m_gsWorkerEnabled &&
-               (std::this_thread::get_id() == m_gsWorkerId || (m_vu1AsyncOn && std::this_thread::get_id() == m_vu1AsyncId));
+               (s_gsWorkerOf == this || (m_vu1AsyncOn && std::this_thread::get_id() == m_vu1AsyncId));
     }
+    inline static thread_local const PS2Memory *s_gsWorkerOf = nullptr;
     // GOW-Port: PS2X_VU1_ASYNC=1 (with the GS worker): VU1 microprograms run on their own thread ("VU1Run") while the
     // worker goes on decoding the VIF1 stream (UNPACKs into the other input buffers), as the hardware overlaps them.
     // The worker waits for the running program before anything the hardware also orders behind it (the next
@@ -459,6 +483,9 @@ public:
     std::atomic<uint64_t> m_vifWriteCount{0};
     std::atomic<uint64_t> m_vu0CodeGeneration{0};
     std::atomic<uint64_t> m_vu1CodeGeneration{0};
+    // per generation g (slot g % kVu1ChangeLog): (g low 32 bits) << 32 | first changed pair << 12 | end pair
+    static constexpr uint32_t kVu1ChangeLog = 64u;
+    std::atomic<uint64_t> m_vu1CodeChanges[kVu1ChangeLog] = {};
     // I/O registers
     std::unordered_map<uint32_t, uint32_t> m_ioRegisters;
 
@@ -561,7 +588,14 @@ public:
     bool isAddressInRegion(uint32_t address, const CodeRegion &region);
     void markModified(uint32_t address, uint32_t size);
     void markVU0CodeModified() { m_vu0CodeGeneration.fetch_add(1, std::memory_order_relaxed); }
-    void markVU1CodeModified() { m_vu1CodeGeneration.fetch_add(1, std::memory_order_relaxed); }
+    // bytes [offset, offset + size) of the micro memory changed (default: all of it); after the write itself
+    void markVU1CodeModified(uint32_t offset = 0u, uint32_t size = PS2_VU1_CODE_SIZE)
+    {
+        const uint64_t g = m_vu1CodeGeneration.fetch_add(1, std::memory_order_relaxed) + 1u;
+        const uint64_t lo = (std::min<uint32_t>)(offset, PS2_VU1_CODE_SIZE) / 8u;
+        const uint64_t hi = ((std::min<uint32_t>)(offset + size, PS2_VU1_CODE_SIZE) + 7u) / 8u;
+        m_vu1CodeChanges[g & (kVu1ChangeLog - 1u)].store(((g & 0xFFFFFFFFu) << 32) | (lo << 12) | hi, std::memory_order_release);
+    }
     bool isScratchpad(uint32_t address) const;
     uint8_t *mapVuMemory(uint32_t physAddr, uint32_t size, uint32_t &offset, uint32_t &limit);
     const uint8_t *mapVuMemory(uint32_t physAddr, uint32_t size, uint32_t &offset, uint32_t &limit) const;

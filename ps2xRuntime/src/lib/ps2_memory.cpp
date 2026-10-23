@@ -2158,6 +2158,7 @@ void PS2Memory::runGsWorkerJob(GsWorkerJob &job)
 void PS2Memory::gsWorkerLoop()
 {
     ThreadNaming::SetCurrentThreadName("GSWorker");
+    s_gsWorkerOf = this; // onGsWorkerThread
     for (;;)
     {
         GsWorkerJob job;

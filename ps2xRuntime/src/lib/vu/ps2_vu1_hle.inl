@@ -693,16 +693,17 @@ inline uint32_t kCullClip(Ctx &c, uint32_t entry)
     const int32_t vi4 = s.vi[4];
     uint32_t clip = *c.workingClip;
     uint64_t cyc = c.cycle;
-    // the newest five MAC / clip writers (issue cycle, flags), pushed to the rings at the exit
-    // (MAC writers keep their raw result: the ring computes the flags when something reads them)
-    uint64_t macAt[5], clipAt[5];
-    __m128 macR[5];
-    uint32_t macM[5], clipV[5], macN = 0u, clipN = 0u;
+    // the newest MAC / clip writers (issue cycle, flags), the newest five pushed to the rings at the exit
+    // (MAC writers keep their raw result: the ring computes the flags when something reads them); rings of 8 indexed with
+    // & 7 (a % 5 per writer was ~1/4 of this kernel's samples on the console)
+    uint64_t macAt[8], clipAt[8];
+    __m128 macR[8];
+    uint32_t macM[8], clipV[8], macN = 0u, clipN = 0u;
     const auto mac = [&](uint64_t at, __m128 raw, uint32_t mask) {
-        const uint32_t k = macN % 5u;
+        const uint32_t k = macN & 7u;
         macAt[k] = at, macR[k] = raw, macM[k] = mask, ++macN;
     };
-    const auto clp = [&](uint64_t at, uint32_t v) { clipAt[clipN % 5u] = at, clipV[clipN % 5u] = v, ++clipN, clip = v; };
+    const auto clp = [&](uint64_t at, uint32_t v) { clipAt[clipN & 7u] = at, clipV[clipN & 7u] = v, ++clipN, clip = v; };
     const auto qd = [&](int32_t qw) { return d + ((static_cast<uint32_t>(qw) * 16u) & 0x3FFFu); };
     // the generated blocks' fast variants (plain SSE, no operand normalisation / clamp) where their entry checks pass
     // (vu1n_gen.py Bounds: the same results there); limits per lane (x, y, z, w) on the magnitude bits
@@ -931,14 +932,14 @@ inline uint32_t kCullClip(Ctx &c, uint32_t entry)
     for (uint32_t k = macN > 5u ? macN - 5u : 0u; k < macN; ++k)
     {
         VU1FlagRing &rg = *c.macRing;
-        rg.issue[rg.next] = macAt[k % 5u];
-        rg.raw[rg.next] = macR[k % 5u];
-        rg.mask[rg.next] = macM[k % 5u];
+        rg.issue[rg.next] = macAt[k & 7u];
+        rg.raw[rg.next] = macR[k & 7u];
+        rg.mask[rg.next] = macM[k & 7u];
         rg.tail[rg.next] = nullptr;
         rg.next = (rg.next + 1u) & VU1FlagRing::kWrap;
     }
     for (uint32_t k = clipN > 5u ? clipN - 5u : 0u; k < clipN; ++k)
-        VU1NativeAccess::ringPush(*c.clipRing, clipAt[k % 5u], clipV[k % 5u]);
+        VU1NativeAccess::ringPush(*c.clipRing, clipAt[k & 7u], clipV[k & 7u]);
     *c.workingClip = clip;
     stv(s, 15, f15); stv(s, 16, f16); stv(s, 17, f17); stv(s, 18, f18); stv(s, 19, f19); stv(s, 29, f29); stv(s, 30, f30);
     stv(s, 31, f31);
@@ -1026,16 +1027,31 @@ inline uint64_t nowNs()
 {
     return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count());
 }
-inline Stats &stats()
+// namespace scope (zero-initialised before anything runs): no guard check per kernel call
+inline Stats g_stats{};
+inline Stats &stats() { return g_stats; }
+// The counters have one writer (the VU1 thread's dispatch; report() drains them on the same thread): a relaxed load and
+// store, not a read-modify-write (an LDXR/STXR loop per kernel call on the A57, ~1 % of the console's VU1 thread)
+inline void statAdd(std::atomic<uint64_t> &a, uint64_t v) { a.store(a.load(std::memory_order_relaxed) + v, std::memory_order_relaxed); }
+// GOW_VU1_HLE_TIME, read on first use into a plain byte (-1 = not read yet)
+inline bool timeKernels()
 {
-    static Stats st{};
-    return st;
+    static int8_t on = -1;
+    if (on < 0)
+        on = std::getenv("GOW_VU1_HLE_TIME") != nullptr ? 1 : 0;
+    return on != 0;
 }
 // "[vu1-hle] window=5s <kernel>=<calls>/<VU cycles> ..." every 5 s with GOW_PERF_DIAG or GOW_VU1_HLE_STATS (force: now)
 inline void report(bool force = false)
 {
-    static const bool want = std::getenv("GOW_PERF_DIAG") || std::getenv("GOW_VU1_HLE_STATS");
+    // called at every runNative exit: no static guard, and the clock is read only every 64th call (one runNative ~10-30 us)
+    static int8_t want = -1;
+    if (want < 0)
+        want = (std::getenv("GOW_PERF_DIAG") || std::getenv("GOW_VU1_HLE_STATS")) ? 1 : 0;
     if (!want && !force)
+        return;
+    static uint32_t callsSinceClock = 0;
+    if (!force && (++callsSinceClock & 63u) != 0u)
         return;
     static std::atomic<int64_t> lastMs{0};
     const int64_t now = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();

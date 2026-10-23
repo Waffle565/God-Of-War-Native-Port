@@ -55,9 +55,12 @@ namespace
         return s;
     }
 
+    thread_local bool t_onStage = false; // true on the stage thread (loop)
+
     void loop()
     {
         ThreadNaming::SetCurrentThreadName("GSStage");
+        t_onStage = true; // onStageThread
         Stage &s = stage();
         std::vector<Packet> batch;
         for (;;)
@@ -137,7 +140,7 @@ namespace ps2_gs_stage
 
     bool onStageThread()
     {
-        return running() && std::this_thread::get_id() == stage().threadId;
+        return t_onStage; // set by the stage thread itself (no std::this_thread::get_id per call)
     }
 
     // queues the staged packets (producer thread)

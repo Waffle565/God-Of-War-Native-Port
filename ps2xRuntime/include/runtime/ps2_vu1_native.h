@@ -303,7 +303,8 @@ struct VU1NativeAccess
     static VU1Interpreter::NativeState::Slot &slotFor(VU1Interpreter &vu, const uint8_t *code, uint32_t codeSize, uint32_t pc);
     static VU1Interpreter::NativeState::KeyInfo &keyInfo(VU1Interpreter::NativeState &ns, uint64_t key);
     static VU1Interpreter::NativeState::BlockTiming &timingFor(VU1Interpreter::NativeState &ns, uint64_t key);
-    static void codeChanged(VU1Interpreter::NativeState &ns, const uint8_t *code); // micro memory (16 KB) rewritten
+    // micro memory (16 KB) rewritten; only pairs [lo, hi) can differ from ns.code (PS2Memory::vu1CodeChangedRange)
+    static void codeChanged(VU1Interpreter::NativeState &ns, const uint8_t *code, uint32_t lo = 0u, uint32_t hi = 2048u);
     // GOW_VU1_HLE (ps2_vu1_hle.inl): the kernel at pc, matched now (VU1HleState); a chain about to enter pc asks
     // hleStopAt whether it must hand pc to runNative instead (a kernel starts there)
     static uint32_t hleMatch(VU1Interpreter::NativeState &ns, const uint8_t *code, uint32_t codeSize, uint32_t pc);
@@ -312,6 +313,10 @@ struct VU1NativeAccess
     // kernels after it) itself through hleChain instead of returning to runNative
     static uint32_t hleRun(VU1Interpreter &vu, uint32_t pc, uint32_t kv, uint64_t budgetEnd, uint8_t *data);
     static uint32_t hleChain(VU1NativeCtx &n, uint32_t pc);
+    // hleRun's history entry for a kernel (every lane written, ready at its start); namespace-scope data built at start-up,
+    // not a function-local static (a guard check per kernel call)
+    static const VU1Interpreter::NativeState::BlockTiming s_hleHistBt;
+    static const uint8_t s_hleZeroCyc[1];
     static uint64_t &laneWord(VU1Interpreter &vu, uint32_t lane);
     template <typename F>
     static void walkHistory(VU1Interpreter::NativeState &ns, uint64_t now, uint64_t want[3], F &&ready);

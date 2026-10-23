@@ -1203,7 +1203,10 @@ void VU1Interpreter::finishXgkick(const uint8_t *packet)
 
     // GOW_VU1_KICKPRIM=<hex prim>: debug, for XGKICK packets with a GIF tag that sets that PRIM (PRE = 1), print the VU1 PC,
     // the source address and how many XYZ2 vertices of those tags kick (ADC = 0) or not
-    static const long kickPrim = std::getenv("GOW_VU1_KICKPRIM") ? std::strtol(std::getenv("GOW_VU1_KICKPRIM"), nullptr, 16) : -1;
+    // (read once into a plain static: no guard check per kick; -2 = not read yet)
+    static long kickPrim = -2;
+    if (kickPrim == -2)
+        kickPrim = std::getenv("GOW_VU1_KICKPRIM") ? std::strtol(std::getenv("GOW_VU1_KICKPRIM"), nullptr, 16) : -1;
     if (kickPrim >= 0)
     {
         static int kickShown = 0;

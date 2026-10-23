@@ -412,6 +412,9 @@ void PS2Memory::processVIF1Data(const uint8_t *data, uint32_t sizeBytes)
 
     uint32_t pos = 0;
     static const bool traceVif = std::getenv("GOW_VIF_DIAG") != nullptr;
+    // read here, once per call, instead of a function-local static (a guard check) per STCYCL / UNPACK
+    static const bool cycleDiagEnv = std::getenv("GOW_VIF_CYCLE_DIAG") != nullptr;
+    static const char *const matDumpEnv = std::getenv("GOW_VIF_MATDUMP");
 
     while (pos < sizeBytes)
     {
@@ -475,8 +478,7 @@ void PS2Memory::processVIF1Data(const uint8_t *data, uint32_t sizeBytes)
         else if (opcode == VIF_STCYCL)
         {
             vif1_regs.cycle = imm;
-            static const bool cycleDiag = std::getenv("GOW_VIF_CYCLE_DIAG") != nullptr;
-            if (cycleDiag)
+            if (cycleDiagEnv)
             {
                 static std::map<uint32_t, unsigned> cycles;
                 static unsigned total = 0;
@@ -640,7 +642,7 @@ void PS2Memory::processVIF1Data(const uint8_t *data, uint32_t sizeBytes)
                     if (std::memcmp(m_vu1Code + destAddr, data + pos, copyBytes) != 0)
                     {
                         std::memcpy(m_vu1Code + destAddr, data + pos, copyBytes);
-                        markVU1CodeModified();
+                        markVU1CodeModified(destAddr, copyBytes);
                     }
                 }
                 else
@@ -753,7 +755,7 @@ void PS2Memory::processVIF1Data(const uint8_t *data, uint32_t sizeBytes)
             // GOW-Port: GOW_VIF_MATDUMP=<file>[:<start s>[:<len s>]] appends every big V4-32 UNPACK (>= 32 vectors) seen in
             // the window as [u32 vuAddr][u32 vectors][data] to look at the skinning matrix palette Kratos sends to VU1.
             {
-                static const char *dumpSpec = std::getenv("GOW_VIF_MATDUMP");
+                const char *const dumpSpec = matDumpEnv;
                 if (dumpSpec && totalBytes > 0)
                 {
                     static std::map<uint32_t, unsigned> hist; static unsigned n = 0;
