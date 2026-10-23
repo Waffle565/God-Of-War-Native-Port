@@ -5,6 +5,27 @@ look the same (pixel comparison against the CPU path, tolerances documented). Pl
 (2) a plain-float CPU reference (HLE) compared with the exact path on the recordings, which also says whether a fast
 CPU HLE alone reaches the target, (3) GPU path, (4) console fps / per-core busy / screenshots.
 
+## Handoff (2026-10-23 night 4, sw-vu1k: live PC sampling, VU1 dispatch costs cut; ext agent/sw-vu1gpu b5445ee, `update_pcs2`)
+- New tool `GOW_PC_SAMPLE` (docs/diagnostics.md): real A57 wall-time profile of the VU1 thread in the bot fight (pcs1 =
+  con2 code + sampler, 145-195 s, 28-29 fps): generated blocks 45.6 % (spread: the top block, culling `b0d00`, 2.9 %),
+  **runNative 13.3 % of which 42 % was the kernel matching** (byte-wise FNV of every kernel's region for every pc after
+  every code change: `tried[]` was cleared on each of the ~1000 code changes per 5 s), VIF decode/unpack ~7 %,
+  code-change handling ~5 % (codeChanged walked all 2048 128-byte slots; slotFor / setupTrace / the timing map),
+  exact-engine callouts ~6.5 % (long double = software quad on AArch64 ~2.6 %), kernels 5.5 %, idle 4.6 %, clock
+  reads 1.4 %, entry/exit ~2 %.
+- Fixes (b5445ee, all exact: x86 replay dumps of fight.rec/menu.rec identical to HEAD with HLE=0, identical to HEAD
+  with `GOW_VU1N_DIRECT=0` with HLE=1): kernel matches reset only near changed pairs and memoised by a hash of the pairs
+  a match reads (`windowKey`); chains stop at untried/kernel pcs (`hleStopAt`), so the cull loops reached by direct
+  chaining get their kernel again (with DIRECT=1 they had run natively: `cull=20/520` cycles instead of `80/104416`);
+  codeChanged scans only the slots near the change plus a trace bitmask; `ps2_perf::nowNanos` reads `cntpct_el0`
+  (`cntvct_el0` traps at EL0 on Horizon: first try crashed); normalizeFmacResult converts to long double lazily.
+- Console (handheld, bot fight, `update_pcs2` + sampler env): **fight 150-200 s 30-37 fps (pcs1 27-30)**, title
+  56.2-56.4 (55); runNative 13.3 -> 7.6 % of the VU1 thread. Bot fights differ per run: confirm with a second run.
+- Remaining in the pcs2 profile: slot set-up after code changes ~3.8 % (slotFor 1.9, setupTrace 0.8, timing map
+  1.1), codeChanged 1.5 %, hleMatch 1.2 %, exact callouts ~6 %, VIF ~7 %, blocks 48 %. EE thread (core 1):
+  `svcArbitrateLock` 13 % of its samples = a contended host mutex (not identified yet: needs callers; the sampler only
+  keeps the PC).
+
 ## Handoff (2026-10-23 night 3: GPU vertex path measured and dropped; no code change, ext agent/sw-vu1gpu 06b18e2, `update_con2`)
 - **Measurement** (console, handheld, `update_con2` + env `GOW_VU1_HLE_TIME=1`, same bot fight, log `port/switch/logs/20261023_ht`):
   wall time inside the HLE vertex kernels per 5 s vs the VU1 thread's `vu_ms`:
