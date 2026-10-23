@@ -1,4 +1,7 @@
 #include "runtime/ps2_memory.h"
+#include <thread>
+#include <functional>
+#include <cstdlib>
 #include "runtime/gs/gs_stage.h"
 #include "runtime/gs/gs_display.h"
 #include <chrono>
@@ -1560,6 +1563,11 @@ bool PS2Memory::isGsStatusRegister(uint32_t address) noexcept
 
 void PS2Memory::gsDisplayStore(uint32_t address, uint64_t value)
 {
+    // GOW_DISP_STORE_LOG=1: every store to a GS display register with the host thread id (display register race hunt)
+    static const bool storeLog = std::getenv("GOW_DISP_STORE_LOG") != nullptr;
+    if (storeLog)
+        std::fprintf(stderr, "[disp-store] t=%u addr=%x val=%llx\n", static_cast<unsigned>(std::hash<std::thread::id>{}(std::this_thread::get_id()) & 0xFFFFu),
+                     address & 0xFFFFu, static_cast<unsigned long long>(value));
     GSDisplayState state = ps2_gs_display::display(*this);
     switch (address & 0x1FFFFFFFu)
     {

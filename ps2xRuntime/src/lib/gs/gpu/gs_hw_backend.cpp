@@ -2448,6 +2448,23 @@ PresentationFrame GSHwBackend::Present(const GSPresentationRequest &request)
     d.dumpAfterSkip = false;
     d.frameBatch = 0;
     d.reportStats();
+    // GOW_GS_HW_SKIPCHECK=1: the console's "unchanged frame is not presented again" test (same display registers and
+    // displayed targets, gs_dk branch) evaluated here without skipping; GOW_GS_HW_SEQDUMP thumbnails carry the verdict
+    static const bool skipCheck = std::getenv("GOW_GS_HW_SKIPCHECK") != nullptr;
+    static uint64_t skipKey[9] = {};
+    bool wouldSkip = false;
+    if (skipCheck)
+    {
+        const auto shown = [&d](uint64_t dispfb) -> uint64_t
+        {
+            const RenderTarget *rt = d.findTarget(static_cast<uint32_t>(dispfb & 0x1FFu));
+            return rt ? (rt->version << 1 | 1u) ^ reinterpret_cast<uintptr_t>(rt) : 0u;
+        };
+        const uint64_t key[9] = {request.pmode, request.smode2, request.dispfb1, request.display1, request.dispfb2,
+                                 request.display2, request.bgcolor, shown(request.dispfb1), shown(request.dispfb2)};
+        wouldSkip = std::memcmp(key, skipKey, sizeof(key)) == 0;
+        std::memcpy(skipKey, key, sizeof(key));
+    }
     const bool enable1 = (request.pmode & 1ull) != 0ull, enable2 = (request.pmode & 2ull) != 0ull;
     const auto decode = [&](bool enabled, uint64_t dispfb, uint64_t display, uint32_t &fbp, uint32_t &fbw, uint32_t &dbx, uint32_t &dby,
                             uint32_t &w, uint32_t &h)
@@ -2663,6 +2680,46 @@ PresentationFrame GSHwBackend::Present(const GSPresentationRequest &request)
     g.ClearColor(0.f, 0.f, 0.f, 1.f);
     g.Clear(kColorBufferBit);
     g.ColorMask(kTrue, kTrue, kTrue, kTrue);
+    // GOW_GS_HW_SEQDUMP=<first>:<count>: the composed picture of presents first .. first+count-1 to gs_seq_<present>_<fbp>.ppm
+    // (a one-frame glitch hunt: which present shows which render target)
+    static const char *seqDump = std::getenv("GOW_GS_HW_SEQDUMP");
+    if (seqDump)
+    {
+        const int first = std::atoi(seqDump);
+        const char *colon = std::strchr(seqDump, ':');
+        const int count = colon ? std::atoi(colon + 1) : 1;
+        if (d.presentCount >= first && d.presentCount < first + count)
+        {
+            std::vector<uint8_t> px(static_cast<size_t>(outW) * outH * 4u);
+            g.BindFramebuffer(kFramebuffer, d.presentFbo);
+            g.ReadPixels(0, 0, outW, outH, kRgba, kUnsignedByte, px.data());
+            if (count > 100)
+            {
+                // long runs: one record per present into gs_seq_thumbs.bin: present, fbp, dispfb1 fbp, then every 16th pixel
+                // of every 16th row as RGB (the picture's change from present to present shows a stale or foreign frame)
+                if (FILE *f = std::fopen("gs_seq_thumbs.bin", d.presentCount == first ? "wb" : "ab"))
+                {
+                    const uint32_t head[5] = {static_cast<uint32_t>(d.presentCount), fbp, static_cast<uint32_t>(request.dispfb1 & 0x1FFu) | (wouldSkip ? 0x10000u : 0u), outW / 16u, outH / 16u};
+                    std::fwrite(head, sizeof(head), 1, f);
+                    for (uint32_t y = 0; y < outH / 16u * 16u; y += 16u)
+                        for (uint32_t x = 0; x < outW / 16u * 16u; x += 16u)
+                            std::fwrite(&px[(static_cast<size_t>(y) * outW + x) * 4u], 1, 3, f);
+                    std::fclose(f);
+                }
+            }
+            else {
+            char name[96];
+            std::snprintf(name, sizeof(name), "gs_seq_%05d_%x_%x.ppm", d.presentCount, fbp, static_cast<unsigned>(request.dispfb1 & 0x1FFu));
+            if (FILE *f = std::fopen(name, "wb"))
+            {
+                std::fprintf(f, "P6 %u %u 255 ", outW, outH);
+                for (size_t i = 0; i + 3 < px.size(); i += 4)
+                    std::fwrite(&px[i], 1, 3, f);
+                std::fclose(f);
+            }
+            }
+        }
+    }
     if (shared)
     {
         // GOW-Port: zero-copy presentation: GPU copy into a texture shared with the host window, no pixels returned.

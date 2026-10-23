@@ -3,6 +3,7 @@
 #include "ps2_log.h"
 #include "runtime/ps2_perf.h"
 #include "ps2_runtime_macros.h"
+#include "runtime/gs/gs_display.h"
 
 #include <algorithm>
 #include <cassert>
@@ -1970,6 +1971,7 @@ void EeScheduler::processEvent(const EeEvent &event)
         requestStop();
         break;
     case EeEventType::VBlankStart:
+        ps2_gs_display::latchDisplay(m_runtime.memory()); // what this field scans out, before the VBlank handler rewrites it
         ++m_vsyncTick;
         m_runtime.memory().gs().vsyncTick.store(m_vsyncTick, std::memory_order_release);
         if ((m_vsyncTick & 1u) != 0u)

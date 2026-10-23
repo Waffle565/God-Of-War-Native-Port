@@ -12,6 +12,9 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include "runtime/gs/gs_display.h"
+#include <thread>
+#include <functional>
 #include <cstring>
 #include <iostream>
 #include <map>
@@ -735,13 +738,27 @@ GSPresentationRequest GS::buildPresentationRequestUnlocked() const
     GSPresentationRequest request{};
     if (!m_privRegs)
         return request;
-    request.pmode = m_privRegs->pmode;
-    request.smode2 = m_privRegs->smode2;
-    request.dispfb1 = m_privRegs->dispfb1;
-    request.display1 = m_privRegs->display1;
-    request.dispfb2 = m_privRegs->dispfb2;
-    request.display2 = m_privRegs->display2;
-    request.bgcolor = m_privRegs->bgcolor;
+    static const bool sampleLog = std::getenv("GOW_DISP_STORE_LOG") != nullptr;
+    if (sampleLog)
+        std::fprintf(stderr, "[disp-sample] t=%u fb1=%llx fb2=%llx\n", static_cast<unsigned>(std::hash<std::thread::id>{}(std::this_thread::get_id()) & 0xFFFFu),
+                     static_cast<unsigned long long>(m_privRegs->dispfb1), static_cast<unsigned long long>(m_privRegs->dispfb2));
+    // the registers latched at the start of this VBlank (gs_display.h): never a VBlank handler's half-written state
+    GSDisplayState live;
+    live.pmode = m_privRegs->pmode;
+    live.smode2 = m_privRegs->smode2;
+    live.dispfb1 = m_privRegs->dispfb1;
+    live.display1 = m_privRegs->display1;
+    live.dispfb2 = m_privRegs->dispfb2;
+    live.display2 = m_privRegs->display2;
+    live.bgcolor = m_privRegs->bgcolor;
+    const GSDisplayState shown = ps2_gs_display::latchedDisplay(live);
+    request.pmode = shown.pmode;
+    request.smode2 = shown.smode2;
+    request.dispfb1 = shown.dispfb1;
+    request.display1 = shown.display1;
+    request.dispfb2 = shown.dispfb2;
+    request.display2 = shown.display2;
+    request.bgcolor = shown.bgcolor;
     request.vsyncTick = m_privRegs->vsyncTick.load(std::memory_order_acquire);
     request.contextFrames[0] = m_ctx[0].frame;
     request.contextFrames[1] = m_ctx[1].frame;
