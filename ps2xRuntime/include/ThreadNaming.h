@@ -31,6 +31,7 @@ extern "C"
 // time-slice threads of one priority, so the runtime's busy threads are spread over the three application cores.
 // priorityBoost: steps above the default thread priority (Horizon preempts lower-priority threads on the same core).
 extern "C" void ps2xSwitchPinCurrentThread(int core, int priorityBoost);
+extern "C" void ps2xSwitchPcSampleRegister(const char *name); // GOW_PC_SAMPLE (ps2_switch_runtime.cpp)
 #endif
 
 namespace ThreadNaming
@@ -88,6 +89,7 @@ namespace ThreadNaming
             boost = '0' - value[1];
         std::fprintf(stderr, "[switch] thread %.*s:\n", static_cast<int>(name.size()), name.data());
         ps2xSwitchPinCurrentThread(core, boost);
+        ps2xSwitchPcSampleRegister(std::string(name).c_str());
 #endif
     }
 }

@@ -158,6 +158,19 @@ struct VU1Interpreter::NativeState
         uint32_t next = 0;
     };
     std::unordered_map<uint64_t, BlockTiming> timings;
+    // slotFor / setupTrace look a block key up here first (VU1NativeAccess::keyInfo): the registry entry (null: no native
+    // block), its timing data (in `timings`, created on first use) and the traces starting with it, in one open-addressed
+    // table. Three std::unordered_map lookups per set-up (a few cache misses each) were ~3 % of the console's VU1 thread
+    // in fights, where every code change sets slots up again.
+    struct KeyInfo
+    {
+        uint64_t key = 0; // 0: free
+        void *entry = nullptr;
+        BlockTiming *bt = nullptr;
+        const void *traces = nullptr;
+    };
+    std::vector<KeyInfo> keyInfo;
+    uint32_t keyInfoCount = 0;
     // Per pc slot. The first cache line holds what the dispatch loop touches for every block; the entry-timing memo
     // (only blocks that read entry flags use it) is in the second.
     struct alignas(64) Slot
@@ -191,6 +204,9 @@ struct VU1Interpreter::NativeState
     static_assert(sizeof(Slot) == 128);
     static constexpr uint8_t kScalarMany = 0xFF;
     Slot slots[2048];
+    // slots that were given a trace (bit per slot, set by setupTrace): codeChanged tests these wherever the change is, the
+    // plain blocks only near it (a scan of all 2048 slots, 256 KB, cost ~2 % of the console's VU1 thread in fights)
+    uint64_t traceSlots[2048 / 64] = {};
     std::unordered_map<uint64_t, std::vector<Slot>> traceParts; // trace key -> its prefix blocks (Slot::parts)
     // Native blocks run since native entry (or the last sync), newest last; histCount counts them all (the ring keeps the
     // last kHist). A write is ready less than maxLat cycles after its block ended, so only blocks that ended less than
@@ -216,6 +232,10 @@ struct VU1Interpreter::NativeState
     struct VU1Split *split = nullptr;
     // GOW_VU1_HLE (ps2_vu1_hle.inl): which dispatch pcs start a plain-float vertex-loop kernel (null: off)
     struct VU1HleState *hle = nullptr;
+    // with the kernels on: per slot, 1 = not matched against the kernels yet, or a kernel starts there (a chain asks
+    // hleStopAt and hands such a pc to runNative: chained blocks used to run the cull loops natively); points into
+    // VU1HleState::stop
+    const uint8_t *hleStop = nullptr;
     int splitMode = -1; // -1 not read yet, 0 off, 1 on (GOW_VU1_SPLIT)
     bool specMode = false, specFail = false;
     uint16_t splitLast[2048] = {}; // per slot: VU cycles of its last dispatch (saturated)
@@ -280,7 +300,13 @@ struct VU1NativeAccess
     static void scalarStart(VU1Interpreter &vu, uint64_t issue, uint32_t latency, bool fdiv);
     static void commitDue(VU1Interpreter &vu); // commitReadyPipelines after a native block (FDIV/EFU-only fast path)
     static VU1Interpreter::NativeState::Slot &slotFor(VU1Interpreter &vu, const uint8_t *code, uint32_t codeSize, uint32_t pc);
+    static VU1Interpreter::NativeState::KeyInfo &keyInfo(VU1Interpreter::NativeState &ns, uint64_t key);
+    static VU1Interpreter::NativeState::BlockTiming &timingFor(VU1Interpreter::NativeState &ns, uint64_t key);
     static void codeChanged(VU1Interpreter::NativeState &ns, const uint8_t *code); // micro memory (16 KB) rewritten
+    // GOW_VU1_HLE (ps2_vu1_hle.inl): the kernel at pc, matched now (VU1HleState); a chain about to enter pc asks
+    // hleStopAt whether it must hand pc to runNative instead (a kernel starts there)
+    static uint32_t hleMatch(VU1Interpreter::NativeState &ns, const uint8_t *code, uint32_t codeSize, uint32_t pc);
+    static bool hleStopAt(const VU1NativeCtx &n, uint32_t pc);
     static uint64_t &laneWord(VU1Interpreter &vu, uint32_t lane);
     template <typename F>
     static void walkHistory(VU1Interpreter::NativeState &ns, uint64_t now, uint64_t want[3], F &&ready);
@@ -587,7 +613,7 @@ VU1N_INLINE uint32_t VU1NativeAccess::chainTo(VU1NativeCtx &n, uint32_t pc, VU1N
         commitDue(vu);
     NS::Slot &next = ns.slots[(pc & 0x3FF8u) >> 3];
     if (vu.m_stopRequested || vu.m_cycle >= n.budgetEnd || next.fn != expected || !next.known ||
-        (next.readsEntryFlags && !ns.chainFlags))
+        (next.readsEntryFlags && !ns.chainFlags) || (ns.hleStop && ns.hleStop[(pc & 0x3FF8u) >> 3] && hleStopAt(n, pc & 0x3FF8u)))
         return 2u;
     if (ns.diag)
     {
@@ -665,7 +691,8 @@ VU1N_INLINE uint32_t VU1NativeAccess::chainStep(VU1NativeCtx &n, uint32_t pc, ui
         commitDue(vu);
     // the slot holds the expected block (its own function or a trace starting with it); a slot whose code changed has key 0
     NS::Slot &next = ns.slots[pc >> 3];
-    if (vu.m_stopRequested || vu.m_cycle >= n.budgetEnd || (any ? (!next.known || !next.fn) : next.key != key))
+    if (vu.m_stopRequested || vu.m_cycle >= n.budgetEnd || (any ? (!next.known || !next.fn) : next.key != key) ||
+        (ns.hleStop && ns.hleStop[pc >> 3] && hleStopAt(n, pc)))
         return 2u;
     n.chainLeft = left - 1u;
     if (ns.diag)

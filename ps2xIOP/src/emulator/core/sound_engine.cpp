@@ -62,7 +62,7 @@ namespace ps2x::iop::detail
     {
         {
             std::lock_guard<std::mutex> lock(m_jobMutex);
-            m_stop = true;
+            m_stop.store(true);
         }
         m_jobCv.notify_all();
         if (m_worker.joinable())
@@ -73,19 +73,27 @@ namespace ps2x::iop::detail
     {
         if (!m_async)
             return;
+        // a batch the worker has not started yet is taken back and mixed below with the remainder: waiting for a woken
+        // thread to be scheduled cost ~1 ms per wait on a busy PC; only a batch being mixed is waited for
+        uint32_t state = m_jobState.load(std::memory_order_acquire);
+        for (;;)
         {
-            std::unique_lock<std::mutex> lock(m_jobMutex);
-            // a batch the worker has not started yet is taken back and mixed below with the remainder: waiting for a
-            // woken thread to be scheduled cost ~1 ms per wait on a busy PC; only a batch being mixed is waited for
-            m_jobPending = false;
-            if (m_jobRunning)
+            if (state == JobIdle)
+                break;
+            const uint32_t next = state == JobPending ? JobIdle : JobRunning; // RunningPending: keep the running part
+            if (state != next && !m_jobState.compare_exchange_weak(state, next, std::memory_order_acq_rel))
+                continue;
+            if (next == JobIdle)
+                break;
+            const auto t0 = std::chrono::steady_clock::now();
             {
-                const auto t0 = std::chrono::steady_clock::now();
-                m_jobCv.wait(lock, [this] { return !m_jobRunning; });
-                m_syncWaitNanos += static_cast<uint64_t>(
-                    std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t0).count());
-                ++m_syncWaits;
+                std::unique_lock<std::mutex> lock(m_jobMutex);
+                m_doneCv.wait(lock, [this] { return m_jobState.load(std::memory_order_acquire) == JobIdle; });
             }
+            m_syncWaitNanos += static_cast<uint64_t>(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t0).count());
+            ++m_syncWaits;
+            break;
         }
         // the samples the worker has not mixed (a remainder smaller than a batch, or a batch taken back): mixed here,
         // as inline mixing would have (mixTo returns at once when the worker already got there)
@@ -116,24 +124,35 @@ namespace ps2x::iop::detail
             core = value[0] - '0';
         ps2xSwitchPinCurrentThread(core, 0);
 #endif
-        std::unique_lock<std::mutex> lock(m_jobMutex);
         for (;;)
         {
-            m_jobCv.wait(lock, [this] { return m_jobPending || m_stop; });
-            if (m_stop)
+            {
+                std::unique_lock<std::mutex> lock(m_jobMutex);
+                while (m_jobState.load(std::memory_order_acquire) != JobPending && !m_stop.load())
+                    m_jobCv.wait_for(lock, std::chrono::milliseconds(2)); // the caller signals without the lock
+            }
+            if (m_stop.load())
                 return;
-            const uint64_t target = m_jobTarget;
-            m_jobPending = false;
-            m_jobRunning = true;
-            lock.unlock();
-            const auto t0 = std::chrono::steady_clock::now();
-            m_workerSamples.fetch_add(mixTo(target), std::memory_order_relaxed);
-            m_mixerNanos.fetch_add(static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
-                                       std::chrono::steady_clock::now() - t0).count()),
-                                   std::memory_order_relaxed);
-            lock.lock();
-            m_jobRunning = false;
-            m_jobCv.notify_all();
+            uint32_t expected = JobPending;
+            if (!m_jobState.compare_exchange_strong(expected, JobRunning, std::memory_order_acq_rel))
+                continue; // sync() took it back
+            for (;;)
+            {
+                const auto t0 = std::chrono::steady_clock::now();
+                m_workerSamples.fetch_add(mixTo(m_jobTarget.load(std::memory_order_acquire)), std::memory_order_relaxed);
+                m_mixerNanos.fetch_add(static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                           std::chrono::steady_clock::now() - t0).count()),
+                                       std::memory_order_relaxed);
+                uint32_t state = JobRunning;
+                if (m_jobState.compare_exchange_strong(state, JobIdle, std::memory_order_acq_rel))
+                    break;
+                // a batch handed while this one was mixed (RunningPending) runs right away
+                m_jobState.store(JobRunning, std::memory_order_release);
+            }
+            {
+                std::lock_guard<std::mutex> lock(m_jobMutex); // a sync() between its check and its wait sees the signal
+            }
+            m_doneCv.notify_all();
         }
     }
 
@@ -150,8 +169,7 @@ namespace ps2x::iop::detail
         }
         m_lastCycle = 0;
         m_callerTarget = m_handedTarget = 0; // the IOP clock starts again
-        std::lock_guard<std::mutex> lock(m_jobMutex);
-        m_jobTarget = 0;
+        m_jobTarget.store(0, std::memory_order_release); // sync() above left the worker idle
     }
 
     void SoundEngine::initCore(uint32_t core)
@@ -754,12 +772,18 @@ namespace ps2x::iop::detail
         if (m_callerTarget < m_handedTarget + m_batchCycles)
             return;
         m_handedTarget = m_callerTarget;
+        m_jobTarget.store(m_handedTarget, std::memory_order_release);
+        uint32_t state = m_jobState.load(std::memory_order_relaxed);
+        for (;;)
         {
-            std::lock_guard<std::mutex> lock(m_jobMutex);
-            m_jobTarget = m_handedTarget;
-            m_jobPending = true;
+            if (state == JobPending || state == JobRunningPending)
+                return; // the worker takes the newer target with the batch already handed
+            const uint32_t next = state == JobIdle ? JobPending : JobRunningPending;
+            if (m_jobState.compare_exchange_weak(state, next, std::memory_order_acq_rel))
+                break;
         }
-        m_jobCv.notify_one();
+        if (state == JobIdle)
+            m_jobCv.notify_one();
     }
 
     // the samples up to iopCycle (whole samples; the rest of a sample waits for the next call)
