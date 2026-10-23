@@ -229,6 +229,42 @@ constexpr uint32_t PS2_FCR31_D = 0x00010000u;
 constexpr uint32_t PS2_FCR31_SI = 0x00000040u;
 constexpr uint32_t PS2_FCR31_SD = 0x00000020u;
 
+// GOW-Port: the EE FPU divides and square roots in round-to-nearest while the EE thread runs in round-toward-zero
+// (ps2_runtime.cpp, PCSX2's FPUDivFPCR). On AArch64 sse2neon's _mm_getcsr / _mm_setcsr are fegetround / fesetround
+// library calls plus extra FPCR reads and an FZ write (4 FPCR writes per divide); here it is one mrs and two msr, and
+// none when the thread already rounds to nearest (GOW_EE_FPU_NEAREST=1). FZ is left as it is, like _mm_setcsr(csr &
+// ~0x6000) did. The operands and the result pass through the asm statements so the compiler cannot move the fdiv /
+// fsqrt across the mode switch.
+#if defined(__aarch64__) && !defined(PS2X_FPU_CSR_SSE2NEON)
+inline float ps2FpuDivideNearest(float dividend, float divisor)
+{
+    uint64_t fpcr;
+    __asm__ volatile("mrs %0, fpcr" : "=r"(fpcr));
+    if ((fpcr & (3ull << 22)) == 0)
+        return dividend / divisor;
+    __asm__ volatile("msr fpcr, %2" : "+w"(dividend), "+w"(divisor) : "r"(fpcr & ~(3ull << 22)));
+    float result;
+    __asm__ volatile("fdiv %s0, %s1, %s2" : "=w"(result) : "w"(dividend), "w"(divisor));
+    __asm__ volatile("msr fpcr, %1" : "+w"(result) : "r"(fpcr));
+    return result;
+}
+
+inline float ps2FpuSqrtNearest(float value)
+{
+    uint64_t fpcr;
+    __asm__ volatile("mrs %0, fpcr" : "=r"(fpcr));
+    float result;
+    if ((fpcr & (3ull << 22)) == 0)
+    {
+        __asm__ volatile("fsqrt %s0, %s1" : "=w"(result) : "w"(value));
+        return result;
+    }
+    __asm__ volatile("msr fpcr, %1" : "+w"(value) : "r"(fpcr & ~(3ull << 22)));
+    __asm__ volatile("fsqrt %s0, %s1" : "=w"(result) : "w"(value));
+    __asm__ volatile("msr fpcr, %1" : "+w"(result) : "r"(fpcr));
+    return result;
+}
+#else
 inline float ps2FpuDivideNearest(float dividend, float divisor)
 {
     const uint32_t csr = _mm_getcsr();
@@ -246,6 +282,7 @@ inline float ps2FpuSqrtNearest(float value)
     _mm_setcsr(csr);
     return result;
 }
+#endif
 
 inline float ps2FpuDivide(uint32_t &fcr31, float dividend, float divisor)
 {
