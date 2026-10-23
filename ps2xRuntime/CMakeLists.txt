@@ -782,10 +782,15 @@ if(PS2X_IS_SWITCH)
     set_source_files_properties(src/lib/ps2_switch_runtime.cpp PROPERTIES SKIP_UNITY_BUILD_INCLUSION TRUE)
     # devkitPro's Platform/NintendoSwitch.cmake sets CMAKE_POSITION_INDEPENDENT_CODE ON, so every static library was
     # built -fPIC (global data through the GOT, no inlining of interposable functions); the executable's own objects
-    # never were. The NRO is one static -pie link, so the libraries do not need it either (PS2X_SWITCH_PIC=ON restores it).
+    # never were. The NRO is one static -pie link: -fPIE is enough (no interposition, local data PC-relative). Plain
+    # non-PIC does not link: ps2_runtime's vtables / const pointer tables land in .rodata with absolute relocations
+    # ("read-only segment has dynamic relocations"); -fPIE puts them in .data.rel.ro. PS2X_SWITCH_PIC=ON restores -fPIC.
     option(PS2X_SWITCH_PIC "Switch: build ps2_runtime / ps2_iop / libmpeg2 as PIC (devkitPro default)" OFF)
     if(NOT PS2X_SWITCH_PIC)
         set_target_properties(ps2_runtime ps2_iop libmpeg2 PROPERTIES POSITION_INDEPENDENT_CODE OFF)
+        foreach(PS2X_PIE_TARGET IN ITEMS ps2_runtime ps2_iop libmpeg2)
+            target_compile_options(${PS2X_PIE_TARGET} PRIVATE -fPIE)
+        endforeach()
     endif()
     # the VU1 thread's code at -O3 (aarch64 harness, fight.rec, HLE+DIRECT+TRACES: -5 % instructions, bit-identical);
     # source COMPILE_OPTIONS come after the -O2 of CMAKE_CXX_FLAGS_RELEASE
