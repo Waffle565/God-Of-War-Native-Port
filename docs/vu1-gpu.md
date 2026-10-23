@@ -27,8 +27,9 @@ CPU HLE alone reaches the target, (3) GPU path, (4) console fps / per-core busy 
   from `tools/vu1_hle/findblk.py` (want.prof lines `k <hash> <pc> <pairs> 1 9000000`).
 - **Measured win, no code: `GOW_VU1_HLE=1 GOW_VU1N_DIRECT=1 GOW_VU1N_TRACES=1` in env.txt: title menu 38-40 fps (31 without), bot fight
   22.2-23.6 fps (same as before).** The menu is the steady, deterministic scene: use it as the A/B workload (the fight varies per run).
-  Not yet tried: DIRECT/TRACES with HLE off in the fight on the same build, JR chaining on, then make them the Switch default if the fight
-  does not lose.
+  Same with HLE off (`GOW_VU1N_DIRECT=1 GOW_VU1N_TRACES=1` only, run `20261023_dt`): menu 37-39, fight 22.4-23 then 25.6-30.5 in the later
+  windows (the HLE run showed 22-23.6 there; scenes differ per run). So DIRECT+TRACES are the win, HLE adds nothing yet. To do: confirm
+  in a second fight run, then make them the Switch default (reverts the measurement of c985a11, which was without the kernels / on the ship scene).
 - Next (in order): (1) A/B DIRECT/TRACES x HLE in the menu and fight (4 runs, same package); (2) kernels for `5181a0b0` and `a2eaa96b`
   (`kUnlitSt` in ps2_vu1_hle.inl is the pattern; verify with the harness `cmp.sh`/`hlecmp.py` on `menu.rec`: the old reference dump is lost,
   re-make it with HLE off); (3) shrink the batch-switch / prologue blocks (the ~22 M leftover blocks) as a kernel of their own;
