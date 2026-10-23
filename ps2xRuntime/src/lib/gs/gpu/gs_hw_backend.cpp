@@ -991,7 +991,7 @@ void main()
     // the vertex uploads alone, vertices and draws issued; the rest of the [gs-gl] vrun time is vertex conversion
     struct CpuTiming
     {
-        uint64_t drawNanos = 0, streamNanos = 0, vertices = 0, draws = 0, clutNanos = 0, cluts = 0;
+        uint64_t drawNanos = 0, streamNanos = 0, vertices = 0, draws = 0, clutNanos = 0, cluts = 0, clutKept = 0;
         uint64_t parts[4] = {}; // draw(): before the target bind, fixed state, texture setup, after the upload
         std::chrono::steady_clock::time_point last = std::chrono::steady_clock::now(), mark{};
     } cpuTiming;
@@ -1013,11 +1013,12 @@ void main()
         const auto now = std::chrono::steady_clock::now();
         if (!timed || now - cpuTiming.last < std::chrono::seconds(5))
             return;
-        std::fprintf(stderr, "[gs-hw-cpu] draw_ms=%.1f stream_ms=%.1f vertices=%llu draw_calls=%llu pre_ms=%.1f state_ms=%.1f tex_ms=%.1f post_ms=%.1f tex_decodes=%llu tex_revalidated=%llu clut_ms=%.1f cluts=%llu\n",
+        std::fprintf(stderr, "[gs-hw-cpu] draw_ms=%.1f stream_ms=%.1f vertices=%llu draw_calls=%llu pre_ms=%.1f state_ms=%.1f tex_ms=%.1f post_ms=%.1f tex_decodes=%llu tex_revalidated=%llu clut_ms=%.1f cluts=%llu clut_kept=%llu\n",
                      cpuTiming.drawNanos * 1e-6, cpuTiming.streamNanos * 1e-6, (unsigned long long)cpuTiming.vertices,
                      (unsigned long long)cpuTiming.draws, cpuTiming.parts[0] * 1e-6, cpuTiming.parts[1] * 1e-6,
                      cpuTiming.parts[2] * 1e-6, cpuTiming.parts[3] * 1e-6, (unsigned long long)decodes,
-                     (unsigned long long)revalidated, cpuTiming.clutNanos * 1e-6, (unsigned long long)cpuTiming.cluts);
+                     (unsigned long long)revalidated, cpuTiming.clutNanos * 1e-6, (unsigned long long)cpuTiming.cluts,
+                     (unsigned long long)cpuTiming.clutKept);
         const WrapDiag &w = wrapDiag;
         if (w.barrierBatches || w.groupedBatches || w.formula)
             std::fprintf(stderr, "[gs-hw-wrap] barrier_batches=%llu barrier_tris=%llu grouped_batches=%llu grouped_tris=%llu groups=%llu not_flat=%llu mixed=%llu many=%llu big=%llu odd=%llu formula=%llu\n",
@@ -1753,6 +1754,24 @@ void main()
         g.BindFramebuffer(kFramebuffer, clutFbo);
         g.FramebufferTexture2D(kFramebuffer, kColorAttachment0, kTexture2D, clutTex, 0);
         return true;
+    }
+
+    // True when the CLUT at tex0.cbp may come from a render target, now or once the pending batch is drawn: a target
+    // holds it already, or the pending batch's target (any existing one at that FBP, at its width and used height or
+    // the scissor's) spans the block (GSHwBackend::LoadClut then keeps the flush-first order).
+    bool clutSourceMayBeTarget(const GSTex0Reg &tex0)
+    {
+        if (findReinterpretSource(tex0.cbp, tex0.cpsm))
+            return true;
+        const GSContext &c = pendingState.context;
+        uint32_t bw = c.frame.fbw, rows = static_cast<uint32_t>(c.scissor.y1) + 1u, psm = c.frame.psm;
+        uint32_t span = spanBlocks(psm, bw, rows);
+        for (const RenderTarget &t : targets)
+            if (t.fbp == c.frame.fbp)
+                span = std::max({span, spanBlocks(t.psm, std::max<uint32_t>(bw, t.fbw), std::max(rows, t.usedH)),
+                                 spanBlocks(psm, std::max<uint32_t>(bw, t.fbw), std::max(rows, t.usedH))});
+        const uint32_t lo = c.frame.fbp * 32u;
+        return tex0.cbp >= lo && tex0.cbp < lo + span;
     }
 
     bool clutFromTarget(const GSTex0Reg &tex0, uint32_t width, const uint16_t *xy, uint32_t count, uint32_t *words)
@@ -3508,6 +3527,34 @@ void GSHwBackend::SubmitKicks(const GSDrawState &state, uint64_t serial, const G
 void GSHwBackend::LoadClut(const GSTex0Reg &tex0, const GSTexClutReg &texclut)
 {
     Impl &d = *m_impl;
+    // GOW-Port: the pending batch reads the CLUT when it is drawn, so a CLUT load used to flush it first, ~130 times a
+    // frame in fights (the flushes were most of the [gs-gl] clut time). When the palette comes from the memory image
+    // (no render target holds it, and the pending batch cannot make one: it draws elsewhere), load it first and flush
+    // only when the palette changed; an unchanged one (CLD 4/5 with the same CBP, or the same palette sent again with
+    // the next TEX0) keeps the batch open. GOW_GS_HW_CLUT_KEEP=0: always flush first (the old order).
+    static const bool keepBatch = [] { const char *v = std::getenv("GOW_GS_HW_CLUT_KEEP"); return !v || v[0] != '0'; }();
+    if (keepBatch && d.initialized && d.havePending && !d.haveShuffle && !d.clutSourceMayBeTarget(tex0))
+    {
+        const auto clutStart = std::chrono::steady_clock::now();
+        const std::array<uint16_t, 512> before = d.store.Clut();
+        d.store.LoadClut(tex0, texclut);
+        if (d.store.Clut() == before)
+            ++d.cpuTiming.clutKept;
+        else
+        {
+            const std::array<uint16_t, 512> after = d.store.Clut();
+            d.store.SetClut(before);
+            d.cpuTiming.clutNanos += Impl::nanosSince(clutStart);
+            d.flushPending(); // with the old palette
+            d.store.SetClut(after);
+            d.clutHash = d.store.ClutHash();
+            ++d.cpuTiming.cluts;
+            return;
+        }
+        d.cpuTiming.clutNanos += Impl::nanosSince(clutStart);
+        ++d.cpuTiming.cluts;
+        return;
+    }
     d.flushPending();
     // the CLUT load itself (the draws flushed above are draw_ms)
     const auto clutStart = std::chrono::steady_clock::now();

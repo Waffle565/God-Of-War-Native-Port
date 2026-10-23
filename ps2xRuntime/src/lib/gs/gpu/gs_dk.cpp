@@ -134,6 +134,7 @@ namespace
     {
         uint64_t serial;
         DkMemBlock mem;
+        bool pool = false; // a buffer's storage: kept for reuse (bufferPool) instead of destroyed
     };
 
     struct State
@@ -180,6 +181,8 @@ namespace
         std::vector<Vao> vaos{1};
         std::vector<Fbo> fbos{1};
         std::deque<Garbage> garbage;
+        std::vector<DkMemBlock> bufferPool;
+        uint64_t poolReuses = 0, poolCreates = 0; // [gs-dk-pool] // retired buffer storage of the same flags, reused by storage()
 
         // GL state
         GLuint units[16] = {};
@@ -270,7 +273,11 @@ namespace
         }
         while (!s->garbage.empty() && s->garbage.front().serial <= s->doneSerial)
         {
-            dkMemBlockDestroy(s->garbage.front().mem);
+            const Garbage &g = s->garbage.front();
+            if (g.pool && s->bufferPool.size() < 4u)
+                s->bufferPool.push_back(g.mem);
+            else
+                dkMemBlockDestroy(g.mem);
             s->garbage.pop_front();
         }
     }
@@ -814,8 +821,10 @@ namespace
                      (unsigned long long)s->vtxBufferBinds, (unsigned long long)s->barrierCount);
         s->draws = s->submitsCount = s->presents = s->waits = s->waitNanos = s->uploads = s->uploadBytes = 0;
         s->stateBinds = s->resourceBinds = s->textureBinds = s->programBinds = s->uboPushes = s->uboPushBytes = 0;
-        std::fprintf(stderr, "[gs-dk-time] acquire_ms=%.1f present_submit_ms=%.1f submit_ms=%.1f\n", s->acquireNanos * 1e-6,
-                     s->presentSubmitNanos * 1e-6, s->submitNanos * 1e-6);
+        std::fprintf(stderr, "[gs-dk-time] acquire_ms=%.1f present_submit_ms=%.1f submit_ms=%.1f buf_new=%llu buf_reused=%llu\n", s->acquireNanos * 1e-6,
+                     s->presentSubmitNanos * 1e-6, s->submitNanos * 1e-6, (unsigned long long)s->poolCreates,
+                     (unsigned long long)s->poolReuses);
+        s->poolCreates = s->poolReuses = 0;
         s->vtxBinds = s->vtxBufferBinds = s->rtBinds = s->barrierCount = s->drawNanos = 0;
         s->acquireNanos = s->presentSubmitNanos = s->submitNanos = 0;
         s->statsAt = now;
@@ -913,9 +922,23 @@ namespace
     void storage(Buffer &b, GLsizeiptr size, const void *data)
     {
         if (b.mem)
-            s->garbage.push_back({s->nextSerial, b.mem});
+            s->garbage.push_back({s->nextSerial, b.mem, b.size >= (1u << 20)});
         b.size = align(static_cast<uint32_t>(std::max<GLsizeiptr>(size, 1)), 256u);
-        b.mem = makeMem(b.size, DkMemBlockFlags_CpuUncached | DkMemBlockFlags_GpuCached);
+        // GOW-Port: the vertex stream orphans its 8 MiB buffer every few frames (GL orphaning: new storage, the old
+        // freed when the GPU is done); a dkMemBlockCreate/Destroy pair each time maps and unmaps 8 MiB. Retired big
+        // storage of the same size is reused instead (the GPU is done with it: it went through retire()).
+        b.mem = nullptr;
+        if (b.size >= (1u << 20))
+            for (size_t i = 0; i < s->bufferPool.size(); ++i)
+                if (dkMemBlockGetSize(s->bufferPool[i]) == align(b.size, DK_MEMBLOCK_ALIGNMENT))
+                {
+                    b.mem = s->bufferPool[i];
+                    s->bufferPool.erase(s->bufferPool.begin() + static_cast<std::ptrdiff_t>(i));
+                    ++s->poolReuses;
+                    break;
+                }
+        if (!b.mem)
+            b.mem = makeMem(b.size, DkMemBlockFlags_CpuUncached | DkMemBlockFlags_GpuCached), ++s->poolCreates;
         b.cpu = static_cast<uint8_t *>(dkMemBlockGetCpuAddr(b.mem));
         b.gpu = dkMemBlockGetGpuAddr(b.mem);
         if (data)
