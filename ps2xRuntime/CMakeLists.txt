@@ -797,6 +797,16 @@ if(PS2X_IS_SWITCH)
             ${PS2X_SWITCH_VU1N_SOURCES}
             APPEND PROPERTY COMPILE_OPTIONS "${PS2X_SWITCH_VU1_OPT}")
     endif()
+    # the VU1 thread's code at -O3 (aarch64 harness, fight.rec, HLE+DIRECT+TRACES: -5 % instructions, bit-identical);
+    # source COMPILE_OPTIONS come after the -O2 of CMAKE_CXX_FLAGS_RELEASE
+    set(PS2X_SWITCH_VU1_OPT "-O3" CACHE STRING "Switch: optimisation level of the VU1 sources (empty: the build type's)")
+    if(PS2X_SWITCH_VU1_OPT)
+        set(PS2X_SWITCH_VU1N_SOURCES ${PS2X_VU1N_PARTS} ${PS2X_VU1_PREGENERATED_PARTS})
+        list(FILTER PS2X_SWITCH_VU1N_SOURCES INCLUDE REGEX "vu1n_part[0-9]+\\.cpp$")
+        set_property(SOURCE src/lib/vu/ps2_vu1_core.cpp src/lib/vu/ps2_vu1_upper.cpp src/lib/vu/ps2_vu1_lower.cpp
+            ${PS2X_SWITCH_VU1N_SOURCES}
+            APPEND PROPERTY COMPILE_OPTIONS "${PS2X_SWITCH_VU1_OPT}")
+    endif()
     # host threads get 1 MiB stacks like on Windows (libnx default 128 KiB): ps2_switch_runtime.cpp __wrap_pthread_create
     target_link_options(ps2EntryRunner PRIVATE -Wl,--wrap=pthread_create)
     nx_generate_nacp(ps2EntryRunner.nacp
