@@ -5,6 +5,30 @@ look the same (pixel comparison against the CPU path, tolerances documented). Pl
 (2) a plain-float CPU reference (HLE) compared with the exact path on the recordings, which also says whether a fast
 CPU HLE alone reaches the target, (3) GPU path, (4) console fps / per-core busy / screenshots.
 
+## Handoff (2026-10-23 night: EE thread profile, structural-lever study; ext agent/sw-vu1gpu c7337ec)
+- New tool (ext c7337ec, `update_ee2`/`update_ee3`): `GOW_EE_SAMPLE=<hz>` starts a sampler thread that every 5 s prints `[ee-prof]` (exclusive guest
+  function = the innermost function entered through `dispatchGuestBranch`, or the resume pc when the scheduler re-enters a function after a
+  yield, plus the EE thread's perf bucket 0 ee / 3 iop / 4 wait) and `[ee-wait]` (EE idle waits by wake cause). Cost: two relaxed stores per guest call.
+  On the Switch use `GOW_EE_SAMPLE=200 GOW_CORE_EeSampler=1 GOW_PRIO_EeSampler=3` (std::this_thread::sleep_for and thread::detach are ENOSYS
+  on this libc: svcSleepThread via `ps2xSwitchSleepNs`, the thread is leaked). Read with scratchpad `prof.py <log> <first window> <last window>`.
+- Fight profile (bot fight, update_ee2, ~22-24 fps; per 5 s: ee 2.7-3.0 s, iop 0.8-1.0 s, guest_wait 1.1-1.8 s): of the EE thread's samples
+  **~39 % are in the frame loop's vsync spin** (resume pc 0x17a32c in sub_0017A2A0: `*(0x29C7D0)==1` polled with 20000-iteration countdown loops,
+  every iteration an `eeCheckpointDue`): bucket iop 14.6 % (the IOP batches the checkpoints run) + wait 21.7 % + 3 % own. The game's real EE
+  code is a flat tail: 0x17a114 (sub_0017A0E0 after the Flip call) 7.5 %, 0x162f18 3.9 %, 0x27b9f0 3.0 %, 0x254310 2.1 %, 0x27a210 1.7 %,
+  0x158020 1.1 %, everything else below 1 % each (60 entries listed): no hot function to rewrite. `guest_wait` is the pacing sleep
+  (EeScheduler.cpp:1946, the guest clock may not run ahead of the wall clock) plus `waitForEvent` when every guest thread is blocked.
+- `[gow-speed-hist]` in the fight: most frames take 1.6-1.9 fields (27-31 ms), 3-8 frames per second take >= 2.4 fields: the 22-25 fps average is
+  a hitch problem as much as a throughput one.
+- Arithmetic at 24 fps (41.7 ms/frame): core 1 = EE game code ~20 ms + GS stage ~7.5 ms (it preempts `ee_ms`) + IOP ~8 ms (per wall second, 3 ms at
+  60 fps); VU1 thread ~30 ms. 60 fps (16.7 ms) would need EE game code + stage < 13 ms and VU1 < 16 ms: 2x on both, and the EE tail is flat.
+- Decision (numbers above): no VU1-on-GPU prototype this round. It removes at most the VU1 thread (3.6 s/5 s) and the GS stage still consumes
+  the GIF stream the VU1 programs produce (0.9 s/5 s, core 1) so the stage and the EE (4.3 s/5 s on core 1) stay; without a core-1 cut the
+  fps ceiling stays ~30. Cheapest tests first (coordinator audit, 2026-10-23): (1) `[ee-wait]` by cause (update_ee3, built, not yet run) and the
+  EE->VU1 chain walk (`PS2X_GS_WORKER_TRACE`); (2) `GOW_CORE_GSStage=0`, then `GOW_IOP_THREAD=1 GOW_IOP_SPIN=0 GOW_IOP_LEAD=4194304` now that deko3d is
+  ~1.8 s busy; (3) gsq_wait split; (4) -O3 on the VU1 files; (5) PIC off for ps2_runtime/ps2_iop; (6) FPU divide csr writes; (8) clock/docked logging.
+- State: console `update_ee2`'s `env.txt` (the three sampler variables) is still on the SD. At 14:00 the console stopped answering on Wi-Fi
+  (<switch-ip>: no ping, probably asleep after the cycle): needs a physical wake before any further bot/MTP use.
+
 ## Addendum (2026-10-23 evening: HLE becomes the Switch default, where the rest goes)
 - `GOW_VU1_HLE=1` is now a Switch default (ext 70c9fbb, `update_vgpu5`; env.txt `GOW_VU1_HLE=0` turns it off). Console bot fight windows
   (`gsw-split` vu_ms / runs): **21.5 us per VU1 run** with HLE+DIRECT+TRACES vs 27.6-28.2 (DIRECT+TRACES only) and 33.1 (no env); title menu
