@@ -5,6 +5,38 @@ look the same (pixel comparison against the CPU path, tolerances documented). Pl
 (2) a plain-float CPU reference (HLE) compared with the exact path on the recordings, which also says whether a fast
 CPU HLE alone reaches the target, (3) GPU path, (4) console fps / per-core busy / screenshots.
 
+## Handoff (2026-10-23 night 3: GPU vertex path measured and dropped; no code change, ext agent/sw-vu1gpu 06b18e2, `update_con2`)
+- **Measurement** (console, handheld, `update_con2` + env `GOW_VU1_HLE_TIME=1`, same bot fight, log `port/switch/logs/20261023_ht`):
+  wall time inside the HLE vertex kernels per 5 s vs the VU1 thread's `vu_ms`:
+  | scene | VU1 thread vu_ms | all kernels | per kernel (ms per 5 s) | fps |
+  |---|---|---|---|---|
+  | fight 150-190 s | 4420 | **~300 (6.7 %)** | unlit_st 107, lit_st 97, **skin_lit_st 91 (2.1 %)**, cull 0, unlit11 1 | 28.7 avg / 27.8 min |
+  | title 15-35 s | 3905 | ~590 (15 %) | skin_lit28 326, unlit11 146, unlit_st 113, lit_st 5 | 54.3 |
+  (fight: 173 k VU1 runs per 5 s = 25.5 us per run, of which 1.7 us in kernels; skin_lit_st ~80 ns per vertex, 1.13 M vertices per 5 s.)
+  The qemu figure "kSkinLitSt 22 % of the VU instructions" was an instruction count: the kernels are dense NEON at high IPC, the rest
+  of the VU1 thread is dispatch code (branches, loads, runNative round trips) at low IPC, so their wall share is a third of that.
+- **Decision: the GPU vertex path does not pay; not built.** Its ceiling is the kernels' wall time: moving all of it to deko3d at zero
+  CPU cost takes the fight's VU1 thread 4.42 -> 4.12 s per 5 s (30.9 -> 28.8 ms per frame; 60 fps needs < 16.7), i.e. below the game's
+  30 fps step, no visible fps change; the title is not VU1-bound (core 2 78 %, 54-56 fps). And the cost is not zero (details in
+  "GPU path" below): the backend reads CPU-side vertex positions per draw (render-target extents `usedW/usedH` that decide texture
+  reinterpretation, `isZInversion`, the shadow-volume wrap groups' per-triangle boxes, Z flips), the VU program's GIF packets would
+  need a by-reference vertex block through the GS stage and the frontend, and the CPU would still run the loops' control flow.
+- **Where the VU1 thread goes (fight)**: 93 % is outside the vertex loops: the per-batch code (batch front pc 00d8/00e0/0458/0350/0240,
+  clip-flag culling loops 0cd8..0df8 / 1728..17d8, batch switch 1258), the runNative dispatch (~20 per run) and the exact-engine
+  entry/exit per run (~1200 runs per frame). That is control flow producing GIF tags, flags and XGKICKs: it cannot go to the GPU.
+- **Next best levers (for the coordinator to pick)**, by expected size on the fight's VU1 thread (28.8 ms per frame outside kernels):
+  1. **Batch-front kernel** (pc 00d8..0398: XTOP, matrix loads, normal length, bounding tests with MAC-flag reads): ~45 % of the
+     remaining VU cycles and 4-6 dispatches per batch -> 1 (largest single CPU item; needs the MAC-flag/clip results exact: verify with
+     `cmp.sh`/`hlecmp.py` on fight.rec and menu.rec as the other kernels).
+  2. Kernels for the clip-flag culling loops (~19 % of the remaining cycles; must push the clip-flag ring at exit) and the batch switch
+     (1258, ~9.5 %).
+  3. Per-run overhead: exact-engine entry/exit (~6 % of instructions) and runNative's dispatch (~13 %).
+  Even all of these together are unlikely to halve the VU1 thread; 60 fps also needs core 1 cut (EE 2.06 s + IOP 1.53 s per 5 s now:
+  ~45-50 fps cap with VU1 free). Realistic target with 1+2: VU1 ~20 ms per frame, i.e. still the 30 fps step in fights unless the
+  game's own frame pacing is changed (a 60 fps patch also doubles the EE and VU1 work per second).
+- Console left on DBI's MTP screen; `sdmc:/switch/gow/env.txt` now holds `GOW_VU1_HLE_TIME=1` (harmless: two clock reads per kernel
+  call; remove it or let the next cycle.sh run without an env file delete it).
+
 ## Handoff (2026-10-23 night 2: core 0 cut, vsync spin and VU1 helper assessed; ext agent/sw-vu1gpu 06b18e2, `update_con2`)
 - **Core 0 (done, default)**: ext 06b18e2 (docs/switch-deko3d.md "Stream-buffer reuse"): the 8 MiB vertex-stream orphan reuses
   retired deko3d memblocks (was a dkMemBlockCreate/Destroy pair ~90 times per 5 s) and a CLUT load that leaves the palette unchanged
@@ -299,7 +331,20 @@ need the console A/B (fight + title menu fps, `gsw-split` vu_ms per run, `[ee-pr
   stalls; the cycle counts differ a little (only timing diagnostics read them in this port: unverified for XGKICK
   ordering, check in game).
 
-## GPU path (step 3, not started): what the data says so far
+## GPU path (step 3): measured, dropped (2026-10-23)
+Console numbers (handoff "night 3" above): the vertex kernels are 6.7 % of the fight's VU1 thread (skin_lit_st 2.1 %), 15 % in the
+title menu; that is the most a GPU vertex path could remove from core 2. What it would have needed, for whoever revisits it:
+- Data flow: the VU1 run keeps running the batch code (it writes GIF tags, ADC words, XGKICKs); the kernel would skip the vertex math
+  and leave a marker in the output buffer; the GS stage (gs_stage / gs_frontend PACKED path) would pass "vertex block by reference"
+  (input buffer copy + vf12..31 / I / Q per batch) to the backend, and a deko3d vertex shader would rebuild HwVertex (aPos, aZ, aCol,
+  aSTQ) from it, strips expanded by vertex index (previous two vertices for ADC/winding).
+- What the backend does with CPU vertex positions today (gs_hw_backend.cpp): `rt.usedW/usedH` = the real drawn extent per draw (not
+  the scissor; `findReinterpretSource` uses usedH for the target's memory span), `isZInversion` (full-screen bbox test),
+  the shadow-volume wrap groups and texture barriers (per-triangle boxes), `flippedZ`, the soft-blend flat-colour check, debug boxes.
+  The skinned/lit draws would need at least a conservative extent (the batch's bounding test result) for usedW/usedH.
+- Not worth it unless the VU1 thread's non-kernel part first drops to the same size as the kernels.
+
+### Earlier notes (before the measurement)
 - The loops' output goes into GIF packets that the batch switch XGKICKs; the CPU GS stage decodes them (fast PACKED
   path) and the backend batches them for deko3d. A GPU kernel that writes VU memory would need a GPU round trip per
   run (~135k runs per 5 s); the useful form keeps the inputs (VIF-unpacked vertex buffers + the batch's matrices /
