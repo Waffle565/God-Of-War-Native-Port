@@ -5,6 +5,38 @@ look the same (pixel comparison against the CPU path, tolerances documented). Pl
 (2) a plain-float CPU reference (HLE) compared with the exact path on the recordings, which also says whether a fast
 CPU HLE alone reaches the target, (3) GPU path, (4) console fps / per-core busy / screenshots.
 
+## Handoff (2026-10-24 evening, sw-k11 stopped here: ext agent/sw-vu1gpu 7862219 + default generator (main 785c99d = t4 blocks, `/root/vu1pregen-t4`), package `update_k11a`)
+- **New target (user, 2026-10-24)**: 60 fps in fights at the **default handheld clocks** (GPU 307.2, EMC 1331.2; CPU
+  1785), then lower clocks. `tools/switch_bench.sh` now sets no GPU / EMC clock (`BENCH_GPU=max` / `BENCH_EMC=...` for
+  the old setting); `bench_report.py` has `gpu` / `acq` columns. **Baseline at default clocks**: k10c (`dc1`) heavy
+  29.1 / mid 35.0 / late 37.6; k10e = k11a (`de1`, `g1`) 29.3 / 35.2 / 37.4 (seed A). docs/benchmark.md, docs/performance.md
+  "The GPU at the default clocks".
+- **Loaded values on by default** (`--mem-origins`, generator main 785c99d; output identical to sw-k10's t4 blocks,
+  bit-exact per sw-k10's x86 / qemu dumps, bench signatures equal to k10c's up to the usual 64 s): at GPU max `k10e1`
+  heavy 41.2 / mid 53.4 / late 54.2 vs k10c 39.3 / 50.1 / 52.6. The k10d "hang" was the flat battery.
+- **The GPU is the limit at default clocks** (and nearly so at GPU max: busy 4.4-4.9 s per 5 s at 52-54 fps). New
+  diagnostic `GOW_DK_GPU_TIME=1` (+ `GOW_PERF_DIAG=1`, ext 7862219, docs/switch-deko3d.md): GPU time per kind and per
+  draw program from timestamp reports; no cost when off, no fps change when on. Mid fight per frame at 307 MHz: draws
+  22.7 ms, shuffles 2.6, upscale 2.5, rest < 0.5 (need 16.7 total). ~2.9 of the 4 s of draws per 5 s are the paletted
+  bilinear alpha-tested variants (keys 2034/2054/2029/2049/202c/204c/2028/2048 + 25: pass and fail pass).
+- `GOW_SCALER=bilinear`: mid +2.7, late +2.8 fps at default clocks (`g3`); softer picture: **the user decides**.
+- Tried and dropped: palette expansion (filtered paletted draws on an RGBA8 copy with hardware bilinear): only -10 %
+  on those draws (they are not fetch-bound), and both runs (`x1`, `x2`) ended in a system error ~10 s into the fight
+  (not memory; cause not found). Code kept in scratchpad `k11/gs_hw_backend.expand.cpp`; not committed.
+- Packages (port/switch/nsp/out): **update_k11a = default** (t4 blocks + VIF prefetch + GPU timer); update_k10e (same
+  without the timer), update_k10c. update_k11b / k11c (expansion, crash) can go; update_k10d (t3) is superseded.
+  ELFs `/root/elf_k11*.elf`. Console: k11c's exefs is installed (the last run, crashed); env.txt deleted. **Install
+  k11a before the next run** (any bench run pushes its own package).
+- Next (GPU first, at default clocks): (1) fragment counts per program (DkCounter_FragmentShaderInvocations /
+  SamplesPassed next to the timestamps) to tell overdraw from per-fragment cost on the paletted alpha-tested batches;
+  (2) their pass-1 draws use `discard` with depth writes (late Z for the whole batch): a depth-only pre-pass or merging
+  pass / fail passes where AFAIL allows; (3) the dual-source blend output (needed only for the GS alpha scale); (4)
+  shuffles 2.6 ms per frame; (5) a cheaper upscale (5-tap bicubic without the 4 sharpen taps) if bilinear is too soft;
+  (6) VU1 levers of sw-k10 stay for the GPU-max case (VU1 ~4.7 s per 5 s there).
+- Tools (scratchpad `k11/`): `brun.sh <run> <pkg> [env]` (bench over FTP), `q2.sh "<pkg> <run> <gpu|-> [env]" ...`
+  (queue; `-` = default clocks), `q3.sh` (the same after `WAITPID` exits), `gpu.env` (perf diag + GPU timer),
+  `gpubl.env` (+ bilinear), `vmap.py <ext> <keys>` (program hash in `[gs-dk-gpu-prog]` -> draw variant key).
+
 ## Handoff (2026-10-24 midday, sw-k10 stopped here: ext agent/sw-vu1gpu 0927485 + default generator (main 74752a8) = t2 blocks (`/root/vg_t2`, `/root/vu1pregen-t2`), package `update_k10c`)
 - **CONSOLE NEEDS A MANUAL RESET**: the bench run `k10d1` (update_k10d = t3 blocks with `--mem-origins` + VIF prefetch)
   was fighting normally at 11:21:17 and went black at 11:21:48; since then the bot (port 6000) times out and MTP is

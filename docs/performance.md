@@ -405,6 +405,46 @@ Gains per lever above are estimates from the Gemini review (gemini-work/results/
   So sw-k10 got heavy +0.5-0.9 fps, mid +0.6-1.0, late +0.9-1.7 over k9g (same states), VU1 still ~4.75 s busy per 5 s:
   still the limit everywhere; no scene became limited by another thread.
 
+## The GPU at the default clocks (2026-10-24, sw-k11)
+Target since 2026-10-24 (user): 60 fps in fights at the **default handheld clocks** (GPU 307.2 MHz, EMC 1331.2 MHz, CPU
+at the game's 1785 MHz boost), then lower clocks. Bench at those clocks (docs/benchmark.md "Clocks"; heavy 10-20 / mid
+30-60 / late 90-150 game s):
+| run | package | heavy | mid | late | VU1 busy mid | GPU busy mid (`gpu`) | state |
+|---|---|---|---|---|---|---|---|
+| `dc1` | update_k10c (t2 blocks) | 29.1 | 35.0 | 37.6 | 3162 | - | A |
+| `de1` | update_k10e (t4 blocks = the default generator now) | 29.3 | 35.2 | 37.4 | 3069 | - | A |
+| `g1` | update_k11a (k10e + GPU timer, `GOW_DK_GPU_TIME=1`) | 29.0 | 35.0 | 37.5 | 3133 | 4930 | A |
+| `x0` | k11b build, `GOW_GS_HW_EXPAND=0` (= k11a) | 29.1 | 35.0 | 37.6 | 3068 | 4923 | A |
+| `g3` | update_k11a + `GOW_SCALER=bilinear` | 30.1 | **37.7** | **40.3** | 3414 | 4940 | A |
+| `g2` | update_k11a at `GOW_GPU_MHZ=max` (460.8) | 40.3 | 51.7 | 54.1 | 4723 | 4877 | A |
+- **The GPU is the limit at the default clocks, everywhere in the fight**: busy 4.9-5.8 s per 5 s (the heavy scene's
+  windows overlap the load), the VU1 thread idles 1.6-1.9 s per 5 s in mid / late, the EE waits 1.7-1.9 s on the GS queue
+  (`gsq`), and the GS stage's `present` op (dkQueuePresentImage) takes ~1 s per 5 s. The VU1 work of sw-k10/k11 (k10c ->
+  k10e) changes nothing there (29.1 / 35.0 / 37.6 vs 29.3 / 35.2 / 37.4).
+- **And still nearly the limit at GPU max**: `g2` has GPU busy 4.4-4.9 s per 5 s at 52-54 fps (VU1 4.7 s): the GPU
+  work per frame scales with the clock (mid: 28 ms at 307 MHz, 18.8 ms at 460.8 MHz, ratio 1.5 = the clock ratio), so
+  it is shader / raster bound on the GPU core, not memory bound.
+- **Where the GPU time goes** (`[gs-dk-gpu]`, mid fight, per 5 s at 35 fps; docs/switch-deko3d.md): draws 3.9-4.0 s
+  (~22.7 ms per frame), shuffles 0.46 s (2.6 ms), the present upscale 0.43 s (2.5 ms: bicubic + sharpen = 9 texture
+  fetches per 1280x720 pixel), the present composition 0.06 s, clears 0.02 s, uploads / copies / readbacks ~0. Draw
+  programs: the paletted, bilinear-filtered, alpha-tested variants (draw keys 203425 / 205425 = pass / fail pass of the
+  same batches, 202925 / 204925, 202c25 / 204c25, 202825 / 204825; all `Indexed Linear Pass=1|2 Dual`) take ~2.9 s of the
+  4 s; 203425 alone 1.1 s and its fail pass 205425 0.48 s.
+- **Scaler**: `GOW_SCALER=bilinear` (one tap) cuts the upscale 0.43 -> 0.09 s and gives mid +2.7 fps, late +2.8 (`g3`
+  vs `g1`); the picture is softer, so it is the user's choice (not made default).
+- **Palette expansion tried and dropped** (`GOW_GS_HW_EXPAND`, scratchpad `k11/gs_hw_backend.expand.cpp`): filtered
+  paletted draws sampled an RGBA8 copy of the index texture with the palette applied (made on the GPU once per index
+  texture contents and palette, LRU within 48 MB) with the GPU's bilinear filter, one fetch instead of a gather and four
+  palette fetches. It worked (112-497 copies, hits ~9 k per 5 s, made 0 per 5 s in steady scenes), but the draw time
+  hardly moved (intro: variant 203421 1.31-1.33 s vs 203425 1.47 s per 5 s, -10 %), so these draws are not bound by
+  their texture fetches; and both runs with it (`x1`, `x2`, seed state B) closed with a system error ~10 s into the
+  fight (x2 held 48 MB, so not memory; not found). Reverted.
+- So the fragment work of these batches is bound elsewhere: candidates for the next step are the number of fragments
+  (overdraw of the crowd and the rain; DkCounter_FragmentShaderInvocations / SamplesPassed per program would say), the
+  late depth test forced by `discard` with depth writes (pass 1 of an alpha test), the dual-source blend output, and
+  the shader length of the uber-style code paths (specialised variants still evaluate `floor` / clamp / blend
+  selection per fragment).
+
 ## Menu clock: the Load Game menu ran 8 % fast (2026-10-13, ext branches agent/menuclock, agent/menuclock2)
 - Measured (port/menuclock, `GOW_DELTA_DIAG`, `GOW_VBLANK_DIAG`, `GOW_IOP_DRIFT`, `GOW_AUDIO_STATS`): title screen,
   main menu, pause menu and gameplay run at game speed 1.000, VBlank 59.99-60.00 Hz, IOP clock 1.000 +- 0.0004 of wall

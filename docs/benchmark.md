@@ -97,5 +97,15 @@ sw-k10 (docs/performance.md "VU1 thread throughput, part 2"):
 | `k10a1` / `k10a2` | update_k10a (fast traces) | 39.3 / 39.0 | 50.1 / 49.8 | 51.9 / 52.2 | A / B |
 | `k10b1` | update_k10b (+ VIF prefetch) | 39.2 | 50.0 | 52.9 | A |
 | **`k10c1` / `k10c2`** | **update_k10c (+ JR trace share 0.3; sw-k10 default)** | **39.3 / 39.2** | **50.1 / 50.2** | **52.6 / 52.6** | A / B |
-| `k10d1` | update_k10d (+ `--mem-origins`) | black screen ~2.5 min in, console unreachable, no log | | | |
+| `k10d1` | update_k10d (+ `--mem-origins`) | flat battery ~2.5 min in (console asleep), no log | | | |
+sw-k11 (docs/performance.md "The GPU at the default clocks"); `k10d2` lost its log (tools/switch_bench.sh edited while it ran):
+| run | package / clocks | heavy 10-20 | mid 30-60 | late 90-150 | seed at frame 60 |
+|---|---|---|---|---|---|
+| `k10e1` | update_k10e (t4 = + loaded values), GPU max | 41.2 | 53.4 | 54.2 | A |
+| `g2` | update_k11a (k10e + GPU timer on), GPU max | 40.3 | 51.7 | 54.1 | A |
+| **`dc1`** | **update_k10c, default clocks (the new baseline)** | **29.1** | **35.0** | **37.6** | A |
+| **`de1`** | **update_k10e, default clocks** | **29.3** | **35.2** | **37.4** | A |
+| `g1` / `x0` | update_k11a + GPU timer / k11b with `GOW_GS_HW_EXPAND=0`, default clocks | 29.0 / 29.1 | 35.0 / 35.0 | 37.5 / 37.6 | A / A |
+| `g3` | update_k11a + GPU timer + `GOW_SCALER=bilinear`, default clocks | 30.1 | 37.7 | 40.3 | A |
+| `x1` / `x2` | k11b / k11c (palette expansion), default clocks | system error ~10 s into the fight | | | B / B |
 Other runs (IOP thread, streaming variants): docs/iop-thread.md, docs/performance.md "VIF1 chain streaming".
