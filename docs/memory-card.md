@@ -66,7 +66,9 @@ hand-written C++ (ps2xIOP/src/modules/dbcman.cpp, `NativeDbcService`), written f
 (module offsets in the comments). `GOW_NATIVE_PADMC=0` loads the IRX files again (recompiled modules = the
 verification oracle; the old SIO2D / MC2_D / SIO2MAN native overrides stay for that path only).
 What the EE (libdbc + libmc2, the game's own code) talks to, read from DBCMAN.IRX / MC2_D.IRX and checked against an
-oracle trace (port/natiop/oracle1, savetest with `PS2X_TRACE_RPC=800013 PS2X_IOP_TRACE_DMA=1`):
+oracle trace (savetest with `PS2X_TRACE_RPC=800013 PS2X_IOP_TRACE_DMA=1`; the first capture, made with sw-core1's exe, is in
+D:\Claude Archive\GoW-Archive
+atiop-20261024\oracle1-core1-exe-trace):
 - **0x80001300** (DBCMAN main, 0x90-byte buffer, synchronous; jump table 0x2560 indexed by fn - 0x80001301):
   0x1363 version -> word0 = 0x310; 0x1304 -> word1 = EE address of a 0x80-byte table (one word per socket, 1 = a device
   answers behind it), SIF-DMA'd at once and on every change, word0 = 1; 0x1301 create socket: words 0..3 descriptor
@@ -97,3 +99,43 @@ oracle trace (port/natiop/oracle1, savetest with `PS2X_TRACE_RPC=800013 PS2X_IOP
   (the last 4 spare bytes stay as they were).
 - Seen per savetest (load slot 1, save): cmd 1 x64.7k, 4 x2k (status poll ~once a frame), 6 x16, 12 x15, 2 x14,
   10 x2, 13 x1, 3 x1.
+- IOP RAM layout: the five IRX are not loaded, but their IOP RAM range is reserved (`IopEmulator::reserveModuleSpace`,
+  the loader's cursor advanced by each IRX's span), so LIBSD / 989NOMID / SMPD_IOP still load at 0x20400 / 0x25e00 /
+  0x4c900 where their compiled code was generated (without it they loaded lower and ran on the R3000 interpreter:
+  `[IOP] no native code for libsd.irx base=0x10000`). Goes away when those three are native too.
+
+### Verification (PC, ext agent/natiop 7953c07 = sw-vu1gpu 0927485 + this, Release, logs off; port/natiop/v)
+- Protocol A/B (`savetest`, IRX path `GOW_NATIVE_PADMC=0` vs native, both traced; comparator scratchpad
+  `padmc_cmp.py`: per card command its words, data DMAs (address, size, FNV of the payload), status block and reply):
+  64.7k commands identical through boot, title, load of slot 1, gameplay and the save menus; the runs part only where
+  the game's own timing differs (an extra probe pair), plus two trace lines cut by another thread's log line. The 16
+  write-side commands (14 x cmd 2, 2 x cmd 10) are the same with the same results.
+- Card bytes after the save: both paths change the same 129 pages; 124 of them byte-identical, the other 5 differ only
+  in the save time (directory entry dates, the data's clock fields and the ECC bytes over them).
+- Cross loads (zones.py slot 1, the saved card): native loads the native save, the IRX path loads the native save,
+  native loads the IRX save: ok, 60 fps. Saves made before (ref/saves/Mcd002.ps2, slots 1-4) load in the gate.
+- Zone gate slots 0-4 native `port/natiop/v/gate-native2/20261024_214229` against the IRX gate
+  `port/natiop/v/gate-irx/20261024_210449` as baseline: 5/5 ok, 60 fps, game speed 1.01, no capture changed (pad walk
+  in every zone). In the IRX gate slot 3 exited early once (code 1, after gameplay start; not seen natively).
+- IOP time (`PS2X_IOP_NATIVE_STATS=1`, mean of the last 8 windows of 5 s, slots 1 / 2 / 4; slot 0 windows differ in
+  content, slot 3's IRX run died): IOP total 161 / 133 / 131 ms (IRX) vs 178 / 145 / 128 ms (native), i.e. the same
+  within run-to-run noise; IOP instructions 5.41 / 3.21 / 3.43 M vs 5.37 / 3.18 / 3.39 M (-0.7 to -1.0 %: the
+  removed modules' idle threads); imports -1.2k per window. In gameplay the card is polled only (cmd 4 about once a
+  frame), so nothing measurable was expected; the removed cost is IRX code at load / save (~270 card RPCs a second
+  while loading, each running DBCMAN + MC2_D's generated code before).
+
+### Handoff (nat-iop1, 2026-10-24 evening)
+- ext branch `agent/natiop` (worktree ext/PS2Recomp-kl-natiop, from sw-vu1gpu 0927485): 501a45b service + module
+  bypass + MSVC fix of 0927485 (`__builtin_prefetch` -> `_mm_prefetch` in ps2_vif1_interpreter.cpp, it did not compile
+  with MSVC), db14890 traces / port-table bytes, 7953c07 IOP RAM reservation. Build `out/build-pc` (Release, logs off).
+  Only ps2xIOP + that one runtime line changed: merges into sw-vu1gpu without conflicts expected.
+- ext/PS2Recomp-kl-natiop-pc (branch agent/natiop-pc at sw-core1 7da6cae + the same patch, uncommitted) was a
+  side build made while chasing a slowdown that turned out to be the CMake log defaults (docs/build-and-run.md);
+  it holds nothing unique and can be removed (`git worktree remove --force`, branch delete).
+- Switch: the touched files pass devkitA64 `-fsyntax-only -D__SWITCH__`; no console run (sw-k11 owns it).
+- Still compiled and linked: the generated code of the five modules (iopn_sio2man/dbcman/sio2d/mc2_d/ds2u_d,
+  ~3.5 MB of C++) and their IRX overrides, for the `GOW_NATIVE_PADMC=0` oracle. Once the native path has run on the
+  console, drop them from the registry (regenerate tools/iop/iopn_gen.py output without them) and remove the
+  oracle switch.
+- Next (docs/native-port.md "IOP side"): LIBSD as a native import library, then the 989snd / SMPD native driver,
+  then the IOP OS HLE + guest clock.

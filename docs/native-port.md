@@ -15,7 +15,7 @@ This file is the inventory and the order of work. Status per layer is measured, 
 | VU1 microcode | native per-instruction-pair code generated ahead of time (tools/vu1/vu1n_gen.py), A/B verified | generated | later: lower to GPU compute | native |
 | VIF1 / GIF / DMA plumbing | no DMA controller: sceDmaSend hands the game's packets (its DMA tag lists walked in place) to the VIF decoder (UNPACK into VU memory) and the GIF paths | ~1k lines | becomes a thinner loader once VU1 outputs vertices directly | native (step 2) |
 | GS (graphics synthesizer) | **native render-target renderer** `GSHwBackend`, the only renderer: real render targets and textures at `PS2X_GS_HW_SCALE` (default 2), paletted textures as index + palette textures, reinterpretation passes (channel shuffles, aliased Z, CRTC merge, the shadow passes' Z-buffer inversion) done natively; triangles, sprites and lines | ~2.3k lines | done: textures and CLUTs come from a small native texture/CLUT store (`GSTextureStore`, step 5); no CPU rasteriser left | native |
-| IOP (I/O CPU + IRX modules: CDVD, SIO2, 989snd) | the game's 8 IRX modules (sio2man, dbcman, sio2d, mc2_d, ds2u_d, libsd, 989nomid, smpd_iop; 52k instructions) **compiled ahead of time** to C++ (tools/iop/iopn_gen.py -> ps2xIOP/src/native); HLE kernel imports; the R3000 interpreter only runs code without a compiled form | generated | replace the hardware models below (SPU2, SIO2, CDVD) with native services | native code, in progress |
+| IOP (I/O CPU + IRX modules: CDVD, SIO2, 989snd) | since 2026-10-24 3 IRX modules (libsd, 989nomid, smpd_iop; the pad / card chain sio2man, dbcman, sio2d, mc2_d, ds2u_d is native C++, docs/memory-card.md) **compiled ahead of time** to C++ (tools/iop/iopn_gen.py -> ps2xIOP/src/native); HLE kernel imports; the R3000 interpreter only runs code without a compiled form | generated | replace the hardware models below (SPU2, SIO2, CDVD) with native services | native code, in progress |
 | SPU2 | native SoundEngine driven by LIBSD's exports (docs/sound.md) | in IOP | done | native (step 3) |
 
 ## Standing order (user, 2026-10-11): convert everything to native, nothing emulated
@@ -219,7 +219,8 @@ Order agreed: pad / memory card first, then VIF/GIF/DMA data path, SPU2 voice mi
   DBCMAN's RPC servers and MC2_D's card commands are hand-written C++ (`NativeDbcService`,
   ps2xIOP/src/modules/dbcman.cpp; protocol in docs/memory-card.md "Native DBCMAN + MC2_D service"). The pad was
   already read on the EE (scePad2* overrides). `GOW_NATIVE_PADMC=0` = oracle (the recompiled modules). Left: 3 IRX
-  (LIBSD, 989NOMID, SMPD_IOP), all sound.
+  (LIBSD, 989NOMID, SMPD_IOP), all sound. Verified on PC (protocol A/B 64.7k card commands identical, saves
+  interchangeable both ways, zone gate 5/5 at 60 fps, IOP time unchanged within noise): docs/memory-card.md.
 
 ### Plan: the sound modules -> a native sound driver (not started)
 Today: 989snd (989NOMID.IRX, 116.8 KB of code, 260k generated lines) is the game's sound driver: bank loading
