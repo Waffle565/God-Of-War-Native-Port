@@ -108,6 +108,9 @@ player gets, laid out like a shipped PC game:
 | ppm2png.py | Convert PS2X_FRAME_DUMP output to PNG |
 | sync_runner.sh | Sync generated code + overrides into the runner |
 | switch/ | Switch smoke-link helpers (see switch.md) |
+| sndtrace_cmp.py / sndtrace_stats.py | Compare two sound traces (`GOW_SND_LIBSDLOG`) / count the 989snd commands in one (sound.md) |
+| audio_cmp.py | Compare two `GOW_AUDIO_RAW` recordings (identical prefix, RMS profile) |
+| iop/snd989_rpcmap.py | 989snd RPC command -> function map (sound.md) |
 
 Note: `eedis.py` reads comments in port/output; a few delay-slot lines are missing there. For exact bytes use capstone
 on the ELF (file offset = vaddr − 0xFF000). Capstone mis-decodes R5900 128-bit ops (lq/sq/MMI).

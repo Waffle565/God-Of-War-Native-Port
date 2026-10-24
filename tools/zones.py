@@ -145,6 +145,8 @@ def run_zone(slot, args, outdir):
     script, last = pad_script(slot, walk)
     caps = ','.join(f'g{t:g}' for t in [5, 7] + [8 + 5 * i + 2.2 for i in range(len(walk))])
     env = dict(os.environ, **PLAY_ENV)
+    # "{zone}" in a variable's value = this zone's folder (per-zone trace / recording files, e.g. GOW_SND_LIBSDLOG)
+    env = {k: v.replace('{zone}', zone) for k, v in env.items()}
     env.update({'GOW_MC0': args.card_copy, 'GOW_PAD_GUION': script, 'GOW_PAD_CAPTURAS': caps})
     env.pop('GOW_ISO', None)
     if args.iso:
@@ -291,7 +293,8 @@ def main():
     stamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
     outdir = os.path.join(args.out, stamp)
     os.makedirs(outdir, exist_ok=True)
-    args.card_copy = os.path.join(ROOT, 'disc-usa', 'Mcd001.ps2')
+    # the card copy lives in the report folder, so two gates can run at the same time (with different --exe folders)
+    args.card_copy = os.path.join(outdir, 'Mcd001.ps2')
     results = []
     for slot in [int(s) for s in args.slots.split(',')]:
         with open(args.card, 'rb') as src, open(args.card_copy, 'wb') as dst:  # fresh card every zone

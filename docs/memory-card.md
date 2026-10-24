@@ -102,7 +102,8 @@ atiop-20261024\oracle1-core1-exe-trace):
 - IOP RAM layout: the five IRX are not loaded, but their IOP RAM range is reserved (`IopEmulator::reserveModuleSpace`,
   the loader's cursor advanced by each IRX's span), so LIBSD / 989NOMID / SMPD_IOP still load at 0x20400 / 0x25e00 /
   0x4c900 where their compiled code was generated (without it they loaded lower and ran on the R3000 interpreter:
-  `[IOP] no native code for libsd.irx base=0x10000`). Goes away when those three are native too.
+  `[IOP] no native code for libsd.irx base=0x10000`). Goes away when those three are native too (LIBSD is since
+  nat-iop2, docs/sound.md: its range is reserved the same way).
 
 ### Verification (PC, ext agent/natiop 7953c07 = sw-vu1gpu 0927485 + this, Release, logs off; port/natiop/v)
 - Protocol A/B (`savetest`, IRX path `GOW_NATIVE_PADMC=0` vs native, both traced; comparator

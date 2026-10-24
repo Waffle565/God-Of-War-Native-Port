@@ -16,6 +16,107 @@ model: the SPU2 register-level model and the IOP's SPU DMA channels were removed
   B/C EVOL, D/E AVOL, F/10 BVOL, 11/12 MVOLX, 13 PMON, 14 NON, 15 KON, 16 KOFF, 17 ENDX, 18-1B VMIX L/EL/R/ER,
   1C ESA, 1D EEA, 1E TSA, 1F IRQA, 20 SSA, 21 LSA, 22 NAX). Addresses are byte addresses (16-byte aligned).
 
+## LIBSD: a native import library (agent nat-iop2, 2026-10-24, ext agent/natiop2)
+- LIBSD.IRX is no longer loaded. `IopSubsystem::loadModule` records it as served natively (its IOP RAM range stays
+  reserved, so 989NOMID / SMPD_IOP still load at 0x25e00 / 0x4c900 where their compiled code was generated), and
+  989snd's `libsd` imports - the only module that imports libsd: ordinals 4-11, 13, 17-20, 23, 26, 31 - are served by
+  `iopNativeLibsdImport` (ps2xIOP/src/native/iop_native_overrides.cpp) from `IopEmulator`'s import dispatch when no
+  loaded module exports "libsd". The handlers are the ones listed above (the same C++ that served LIBSD's export
+  addresses before) plus **sceSdNote2Pitch #13**, transcribed from LIBSD 0x38a0 with its two tables (.data 0x5150:
+  12 semitone factors, 0x5168: 128 fine steps) and its quirk for a negative fine (the 0x3940 block indexes the
+  tables by the fine's octave). LIBSD's module start (RegisterLibraryEntries, the bus setup no-op, zeroing its
+  transfer state) has no observable effect left.
+- IOP clock: a native call costs what it cost with the IRX (one dispatcher step for the overridden exports; for
+  Note2Pitch the instructions LIBSD's code runs on that input, 52-69, counted per basic block), so the IOP clock and
+  everything timed by it (989snd's tick, the sample clock) advance as before.
+- `GOW_NATIVE_LIBSD=0` loads LIBSD.IRX again (the oracle: its exports then run the same overrides, Note2Pitch as
+  LIBSD's compiled code). With `GOW_SND_LIBSDLOG` set, the oracle checks every LIBSD Note2Pitch result against the
+  native function on return (`[libsd] Note2Pitch checked against LIBSD.IRX: n, mismatches m, outside tables k`).
+- Note2Pitch offline check: the native function against LIBSD's code run by a small R3000 interpreter (Python, the
+  IRX's own bytes) over 1.29 M inputs (center note 0-127 / 3, center fine 0-127 / 31, note 0-127, fine -300..300 / 13):
+  0 mismatches in result and instruction count wherever the tables are indexed in range. Out of range (|fine| beyond
+  an octave below the center, 17 % of that grid) LIBSD reads its own variables after / before the tables; the native
+  function returns 0 there and counts it (`outside tables`); 989snd's calls never get there (see Verification).
+- IOP heap: the IOP heap cursor only grows, and loading an IRX allocates and frees its start's argv block (path +
+  arguments, 0x20 bytes for LIBSD), so skipping the load moved every later allocation (989snd's buffers, the
+  addresses in its VoiceTrans / GetOtherData calls) 0x20 lower. `reserveModuleSpace` now allocates and frees the
+  same block for every natively served module (pad / card too), so the IOP RAM layout is the all-IRX one.
+- Verification (PC, ext agent/natiop2 569d093, RelWithDebInfo, logs off; port/natiop2):
+  - Zone gate slots 0-4, native and oracle (`GOW_NATIVE_LIBSD=0`) run side by side, traced and recorded
+    (gate-native / gate-oracle 20261024_225407, build before the heap fix): **5/5 ok at 60 fps both**.
+  - Note2Pitch: every call in the 10 traces (2638, 1835 distinct inputs, fine 0..127) equals LIBSD's code
+    (offline interpreter), and the oracle's on-return check reported no mismatch.
+  - Sound (GOW_AUDIO_RAW, oracle vs native): slots 1-4 RMS profile correlation 0.9996-1.0000, mean relative
+    difference 0.002-0.006, same length, silences and peaks (samples identical for the first 1.41 s, then the
+    usual run-to-run timing). Slot 0 (new game, unscripted fight) diverges in gameplay from the first capture on;
+    in that oracle run all groups fade out at ~113 s (cmd 0x09 volume ramps in every batch, the game's own fade:
+    the GS draw count drops to a menu-like 3k, Kratos apparently died), not a sound difference.
+  - LIBSD call log (slot 1): same calls per ordinal within timing noise (#9/#13/#17/#26 and all one-off calls equal
+    in count); the rest of the differences were the 0x20 address shift (VoiceTrans / GetOtherData addresses) plus
+    timing. After the heap fix the oracle and native traces use the same addresses (VoiceTrans source 0x18ba5c,
+    GetOtherData 0x18ba58 in both). A strict call-for-call identity cannot be shown on PC: two runs of the same
+    build part after ~2.7k trace lines (EE timing decides when the per-frame batches arrive between sound ticks).
+  - The second side-by-side gate (after the heap fix) ran while the PC was loaded by other builds: both runs fell
+    to 1-20 fps and failed alike (not usable); the native gate was repeated alone: gate-native3 (569d093, heap
+    fix): **5/5 ok, 60 fps, game speed 1.00**; sound vs the oracle recording of slots 1-4: RMS correlation
+    0.9994-1.0000, mean relative difference 0.001-0.004.
+
+## Sound trace (oracle tooling for the native sound driver)
+`GOW_SND_LIBSDLOG=<file>` writes everything the sound modules exchange with the rest of the system, in order:
+- `sd <ordinal> <args> [-> <result>] [data=<fnv64> | attr=...] @<iop cycle>`: every LIBSD call of 989snd (VoiceTrans
+  writes with the FNV-1a 64 of the bytes uploaded to sample RAM, SetEffectAttr with its attribute block);
+- `rpc <sid> <fn> <mode> <size> <fnv64> : <words>` / `rep ...`: every RPC to 989snd (sids 0x123456 main, 0x123457
+  loader) with the first 1 KB of the payload in words and the reply after the call;
+- `dma <iop src> <ee dst> <size> <fnv64>`: IOP -> EE SIF DMA (989snd's status blocks, SMPD's file data);
+  `god <ee src> <iop dst> <size> <fnv64>`: sceSifGetOtherData (banks pulled from EE RAM).
+`tools/sndtrace_cmp.py A B [--strict]` compares two traces (counts per kind and ordinal, identical prefix, LIBSD calls
+between aligned RPCs; mixer-timed results of GetParam / GetSwitch / GetAddr / BlockTransStatus only with --strict).
+`tools/zones.py` replaces `{zone}` in environment values with the zone's folder, so one gate writes one trace per
+zone (`GOW_SND_LIBSDLOG={zone}/snd.trace`, `GOW_AUDIO_RAW={zone}/mix.raw`); `tools/audio_cmp.py A.raw B.raw`
+compares two recordings (identical prefix, SHA-1, RMS profile per second).
+
+## 989snd: what a native driver has to replace (map, 2026-10-24)
+- 989NOMID.IRX is 989snd "(c)2000-2003 SCEA, by Buzz Burrowes, built Dec 21 2004", the **NO MIDI** build: "banks
+  and streams only" (handler types BLOCK and VAG_STREAM are the ones that can occur; MIDI / AME / basic VAG are not
+  in this build). Threads: sound tick, main RPC, loading RPC, 4 streaming (module args `rpc_priority=64`).
+- RPC servers (989NOMID 0x18e0 / 0x1a60): **0x123456** main (server 0x1878: `handler[fn](buffer)` from the table at
+  .data 0x1de88, 0x6b commands, then reply word 1 = -1; the handler writes its result through the reply pointer
+  0x43c80 = reply buffer + 4) and **0x123457** loader (server 0x1964: fn 2 -> #9, 3 -> #10, 0x57 -> #111, 0x59 -> #113,
+  0x6a -> #129; the bank loads, on their own thread). EE side: docs/game-internals.md "989snd / SMPD protocol" (direct
+  calls, batched cmd 0x4D, plugin cmd 0x68 = SMPD).
+- Main commands -> the 989snd function each wrapper calls (`#n` = snd989 export n, the library SMPD_IOP links to; hex
+  = internal function; `tools/iop/snd989_rpcmap.py` prints it with wrapper sizes):
+  00 #4, 01 #5, 02 #9, 03 #10, 06 #11, 08-10 #15-#23, 11/12 #24, 13-15 #27-#29, 16 #67 (pause group), 17 #68 (continue),
+  18 #31, 19 #25, 1a #26, 1b #32, 1c #34, 1d #35, 1e #33, 1f #36, 20 #38, 21 #126, 22-25 #40-#43, 26 d838, 27 d814,
+  2a #48, 2b 2028, 2c #49, 2d #50, 2e #52, 2f #55, 30 #53, 31-33 #58-#60, 34 #57, 35 #56, 36 #61, 37 #65, 38 #63,
+  3b afd8, 3c b66c, 3d b750, 3e b898, 3f c52c, 40 c4d4 (status: BlockTransStatus, docs/fmv.md), 41 #70, 42 #69, 43-46
+  #71-#74, 47 fc90, 48 10050, 49 fed0, 4a 103d8, 4b 10444, 4c 18c, 4d batch (runs a list of commands), 4e #96, 4f #99,
+  50-52 #101-#103, 53 c820, 56 #106 (+ SIF DMA), 57 #111, 58 #112, 59 #113, 5a b4a4, 5b b52c, 5c-5f #114-#117, 60 #119,
+  61 ef6c, 62 #121, 63 #122, 64 #123, 65 cdvdman import #28 directly, 66 #124, 67 #125, 68 plugin call (SMPD), 69
+  #127 (+ SIF DMA), 6a #129 (bank load from EE memory); 04/05/07/28/29/39/3a/54/55 are stubs.
+- #129 (0x83dc) is the bank loader state machine used for every bank the game loads from EE RAM (SMPD fn 0xD and
+  main / loader fn 0x6a): sceSifGetOtherData chunks, the "SBlk" block header (magic 0x6b6c4253), sample data to
+  sound RAM through VoiceTrans, the bank linked into 989snd's bank list (0x45174 state block).
+- Reference for formats and names: OpenGOAL's re-creation of 989snd (github open-goal/jak-project, game/sound/989snd:
+  SBlk banks, block sounds, voice allocator) is for Jak's MIDI build and not byte-exact; the driver here must be
+  reproduced from this IRX's code, routine by routine, and checked against the sound trace (as MC2_D was).
+
+## What the EE asks of 989snd (tools/sndtrace_stats.py, slot 1 / title, 2026-10-24)
+Per frame the game sends one batch (cmd 0x4D) of: 4c SMPD fn 1a (x2), 42, 4c SMPD fn 02, 41, 4a, 4b, and 68 SMPD fn 0b
+(many per frame in the fight); 09 (group volume: the fades) as needed; loads: 4c SMPD fn 13 / 06 / 07 / 0c, 68 SMPD fn
+0d / 0f / 0a, 4e, 0e / 0f; once at boot 00, 64, 0b, 68 SMPD fn 01. So the busiest path is SMPD's plugin functions
+(1a, 02, 0b) and 989snd's per-frame status commands 41/42/4a/4b: the natural first native piece.
+
+### Handoff (nat-iop2, 2026-10-25)
+- ext `agent/natiop2` (worktree ext/PS2Recomp-kl-natiop2, from agent/natiop 7953c07): 569d093 LIBSD native import
+  library + heap-layout fix + sound trace. Build `out/build-pc` (RelWithDebInfo, logs off). Only ps2xIOP changed.
+- Not started: native 989snd / SMPD code. Next, in order: decode the per-frame commands (41/42/4a/4b and SMPD fn
+  1a/02/0b: wrappers in `tools/iop/snd989_rpcmap.py`, SMPD's plugin table is built at run time, read it from IOP RAM),
+  then the SMPD front end natively with each RPC's reply and DMA checked against the oracle trace in the same run
+  (shadow mode: run the IRX path, compare the native result), then bank loading (#129).
+- Determinism: compare within one run (shadow) rather than two runs; two runs part after a few thousand trace lines.
+- Switch: no console run; the change is IOP-side C++ only (no new platform code).
+
 ## SoundEngine (`ps2xIOP/src/emulator/core/sound_engine.{h,cpp}`)
 - Typed state: per voice volume L/R, pitch, ADSR1/2, start/loop/next addresses, envelope; per core VMIX/NON/PMON masks,
   MMIX, ATTR, master/effect/aux/stream volumes, ESA/EEA. 2 MB sample RAM (the game's sample data).
