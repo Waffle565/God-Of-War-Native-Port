@@ -373,10 +373,9 @@ every ADD/SUB/MUL through `clampv` (g9: 7984 `maddc` in trace bodies against 475
   only when the saving exceeds the check by 8) or, for a trace that loops, the start state's fixed point over the whole
   pass (what flows back through `chainTo`). The exact trace stays as `<name>_x`; part exits are unchanged (they only
   store the registers). 1022 of 1297 g9 traces get one; their `maddc` 7876 -> 1631, `clampv` 5530 -> 0.
-- **Loaded values as origins** (`Bounds.load`, `--mem-origins`; **off by default**: bit-exact in every replay below,
-  but the one console bench run with it (`k10d` = t3 blocks + VIF prefetch) went black ~2.5 min in, during the fight,
-  and left the console unreachable (bot and MTP down; whether the build or the console failed is not known, re-run
-  it), one-pass variants only: an LQ / LQI whose
+- **Loaded values as origins** (`Bounds.load`; **on by default since sw-k11**, `--no-mem-origins` turns it off;
+  bit-exact in every replay below and in the bench signatures; the `k10d` run that "went black" was a flat battery,
+  not the build), one-pass variants only: an LQ / LQI whose
   address is a VI register still at its entry value plus a constant reads a quadword the entry check can read at entry,
   so its lanes get an assumed bound like an entry register (the matrix rows the vertex code loads from VU memory). A
   store before the load keeps it an origin only when the store's address is also an entry VI + constant (not the same
@@ -385,8 +384,9 @@ every ADD/SUB/MUL through `clampv` (g9: 7984 `maddc` in trace bodies against 475
   reads other memory than the entry check would).
 - Entry checks pass almost always (harness `-DVU1N_FAST_STATS`, t4 blocks = with loaded values): fight.rec 47382 fast
   / 54 exact, menu.rec 78867 / 60 (t1, fast traces only: fight 38902 / 54).
-- Default output now (`fast traces + JR 0.3`, = `/root/vg_t2`, package `update_k10c`); `--mem-origins` = t4
-  (`update_k10e`, not run on the console).
+- Default output now (sw-k11): fast traces + JR 0.3 + loaded values = t4 (`/root/vg_t4`, regenerated identical as
+  `/root/vg_k11m`; package `update_k10e`, bench heavy 41.2 / mid 53.4 / late 54.2 at GPU max against t2's 39.3 / 50.1 /
+  52.6, docs/performance.md). Without loaded values (`--no-mem-origins`) = t2 (`update_k10c`).
 - JR targets: traces now go on through a JR whose most frequent target takes >= 30 % of the site
   (`--jr-trace-share`, 60 % before): fight.rec steps 146.7 k -> 139.1 k, menu.rec 266 k -> 255 k (0.15 gives no more).
 - Bit-exact: x86 replay dumps fight / menu, HLE=1 / 0, identical to 529de89 / k3g; aarch64 qemu dumps identical to g9;

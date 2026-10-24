@@ -377,8 +377,8 @@ Gains per lever above are estimates from the Gemini review (gemini-work/results/
   hleMatch 0.7, finishXgkick 0.7, syncInflight 0.6, flushPipelines 0.6, exportFlags 0.5. Hottest generated functions:
   t0ec8 (a matrix compose) 2.3 %, b1748 1.5 %, then < 1 % each.
 - Generated code (main tools/vu1/vu1n_gen.py, docs/vu1-hle.md "Fast traces and loaded values"): traces get fast
-  variants and JR trace share 0.3 (default since sw-k10), loaded values as range-analysis origins (`--mem-origins`, off:
-  its one console run `k10d` went black after ~2.5 min, see below). Bit-exact; qemu a57_cost -3.1 % of the VU1 work
+  variants and JR trace share 0.3 (default since sw-k10), loaded values as range-analysis origins (default since
+  sw-k11; its first console run `k10d1` "went black" from a flat battery, not the build). Bit-exact; qemu a57_cost -3.1 % of the VU1 work
   (-4.5 % with `--mem-origins`).
 - **VIF prefetch** (ext 0927485, `GOW_VIF_PREFETCH`): the samples in the unpack loops sat on the source loads (V4-8:
   903 of 2141 samples on the `ld1`, 783 on the store waiting for it; processVIF1Data on its command-word loads): the

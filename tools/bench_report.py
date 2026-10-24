@@ -6,7 +6,9 @@ usage: bench_report.py <log.txt> [--ref <other log.txt>] [--scenes a-b,c-d,...] 
 - Scenes are ranges of game seconds (frame index / 60 since the gameplay start); per scene: fps over exactly those
   frames (from the `[bench]` lines' wall times) and the per-thread busy of the 5 s windows that lie inside it, in ms per
   5 s: ee (EE game code, core 1), iop (inline IOP, core 1), core1 = ee + iop, vu1 (VU1 thread job_ms), idle (VU1 thread
-  waits), chain (EE chain walk + copy), gsgl (GS stage busy), pres (deko3d present_submit), gsq (EE waits for the GS queue).
+  waits), chain (EE chain walk + copy), gsgl (GS stage busy), pres (deko3d present_submit), gsq (EE waits for the GS queue),
+  gpu (GPU busy, `[gs-dk-gpu]`: GOW_PERF_DIAG=1 GOW_DK_GPU_TIME=1, docs/switch-deko3d.md), acq (of it, the GPU's wait for a
+  swapchain image). Columns without their log lines show -1.
 - --ref: compares the `[bench]` signatures (Kratos position, health, rand seed every 60 frames) with another run and
   prints the first frame that differs: equal signatures = the same frames.
 - --windows: also prints every 5 s window with the frame range it covered.
@@ -25,7 +27,7 @@ def parse(path):
     def kv(line):
         return {k: float(v) for k, v in re.findall(r'(\w+)=(-?[0-9.]+)', line)}
 
-    gsw, idle, chain, gl, dk = [], [], [], [], []
+    gsw, idle, chain, gl, dk, gpu = [], [], [], [], [], []
     for line in lines:
         if line.startswith('[bench] f='):
             m = re.match(r'\[bench\] f=(\d+) wall=([0-9.]+) (.*)', line)
@@ -47,17 +49,21 @@ def parse(path):
             gl.append(kv(line))
         elif line.startswith('[gs-dk-time]'):
             dk.append(kv(line))
+        elif line.startswith('[gs-dk-gpu]'):
+            gpu.append(kv(line))
     for i, w in enumerate(windows):
         w['vu1'] = gsw[i].get('job_ms', -1) if i < len(gsw) else -1
         w['idle'] = idle[i].get('idle_ms', -1) if i < len(idle) else -1
         w['chain'] = chain[i].get('chain_ms', -1) if i < len(chain) else -1
         w['gsgl'] = gl[i].get('busy_ms', -1) if i < len(gl) else -1
         w['pres'] = dk[i].get('present_submit_ms', -1) if i < len(dk) else -1
+        w['gpu'] = gpu[i].get('busy_ms', -1) if i < len(gpu) else -1
+        w['acq'] = gpu[i].get('acquire', -1) if i < len(gpu) else -1
     return windows, bench
 
 
 KEYS = [('ee', 'ee_ms'), ('iop', 'iop_ms'), ('core1', None), ('vu1', 'vu1'), ('idle', 'idle'), ('chain', 'chain'),
-        ('gsgl', 'gsgl'), ('pres', 'pres'), ('gsq', 'gsq_wait_ms')]
+        ('gsgl', 'gsgl'), ('pres', 'pres'), ('gsq', 'gsq_wait_ms'), ('gpu', 'gpu'), ('acq', 'acq')]
 
 
 def busy(w, key, src):

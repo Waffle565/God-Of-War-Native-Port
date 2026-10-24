@@ -48,6 +48,16 @@ toolchain (`deko3d` 0.5.0 with the `uam` shader compiler, `/opt/devkitpro/tools/
   640x448 (upscaled to 720p by the present pass on the GPU), higher values render more pixels. The present pass is the
   same either way, so the choice is only GPU time against sharpness.
 - `GOW_PERF_DIAG=1`: `[gs-dk]` every 5 s (draws, submits, presents, GPU waits, uploads).
+- `GOW_DK_GPU_TIME=1` (with `GOW_PERF_DIAG=1`; sw-k11, 2026-10-24): GPU time per kind of work, measured on the GPU. A
+  timestamp report (`dkCmdBufReportCounter(DkCounter_Timestamp)`, end of pipe) goes into the command list wherever the
+  kind of work changes (draw program, clear, upload, copy, readback, the present pass's wait for a swapchain image) and
+  at every list end; when a list's fence has signalled, the time between two of its reports goes to the kind the first
+  one started (gaps between lists are idle, not counted). Every 5 s: `[gs-dk-gpu] busy_ms=... clear= upload= copy=
+  readback= acquire= <family>=...` (draw programs summed per shader family: draw, shuffle, present, clut, pack, scale)
+  and `[gs-dk-gpu-prog]` the 8 programs with the most time (`p<id>:<family>:<low 32 bits of the source hash>=ms`).
+  `acquire` is the GPU waiting for a swapchain image (vsync back-pressure), not work. A report waits for the work before
+  it to finish, so the split is approximate where one kind's work overlaps the next; the busy total is the GPU's.
+  `tools/bench_report.py` shows `gpu` / `acq` columns from these lines. Off: no reports, no cost.
 - `GOW_DK_PRESENT_FLIP=0` turns the present pass's vertical flip off (if the picture ever shows upside down).
 
 ## Console results (2026-10-19, remote loop: tools/switch_bot.py + switch_mtp.py, `PS2X_GS_HW_SCALE=1`)

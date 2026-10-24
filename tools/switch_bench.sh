@@ -7,6 +7,8 @@
 #   UPDATE=port/switch/nsp/out/update_<pkg>   package to run (exefs pushed)
 #   SHOTS=<dir>                               screenshot folder (default port/switch/logs/bench_<name>/shots)
 #   TRANSFER=ftp|mtp                          force a transfer
+#   BENCH_GPU=max (or MHz)                    GPU clock (GOW_GPU_MHZ); unset = the system's default clocks (handheld
+#                                             GPU 307.2 / EMC 1331.2, the target since 2026-10-24); BENCH_EMC likewise
 set -u
 cd "$(dirname "$0")/.."
 . tools/switch_lib.sh
@@ -20,8 +22,9 @@ sw_push_update "$UPDATE" || exit 1
 python -I tools/bench_script.py ${BENCH_GAME_S:-240} ${BENCH_MENU_S:-30} > "$D/bench.txt"
 F put "$D/bench.txt" switch/gow || exit 1
 mkdir -p "$D/envdir"
-{ cat <<'EOF'
-GOW_GPU_MHZ=max
+{ [ -n "${BENCH_GPU:-}" ] && echo "GOW_GPU_MHZ=$BENCH_GPU"
+  [ -n "${BENCH_EMC:-}" ] && echo "GOW_EMC_MHZ=$BENCH_EMC"
+  cat <<'EOF'
 GOW_AUDIO_STATS=1
 GOW_PAD_TEST=1
 GOW_PAD_TEST_NO_CAPTURE=1
