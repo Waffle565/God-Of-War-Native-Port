@@ -33,6 +33,39 @@ enum VIFCmd : uint8_t
     VIF_DIRECTHL = 0x51,
 };
 
+// GOW-Port: payload bytes after the code of a non-DIRECT VIF1 command, as processVIF1Data consumes them (chain
+// streaming: whether a command is complete in the bytes published so far). At most 4096 (UNPACK of 256 V4-32).
+static inline uint32_t vif1CommandPayload(uint32_t cmd, uint32_t cycle)
+{
+    const uint32_t opcode = (cmd >> 24) & 0x7Fu, num = (cmd >> 16) & 0xFFu;
+    switch (opcode)
+    {
+    case VIF_STMASK: return 4u;
+    case VIF_STROW: case VIF_STCOL: return 16u;
+    case VIF_MPG: return (num ? num : 256u) * 8u;
+    default: break;
+    }
+    if ((opcode & 0x60u) != 0x60u)
+        return 0u;
+    const uint32_t vn = (opcode >> 2) & 3u, vl = opcode & 3u;
+    const uint32_t bitsPerComponent = vl == 0u ? 32u : vl == 1u ? 16u : vl == 2u ? 8u : (vn == 3u ? 4u : 16u);
+    const uint32_t bitsPerVector = (vl == 3u && vn == 3u) ? 16u : (vn + 1u) * bitsPerComponent;
+    const uint32_t bytesPerVector = (bitsPerVector + 7u) / 8u;
+    const uint32_t writes = num ? num : 256u;
+    uint32_t cl = cycle & 0xFFu, wl = (cycle >> 8) & 0xFFu;
+    if (cl == 0u) cl = 1u;
+    if (wl == 0u) wl = 1u;
+    uint32_t source = writes;
+    if (cl < wl)
+    {
+        uint32_t remainder = writes % wl;
+        if (remainder > cl)
+            remainder = cl;
+        source = (writes / wl) * cl + remainder;
+    }
+    return (source * bytesPerVector + 3u) & ~3u;
+}
+
 // GOW-Port: VIF1 UNPACK without a write mask and with CL >= WL (every write cycle reads source data): the format,
 // the STMOD mode and the vector layout are fixed per command, so one specialised loop per (VN, VL, MODE) replaces the
 // per-vector, per-field decisions of the general loop below. Same results as that loop, including its quirks: V3 keeps
@@ -448,6 +481,21 @@ void PS2Memory::processVIF1Data(const uint8_t *data, uint32_t sizeBytes)
 
         uint32_t cmd;
         memcpy(&cmd, data + pos, 4);
+        // GOW-Port: chain streaming (runChainStream): a command not yet complete in this piece is left for the next
+        // call, untouched (it ends the call at its header, m_vif1LastPos). Only a DIRECT or a command within the
+        // largest UNPACK / MPG size of the end can be incomplete.
+        if (m_vif1Streaming)
+        {
+            const uint32_t left = sizeBytes - pos;
+            const uint32_t op = (cmd >> 24) & 0x7Fu;
+            if (op == VIF_DIRECT || op == VIF_DIRECTHL)
+            {
+                if (4ull + ((cmd & 0xFFFFu) ? (cmd & 0xFFFFu) : 65536u) * 16ull > left)
+                    break;
+            }
+            else if (left < 4u + 4096u && 4u + vif1CommandPayload(cmd, vif1_regs.cycle) > left)
+                break;
+        }
         pos += 4;
 
         uint8_t opcode = (cmd >> 24) & 0x7F;
@@ -1025,4 +1073,5 @@ void PS2Memory::processVIF1Data(const uint8_t *data, uint32_t sizeBytes)
             continue;
         }
     }
+    m_vif1LastPos = pos; // GOW-Port: chain streaming check (runChainStream)
 }

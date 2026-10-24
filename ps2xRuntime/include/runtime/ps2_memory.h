@@ -13,6 +13,7 @@
 #include <mutex>
 #include <condition_variable>
 #include <deque>
+#include <memory>
 #include <thread>
 
 #include "gs/ps2_gif_arbiter.h"
@@ -525,11 +526,25 @@ public:
     void submitVif1DirectPayload(const uint8_t *data, uint32_t sizeBytes, bool directHl);
     std::vector<std::vector<uint8_t>> m_path3MaskedFifo;
 
+    // GOW-Port: a VIF1 DMA chain handed to the worker while the EE is still copying it (sendDmaChain, GOW_CHAIN_STREAM_KB):
+    // the EE publishes the copied bytes; the worker parses the complete commands among them as they arrive.
+    struct GsChainStream
+    {
+        std::vector<uint8_t> bytes;                 // the EE's until done; then the worker's (returned to the pool)
+        std::atomic<const uint8_t *> base{nullptr}; // bytes.data() for the published range
+        std::atomic<uint32_t> published{0};         // bytes [0, published) are final
+        std::atomic<uint32_t> consumed{0};          // bytes the worker has parsed (the EE reallocates only when equal)
+        std::atomic<bool> done{false};              // bytes holds the whole chain (published may be < its size)
+    };
     struct GsWorkerItem
     {
         bool vif1 = false; // false: GIF PATH3
         std::vector<uint8_t> data;
+        std::shared_ptr<GsChainStream> stream; // VIF1 chain still being copied (data empty until it is done)
     };
+    void runChainStream(GsChainStream &stream);
+    uint32_t m_vif1LastPos = 0u;    // where processVIF1Data's last call stopped parsing
+    bool m_vif1Streaming = false;   // runChainStream: stop at a command not complete in the bytes given
     struct GsWorkerJob
     {
         std::vector<GsWorkerItem> items;

@@ -1850,6 +1850,38 @@ void PS2Memory::sendDma(DmaPath path, uint32_t address, uint32_t qwc)
 // The game's DMA tag list (source chain): {QWC, ID, IRQ, ADDR} tags; refe/cnt/next/ref/refs/call/ret/end, a call stack
 // of two. VIF tag lists with the tag-transfer bit (VIF1 CHCR bit 6, set by the game at boot) carry two VIFcodes in each
 // tag's upper half, which go to the VIF before the tag's data. An IRQ tag ends the list (sceDmaSend sets TIE).
+namespace
+{
+    // worker-thread counters of the chain streaming (cumulative)
+    uint64_t g_streamChains = 0, g_streamPieces = 0, g_streamPartial = 0;
+
+    uint32_t chainStreamBytes()
+    {
+        // GOW_CHAIN_STREAM_KB=<n>: hand a VIF1 chain to the worker in pieces of >= n KB while it is copied; 0 = off
+        static const uint32_t kb = [] {
+            const char *v = std::getenv("GOW_CHAIN_STREAM_KB");
+#if defined(__SWITCH__)
+            return v ? static_cast<uint32_t>(std::strtoul(v, nullptr, 10)) : 64u;
+#else
+            return v ? static_cast<uint32_t>(std::strtoul(v, nullptr, 10)) : 0u;
+#endif
+        }();
+        return kb * 1024u;
+    }
+
+    uint32_t chainStreamLag()
+    {
+        // GOW_CHAIN_STREAM_LAG_KB=<n> (default 64): publish only bytes copied >= n KB ago. Lines the worker reads right
+        // after the EE wrote them are still in the EE core's L1 (snooped on every read): with no lag the VU1 thread's
+        // time per run rose 4 % (console bench s3a vs b2a).
+        static const uint32_t kb = [] {
+            const char *v = std::getenv("GOW_CHAIN_STREAM_LAG_KB");
+            return v ? static_cast<uint32_t>(std::strtoul(v, nullptr, 10)) : 64u;
+        }();
+        return kb * 1024u;
+    }
+}
+
 void PS2Memory::sendDmaChain(DmaPath path, uint32_t tagAddress)
 {
     static constexpr int kMaxTags = 1 << 20;
@@ -1860,6 +1892,23 @@ void PS2Memory::sendDmaChain(DmaPath path, uint32_t tagAddress)
     uint32_t depth = 0u;
     const uint64_t chainT0 = ps2_perf::enabled() ? ps2_perf::nowNanos() : 0u;
     std::vector<uint8_t> bytes = takeDmaBuffer();
+    // GOW-Port: chain streaming (GsChainStream). Once >= streamBytes more are copied (at a tag's end), they are
+    // published and the job is queued; the worker parses the complete commands among them (processVIF1Data stops at
+    // an incomplete one, m_vif1Streaming) and the rest when more arrives. Same bytes in the same order, each command
+    // run once it is whole: the worker's results are those of the whole chain in one call.
+    const uint32_t streamBytes = (path == DmaPath::Vif1 && m_gsWorkerEnabled && !m_vu1AsyncOn) ? chainStreamBytes() : 0u;
+    std::shared_ptr<GsChainStream> stream;
+    if (streamBytes && bytes.capacity() < (8u << 20))
+        bytes.reserve(8u << 20);
+    // before an append that would reallocate: wait until the worker has parsed every published byte
+    auto reserveFor = [&](size_t more) {
+        if (!stream || bytes.size() + more <= bytes.capacity())
+            return;
+        while (stream->consumed.load(std::memory_order_acquire) != stream->published.load(std::memory_order_relaxed))
+            std::this_thread::yield();
+        bytes.reserve(std::max(bytes.capacity() * 2u, bytes.size() + more));
+        stream->base.store(bytes.data(), std::memory_order_release);
+    };
     int tags = 0;
     for (; tags < kMaxTags; ++tags)
     {
@@ -1939,12 +1988,44 @@ void PS2Memory::sendDmaChain(DmaPath path, uint32_t tagAddress)
             }
         }
 
+        reserveFor((transferTags ? 8u : 0u) + qwc * 16u);
         if (transferTags)
             bytes.insert(bytes.end(), base + offset + 8u, base + offset + 16u);
         if (qwc != 0u)
             appendGuestBytes(data, qwc * 16u, bytes);
         if (end || irq)
             break;
+        if (streamBytes)
+        {
+            static const uint32_t lag = chainStreamLag();
+            const uint64_t copied = bytes.size();
+            const uint64_t scanPos = copied > lag ? copied - lag : 0u;
+            const uint32_t published = stream ? stream->published.load(std::memory_order_relaxed) : 0u;
+            if (scanPos >= published + streamBytes)
+            {
+                if (!stream)
+                {
+                    stream = std::make_shared<GsChainStream>();
+                    stream->base.store(bytes.data(), std::memory_order_relaxed);
+                    stream->published.store(static_cast<uint32_t>(scanPos), std::memory_order_release);
+                    m_dmaStartCount.fetch_add(1, std::memory_order_relaxed);
+                    GsWorkerJob job;
+                    job.fbrst = m_fbrstProvider ? m_fbrstProvider() : 0u;
+                    GsWorkerItem item;
+                    item.vif1 = true;
+                    item.stream = stream;
+                    job.items.push_back(std::move(item));
+                    gsWorkerTrace("kick", static_cast<size_t>(scanPos));
+                    {
+                        std::lock_guard<std::mutex> lock(m_gsWorkerMutex);
+                        m_gsWorkerJobs.push_back(std::move(job));
+                    }
+                    m_gsWorkerCv.notify_one();
+                }
+                else
+                    stream->published.store(static_cast<uint32_t>(scanPos), std::memory_order_release);
+            }
+        }
     }
     if (tags >= kMaxTags)
         std::fprintf(stderr, "[dma] chain on path %u stopped after %d tags at 0x%08x\n", static_cast<unsigned>(path), tags,
@@ -1960,7 +2041,77 @@ void PS2Memory::sendDmaChain(DmaPath path, uint32_t tagAddress)
         {
         }
     }
+    if (stream)
+    {
+        // the job is queued already: hand over the rest (the vector keeps its buffer, so base stays valid)
+        stream->bytes = std::move(bytes);
+        stream->done.store(true, std::memory_order_release);
+        return;
+    }
     deliverDma(path, std::move(bytes));
+}
+
+// GOW-Port: the worker's side of a streamed VIF1 chain: parse the complete commands among the published bytes as they
+// arrive (m_vif1Streaming: an incomplete command ends the call untouched and is parsed again once more bytes are
+// there), everything left once the EE is done. `consumed` tells the EE how far the worker has looked and that it is
+// not reading the buffer: the EE reallocates only when it equals `published`; base is re-read after every publish.
+void PS2Memory::runChainStream(GsChainStream &stream)
+{
+    ++g_streamChains;
+    {
+        // `[chain-stream]` every ~5 s (cumulative): streamed chains, parse calls, calls that stopped at an incomplete
+        // command
+        static uint64_t last = 0;
+        const uint64_t now = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count());
+        if (now - last >= 5000u)
+        {
+            if (last)
+                std::fprintf(stderr, "[chain-stream] chains=%llu pieces=%llu partial=%llu\n",
+                             (unsigned long long)g_streamChains, (unsigned long long)g_streamPieces,
+                             (unsigned long long)g_streamPartial);
+            last = now;
+        }
+    }
+    uint32_t parsed = 0u, seen = 0u;
+    unsigned spins = 0u;
+    for (;;)
+    {
+        const bool done = stream.done.load(std::memory_order_acquire);
+        const uint32_t ready = done ? static_cast<uint32_t>(stream.bytes.size()) : stream.published.load(std::memory_order_acquire);
+        if (done || ready > seen)
+        {
+            const uint8_t *base = done ? stream.bytes.data() : stream.base.load(std::memory_order_acquire);
+            if (ready > parsed)
+            {
+                m_vif1Streaming = !done;
+                processVIF1Data(base + parsed, ready - parsed);
+                m_vif1Streaming = false;
+                ++g_streamPieces;
+                if (done)
+                    return;
+                if (m_vif1LastPos < ready - parsed)
+                    ++g_streamPartial;
+                parsed += m_vif1LastPos;
+            }
+            else if (done)
+                return;
+            seen = ready;
+            stream.consumed.store(seen, std::memory_order_release);
+            spins = 0u;
+            continue;
+        }
+        if (++spins < 64u)
+        {
+#if defined(__aarch64__)
+            asm volatile("yield");
+#elif defined(__x86_64__) || defined(_M_X64)
+            _mm_pause();
+#endif
+        }
+        else
+            std::this_thread::yield();
+    }
 }
 
 // VIF0 packets are decoded now (VU0). VIF1 and GIF packets go to the GS worker in order (PS2X_GS_WORKER=1, the play
@@ -2155,6 +2306,13 @@ void PS2Memory::runGsWorkerJob(GsWorkerJob &job)
     m_gsWorkerJobFbrst = job.fbrst;
     for (GsWorkerItem &item : job.items)
     {
+        if (item.stream)
+        {
+            runChainStream(*item.stream);
+            item.data = std::move(item.stream->bytes); // back to the buffer pool after the job
+            item.stream.reset();
+            continue;
+        }
         const uint32_t size = static_cast<uint32_t>(item.data.size());
         if (item.vif1)
         {
