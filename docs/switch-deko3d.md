@@ -54,7 +54,9 @@ toolchain (`deko3d` 0.5.0 with the `uam` shader compiler, `/opt/devkitpro/tools/
   at every list end; when a list's fence has signalled, the time between two of its reports goes to the kind the first
   one started (gaps between lists are idle, not counted). Every 5 s: `[gs-dk-gpu] busy_ms=... clear= upload= copy=
   readback= acquire= <family>=...` (draw programs summed per shader family: draw, shuffle, present, clut, pack, scale)
-  and `[gs-dk-gpu-prog]` the 8 programs with the most time (`p<id>:<family>:<low 32 bits of the source hash>=ms`).
+  and `[gs-dk-gpu-prog]` the 8 programs with the most time (`p<id>:<family>:<low 32 bits of the source hash>=ms/Mfrag`:
+  milliseconds and millions of fragment shader invocations per 5 s, a `DkCounter_FragmentShaderInvocations` report next
+  to each timestamp, ext 63c90cb).
   `acquire` is the GPU waiting for a swapchain image (vsync back-pressure), not work. A report waits for the work before
   it to finish, so the split is approximate where one kind's work overlaps the next; the busy total is the GPU's.
   `tools/bench_report.py` shows `gpu` / `acq` columns from these lines. Off: no reports, no cost.

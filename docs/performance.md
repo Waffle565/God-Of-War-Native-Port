@@ -439,11 +439,19 @@ at the game's 1785 MHz boost), then lower clocks. Bench at those clocks (docs/be
   hardly moved (intro: variant 203421 1.31-1.33 s vs 203425 1.47 s per 5 s, -10 %), so these draws are not bound by
   their texture fetches; and both runs with it (`x1`, `x2`, seed state B) closed with a system error ~10 s into the
   fight (x2 held 48 MB, so not memory; not found). Reverted.
-- So the fragment work of these batches is bound elsewhere: candidates for the next step are the number of fragments
-  (overdraw of the crowd and the rain; DkCounter_FragmentShaderInvocations / SamplesPassed per program would say), the
-  late depth test forced by `discard` with depth writes (pass 1 of an alpha test), the dual-source blend output, and
-  the shader length of the uber-style code paths (specialised variants still evaluate `floor` / clamp / blend
-  selection per fragment).
+- **Fragment counts** (`f1` = update_k11d, the timer with fragment shader invocations; mid fight, per 5 s at 35 fps):
+  | program | key | ms | M fragments | per frame | M frag/s |
+  |---|---|---|---|---|---|
+  | draw p10 | 203425 (pass 1) | 1031 | 252 | 1.43 M (5x the 640x448 screen) | 245 |
+  | draw p11 | 205425 (its fail pass) | 474 | 133 | 0.76 M | 283 |
+  | draw p31 / p30 | 204925 / 202925 (fail / pass) | 413 / 368 | 174 / 174 | 0.99 M each | 422 / 473 |
+  | shuffle | - | 446 | 177 | 1.0 M | 397 |
+  | scale (upscale) | - | 419 | 147 | 0.84 M (= 1280x720) | 352 |
+  The GPU shades ~7 M fragments per frame at 250-470 M per second: it is fragment-throughput bound, by the number of
+  fragments (overdraw, ~5x on the main alpha-tested variant) times a long fragment shader (~4 ns per fragment on the
+  main one). The fail passes shade their batch again (p30 / p31: the same 174 M; p10 / p11: half, early Z helps there).
+  Levers in order: shade each alpha-tested batch once (pass / fail in one draw where AFAIL allows, or a cheaper fail
+  pass), shorter specialised shaders for the hot variants, fewer shuffle fragments, a cheaper upscale.
 
 ## Menu clock: the Load Game menu ran 8 % fast (2026-10-13, ext branches agent/menuclock, agent/menuclock2)
 - Measured (port/menuclock, `GOW_DELTA_DIAG`, `GOW_VBLANK_DIAG`, `GOW_IOP_DRIFT`, `GOW_AUDIO_STATS`): title screen,

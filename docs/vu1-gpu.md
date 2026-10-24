@@ -5,7 +5,7 @@ look the same (pixel comparison against the CPU path, tolerances documented). Pl
 (2) a plain-float CPU reference (HLE) compared with the exact path on the recordings, which also says whether a fast
 CPU HLE alone reaches the target, (3) GPU path, (4) console fps / per-core busy / screenshots.
 
-## Handoff (2026-10-24 evening, sw-k11 stopped here: ext agent/sw-vu1gpu 7862219 + default generator (main 785c99d = t4 blocks, `/root/vu1pregen-t4`), package `update_k11a`)
+## Handoff (2026-10-24 evening, sw-k11 stopped here: ext agent/sw-vu1gpu 63c90cb + default generator (main 785c99d = t4 blocks, `/root/vu1pregen-t4`), package `update_k11d`)
 - **New target (user, 2026-10-24)**: 60 fps in fights at the **default handheld clocks** (GPU 307.2, EMC 1331.2; CPU
   1785), then lower clocks. `tools/switch_bench.sh` now sets no GPU / EMC clock (`BENCH_GPU=max` / `BENCH_EMC=...` for
   the old setting); `bench_report.py` has `gpu` / `acq` columns. **Baseline at default clocks**: k10c (`dc1`) heavy
@@ -23,16 +23,20 @@ CPU HLE alone reaches the target, (3) GPU path, (4) console fps / per-core busy 
 - Tried and dropped: palette expansion (filtered paletted draws on an RGBA8 copy with hardware bilinear): only -10 %
   on those draws (they are not fetch-bound), and both runs (`x1`, `x2`) ended in a system error ~10 s into the fight
   (not memory; cause not found). Code kept in scratchpad `k11/gs_hw_backend.expand.cpp`; not committed.
-- Packages (port/switch/nsp/out): **update_k11a = default** (t4 blocks + VIF prefetch + GPU timer); update_k10e (same
-  without the timer), update_k10c. update_k11b / k11c (expansion, crash) can go; update_k10d (t3) is superseded.
-  ELFs `/root/elf_k11*.elf`. Console: k11c's exefs is installed (the last run, crashed); env.txt deleted. **Install
-  k11a before the next run** (any bench run pushes its own package).
-- Next (GPU first, at default clocks): (1) fragment counts per program (DkCounter_FragmentShaderInvocations /
-  SamplesPassed next to the timestamps) to tell overdraw from per-fragment cost on the paletted alpha-tested batches;
-  (2) their pass-1 draws use `discard` with depth writes (late Z for the whole batch): a depth-only pre-pass or merging
-  pass / fail passes where AFAIL allows; (3) the dual-source blend output (needed only for the GS alpha scale); (4)
-  shuffles 2.6 ms per frame; (5) a cheaper upscale (5-tap bicubic without the 4 sharpen taps) if bilinear is too soft;
-  (6) VU1 levers of sw-k10 stay for the GPU-max case (VU1 ~4.7 s per 5 s there).
+- Packages (port/switch/nsp/out): **update_k11d = default** (= ext 63c90cb: t4 blocks + VIF prefetch + GPU timer with
+  fragment counts, all opt-in diagnostics); update_k11a (timer without fragment counts), update_k10e (no timer),
+  update_k10c. update_k11b / k11c (expansion, crashed) can go; update_k10d (t3) is superseded. ELFs
+  `/root/elf_k11*.elf`. Console: k11d's exefs is installed (run `f1`), env.txt deleted by the bench script.
+- **Fragment counts** (update_k11d = k11a + fragment shader invocations in the timer, ext 63c90cb; run `f1`
+  29.3 / 35.1 / 37.7): the GPU shades ~7 M fragments per frame at 250-470 M/s; the main paletted alpha-tested variant
+  (203425) alone 1.43 M per frame (5x the screen) at ~4 ns each, and the fail passes shade their batches again (p30 / p31
+  both 174 M per 5 s). Table: docs/performance.md "The GPU at the default clocks". Fragment-throughput bound.
+- Next (GPU first, at default clocks): (1) shade each alpha-tested batch once: pass / fail in one draw where AFAIL
+  allows (e.g. AFAIL=FB_ONLY: colour for all fragments, Z only for passing ones; needs a Z-only pass of passing
+  fragments or a depth-write trick) or a much cheaper fail pass; (2) shorter specialised shaders for the hot variants
+  (per-fragment ~4 ns at 307 MHz: count the instructions of 203425's uam output); (3) shuffles ~1 M fragments per frame;
+  (4) a cheaper upscale (5-tap bicubic without the 4 sharpen taps) if bilinear is too soft; (5) the VU1 levers of
+  sw-k10 for the GPU-max case (VU1 ~4.7 s per 5 s there).
 - Tools (scratchpad `k11/`): `brun.sh <run> <pkg> [env]` (bench over FTP), `q2.sh "<pkg> <run> <gpu|-> [env]" ...`
   (queue; `-` = default clocks), `q3.sh` (the same after `WAITPID` exits), `gpu.env` (perf diag + GPU timer),
   `gpubl.env` (+ bilinear), `vmap.py <ext> <keys>` (program hash in `[gs-dk-gpu-prog]` -> draw variant key).
