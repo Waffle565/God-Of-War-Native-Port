@@ -1178,6 +1178,12 @@ namespace
     uint32_t vu1nHleResume(VU1NativeCtx &n) { return n.resume | kVu1nFinished; }
 }
 
+// chainDirect / chainJr's one out-of-line copy of chainStep (see chainDirect)
+VU1N_NOINLINE uint32_t VU1NativeAccess::chainStepOut(VU1NativeCtx &n, uint32_t pc, uint64_t key, bool any)
+{
+    return any ? chainStep(n, pc, 0u, true) : chainStep(n, pc, key, false);
+}
+
 // A direct chain (chainStep) about to enter pc, whose hleStop byte is set: runs the kernel there itself, as runNative
 // would right after the finished block (the chain has stored its registers and done finishBlockTiming / commitDue, so
 // the state is the one runNative's loop would see), then further kernels at the pcs they return, and sets the block

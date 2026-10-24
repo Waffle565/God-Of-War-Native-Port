@@ -330,6 +330,7 @@ struct VU1NativeAccess
     // the target holds (as runNative would dispatch it); 0 when GOW_VU1N_JR=0
     static uint32_t chainJr(VU1NativeCtx &n, uint32_t pc, uint64_t key);
     static uint32_t chainStep(VU1NativeCtx &n, uint32_t pc, uint64_t key, bool any); // chainDirect / chainJr
+    static uint32_t chainStepOut(VU1NativeCtx &n, uint32_t pc, uint64_t key, bool any); // its out-of-line copy
     static VU1NativeFn slotFn(const VU1NativeCtx &n); // the function of the slot chainDirect set up
     static void callLower(VU1NativeCtx &n, uint32_t pc, uint32_t lower, uint32_t upper);
     static void callUpper(VU1NativeCtx &n, uint32_t pc, uint32_t upper);
@@ -661,9 +662,17 @@ VU1N_INLINE uint32_t VU1NativeAccess::chainTo(VU1NativeCtx &n, uint32_t pc, VU1N
 // start cycle, entry timing (entryTiming for blocks that read entry flags) and tail record. Returns 0: nothing done
 // (runNative finishes the block: bisecting, or the chain budget used up), 1: successor set up, call it, 2: block
 // finished, runNative dispatches the successor (the block returns with kVu1nFinished).
+// The generated blocks reach chainStep through one out-of-line copy (chainStepOut, ps2_vu1_native.inl): inlined, its
+// ~85 instructions were repeated at each of the ~16000 exits of the generated blocks (two per block with two successors),
+// a large share of their code (i-cache / branch predictor footprint on the A57). The block keeps its own indirect branch to
+// the successor (VU1N_GO). PS2X_VU1N_CHAIN_INLINE: the former inlined form (same results).
 VU1N_INLINE uint32_t VU1NativeAccess::chainDirect(VU1NativeCtx &n, uint32_t pc, uint64_t key)
 {
+#if defined(PS2X_VU1N_CHAIN_INLINE)
     return chainStep(n, pc, key, false);
+#else
+    return chainStepOut(n, pc, key, false);
+#endif
 }
 
 // JR / JALR exits: the target is only known at run time. A predicted target (key != 0) is checked like a static
@@ -673,7 +682,11 @@ VU1N_INLINE uint32_t VU1NativeAccess::chainJr(VU1NativeCtx &n, uint32_t pc, uint
 {
     if (!n.vu->m_native->jrChain)
         return 0u;
+#if defined(PS2X_VU1N_CHAIN_INLINE)
     return key ? chainStep(n, pc, key, false) : chainStep(n, pc, 0u, true);
+#else
+    return chainStepOut(n, pc, key, key == 0u);
+#endif
 }
 
 VU1N_INLINE uint32_t VU1NativeAccess::chainStep(VU1NativeCtx &n, uint32_t pc, uint64_t key, bool any)
