@@ -5,7 +5,36 @@ look the same (pixel comparison against the CPU path, tolerances documented). Pl
 (2) a plain-float CPU reference (HLE) compared with the exact path on the recordings, which also says whether a fast
 CPU HLE alone reaches the target, (3) GPU path, (4) console fps / per-core busy / screenshots.
 
-## Handoff (2026-10-24 night 10, sw-vu1k6: in progress)
+## Handoff (2026-10-24 night 10, sw-vu1k6 stopped here: ext agent/sw-vu1gpu f53b5b6 + default generator (main aa43294 = gen4, `/root/vu1pregen-gen4`), package `update_la6`)
+- **Result** (`update_la6`, handheld, bot fight, GPU max): title 59.2-60.0 fps / vu_ms 3521-3572 per 5 s (k3g
+  3775-3839: -7 %), VU1 17.6-18.1 us per run (k3g 19.0); fight 47.2-56.0 fps over 145-230 s (avg 53.5, mostly 54-56;
+  the phase at 125-140 s 32-37 as before), hitches 0-2 per 5 s, audio misses only in windows 0 and 22. Rendering
+  checked on the screenshots.
+- Default GPU clock (`la6d`, env only `GOW_AUDIO_STATS=1`; handheld GPU 307 MHz): title 60.0 / vu_ms 3529-3539; fight
+  GPU-bound: 34.0-48.8 fps (145-230 s, avg 42.4), gsq_wait 700-1700 ms and present_submit 750-1800 ms per 5 s, hitches
+  8-17 per 5 s, audio misses in windows 0, 13, 14, 22, 23. With the VU1 thread faster, the default clock now costs ~11
+  fps in the fight: `GOW_GPU_MHZ=max` stays recommended (the user's decision, docs/switch.md "clocks").
+- Exactness of the final state: x86 replay dumps fight.rec / menu.rec, HLE=1 and HLE=0, byte-identical to 529de89 and
+  a61de30 with gen3 blocks (`e6x`) and with gen4 blocks (`e4x`), cycles included.
+- Dropped too: `la5` = a prefetch of the successor's slot at chainStep's entry: title 17.94-18.06 us per run vs la4p's
+  17.69-17.83 (both with the sampler).
+- **Next levers**: chainStepOut is now the VU1 thread's top function (12.9-13.4 % of the samples, ~128 instructions per
+  step, 16 k steps per 250 replay records); with `--jr` most block exits go through it. What is left there is real work
+  (history entry, FDIV/EFU retire, stop / budget, kernel byte, key, successor set-up); fewer steps need longer traces
+  (traces stop at blocks that read entry flags and at loop blocks). kCullClip ~7 % and the other kernels are
+  latency-bound. Code-change handling ~5.8 % (codeChanged, slotFor, hleMatch re-hashing the kernel region on every
+  memo hit, setupTrace, keyInfo). The stage mutex (svcArbitrateLock 3 %, flushStaged) needs the stage thread's side
+  sampled to see who holds it. In the fight's later windows the VU1 thread idles ~10 %: the EE (ee_ms 3.6-3.9 s per
+  5 s) starts to limit.
+- Console left on DBI's MTP screen with `update_la6` installed; env.txt deleted from the SD (and the old
+  `sdmc:/switch/gow/env_gpu.txt`).
+- Tools (scratchpad): `ha.sh <name> <gen dir>` (aarch64 -O3 harness), `ic2.sh <rec> <harness>` (icount with
+  HLE+DIRECT+TRACES; `/root/ics_fight.rec` = every 8th record of fight.rec), `icsrc.py <pcs harness> <-g twin> <regex>
+  [lines]` and `pcsrc.py <pcs.txt> <elf> <lo> <hi> <regex> [lines]` (instructions / console samples by innermost inlined
+  function), `icmix.py`, `iccall.py`, `chkg.sh <name> <gen dir>` (chk.sh with any generated set), `urun.sh <run...>` (us
+  per VU1 run per window), `bsz.sh <pkg...>` (generated block code size), `fd3.sh` (fdis per block).
+
+### sw-vu1k6 work log
 - **Where the VU1 thread's instructions go** (aarch64 harness `a0` = 76b4fff + gen3 blocks, -O3, fight.rec every 8th
   record, HLE+DIRECT+TRACES; new tools: `icount.sh` with `PCS=1` writes per-instruction counts, `icann.py` annotates a
   function with them, `icfun.py` lists every function without re-running qemu; scratchpad `icsrc.py` splits a function
@@ -35,6 +64,19 @@ CPU HLE alone reaches the target, (3) GPU path, (4) console fps / per-core busy 
   dispatch 18.7 (chainStepOut counted here now), kernels 17.3, idle 10.1, VIF 8.5. chainStep's hot lines: the first
   loads of the running block's slot (sl.idle / sl.bt: its cache line is often gone by the block's end) and of the next
   slot's key, the hleStop byte, the stop / budget test.
+- `--jr` is the generator default now (main aa43294, `--no-jr` restores the old output; the default output = gen4).
+- Measured and dropped (exact in the dumps, no console gain; diffs in the scratchpad):
+  - `la3` (`la3_setRunning.diff`): the running block's bt / length / scalar flag copied into the ctx when its slot is
+    set up (`setRunning`, also from tracePart), so chainStep does not touch the slot: title 17.9-18.0 us per run vs
+    la2's 17.6-17.8 (+1.5 %), fight scenes not comparable. The slot-line-miss reading of the samples was wrong.
+  - `la4` stage-mutex spin (`la4_stage_spin.diff`): svcArbitrateLock is `pthread_mutex_lock <- ps2_gs_stage::flushStaged`
+    (`GOW_PC_SAMPLE_LR` run `la2l`); 256 try_lock + yield spins before blocking changed nothing (2.8 -> 3.1 %).
+- **kCullClip without dead MAC ring writes** (ext f53b5b6, exact): the kernel always leaves from B1, so only that B1's
+  five FMAC results reach the flag ring; the 12 other ring writes per pass are gone. aarch64 harness 0.742 -> 0.526 M
+  instructions per warm pass (-29 %), console share unchanged (~7 %, `la4p`): the kernel is latency-bound, like most of
+  the thread now (instruction cuts without fewer cache misses do not show on the A57).
+- aarch64 harness `a2` (gen4 + 862df5a + f53b5b6): chainStepOut 2.06 M of 7.77 M instructions per warm pass (26.5 %,
+  ~128 per call, 16 k calls), hleChain 0.56 M, blocks 2.24 M, kernels 1.81 M; runNative left the top list.
 
 ## Handoff (2026-10-24 night 9, sw-vu1k5 stopped here: ext agent/sw-vu1gpu 76b4fff + gen3 blocks (`/root/vu1pregen-gen3`), package `update_ka3`, main repo npdm highest_cpu_id 3)
 - **What changed.** npdm `highest_cpu_id` 3 by default (port/switch/nsp/gow.json); **GSStage pinned to core 3 by default**

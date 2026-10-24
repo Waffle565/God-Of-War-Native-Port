@@ -411,6 +411,11 @@ Console v15: VU1 (`vu_ms`) ~3.9 s per 5 s in the menu (~31 ms per guest frame), 
   qemu; `icount.sh` gives the dynamic instruction count per function (128-bit NEON instructions counted twice, the
   A57's FP pipes are 64 bits wide), `GOW_VU1N_REPLAY_DUMP` + `dumpdiff.py` compare two builds record by record (an
   x86-64 build of the same harness is the reference). Recordings hold game data: keep them out of git.
+  `icount.sh` options: `ICARGS=--blocks` (generated blocks one by one), `TOP=<n>`, `PCS=1` (per-instruction counts
+  `pcs_<harness>_<passes>.txt`); then `icann.py <harness> <function> [min]` prints a function's disassembly with the
+  executed count of each instruction per warm pass and `icfun.py <harness> [top]` every function with category totals
+  (blocks / kernels / other), both without re-running qemu. Instruction counts say little about the A57 where the code
+  is latency-bound (docs/vu1-gpu.md sw-vu1k6: a kernel 29 % shorter showed no console change); confirm on the console.
 - Bug found: GCC's default `-ffp-contract=fast` fused multiply + add into FMLA (one rounding): 220 of 1832 recorded
   gameplay runs differed from the PC build (1-ulp values, larger through P/Q). The Switch build now passes
   `-ffp-contract=off` (ps2xRuntime/CMakeLists.txt); all 1832 then match. It cost no speed (fusion was rare).
