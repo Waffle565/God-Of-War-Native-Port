@@ -1,8 +1,38 @@
 # Native rendering instead of the recreated VU1: study and migration plan (2026-10-24)
 
-## Handoff (2026-10-24 evening, nat-vu1a stopped here: ext agent/natvu1, worktree ext/PS2Recomp-kl-natvu1)
+## Handoff (2026-10-24 night, nat-vu1b stopped here: ext agent/natvu1 head a2d6559, worktree ext/PS2Recomp-kl-natvu1)
+First native runs, harness only (WSL x86; nothing is wired into the runtime yet, so there is no GOW_ switch and no
+game run). Details in "Progress: step 1 walker / step 2 first native runs" (end of this file).
+
+- **Done**: `vu1nat::runNative` (ext ps2_vu1_nat_run.inl): whole MSCAL runs of the entries **3d0d1206** (unlit_st
+  loop, perspective divide) and **7ab32108** (no-divide loop, switches to the unlit_st loop through the module
+  callbacks) as hand-written C++: the batch switch's paths these entries take (0x00d8-0x03a0, colour set-up
+  0x03a8-0x07e0, matrix scale 0x1120-0x11c8, loop calls, kicks), the bounding-sphere / plane tests, the culled
+  batch. The batch walker `vu1nat::walkBatches` (header 69(ITOP), GIF tags at TOP + vi1).
+- **Verified** on pcfight / pcmenu (3000 consecutive runs each; harness `natcheck`): every native run is
+  **byte-exact** against the oracle (native blocks): GIF packets, all 16 KB of VU memory, vf1-31 / vi1-15 / ACC / Q /
+  P / I / CLIP / end pc. hlecmp.py on the mixed dump (native where covered, oracle elsewhere) vs `check ... fast
+  dump`: 0 data words differ, 602 883 / 525 067 GIF words exact. The next-run check (the following run's oracle
+  result from the native end state) caught the one bug seen during the work (a missing ISW), so it is live.
+- **Coverage now**: fight 1430 runs native = **21.2 % of the VU1 pairs** (3d0d 719 / 719 runs, 7ab 711 / 906), menu
+  1322 runs = **11.0 %** (3d0d 204 / 220, 7ab 1118 / 1201). Declines: 0x0358 (the clip-test path, `cull_clip`
+  loops 0x0980-0x0e28: 195 fight / 83 menu runs), 0x1278 (a batch of several GIF tags: 16 menu runs).
+- **Speed** (x86 harness, same runs): native 2.6 us per run vs 38.6 us for the oracle, but the oracle figure includes
+  the harness's per-run interpreter copy: not a game-speed number. Measure in the runtime.
+- **Next**: (1) wire runNative into the runtime's VU1 run (ps2_vif1_interpreter / VU1 thread: per MSCAL, on copies
+  or directly, fallback to the recompiled VU1 on false), off by default (`GOW_VU1_NATIVE_RUN=1`), then a PC bench run
+  for pixels / fps / `[bench]` signatures; (2) the clip path 0x0358 (+ loops 0x0980-0x0e28) for 7ab32108;
+  (3) the next entries by share: 93febeec (lit_st, 22.2 % fight), 39f38df4 (skin_lit_st, 19.9 %), 6df5c750 (menu
+  skinned, 80.5 % of the menu).
+- Tools: `natcheck <vifrec> [dump f]`, `GOW_VU1NAT_COV=<entry hash>` (pairs executed + path signatures per entry),
+  `GOW_VU1NAT_TRACEPC=<run>` (+ `GOW_VU1NAT_TRACEVF=<n>`), tools/vu1_nat/natdis.py (vudis.py misprints the ACC forms
+  of the upper specials, e.g. SUBAz as `subz vf1`: use natdis.py for transliteration), natblk.py (block view of a
+  trace). The harness build script breaks on the space in the repo path: WSL symlinks `/root/gowr` (repo) and
+  `/root/natvu1w` (worktree). Dumps: `/root/nrs/pc{fight,menu}_{ref,nat}.dump`.
+
+## Handoff (2026-10-24 evening, nat-vu1a)
 Steps 0 and 1 of the plan below, PC / WSL only (no console). Everything new is off by default (env switches).
-Details in "Progress" (end of this file). Next agent: read "Progress", then start step 2 (`unlit_st`).
+Details in "Progress" (end of this file).
 
 - **Done**: step 0 (EE access counter `GOW_EE_VUACC`, VIF1 stream + run recorder `GOW_VIF1_REC`, live-out recorder
   and per-GIF-write oracle dumps in the harness `tools/vu1_nat`) and step 1's decoder + run classifier (`vu1nat`, ext
@@ -389,3 +419,42 @@ Recorded with the PC build of ext 42f2f0a (out/build-pc of the worktree; `GOW_VI
    no-divide variant in the same modules, 11 %), checked with `check ... fast dump` + hlecmp per GIF write on pcfight /
    pcmenu, and with the next run's oracle result after the native run (live-out).
 3. Then the step 2-5 order of the plan, with the entry hashes above as the list to cover.
+
+### Progress: step 1 walker / step 2 first native runs (2026-10-24 night, nat-vu1b, ext a2d6559)
+**Run structure** (main fixed-code version of the fight and the menu, the same in the ranges below):
+- Entry 0x00 / 0x18 / 0x30: vi1 = 0 / 341 / 683, vi12 = XITOP; `ilw.y vi4, 69(vi12)`; `jr vi4` into the module
+  entry, which does `iaddiu vi14, vi0, 27; jalr vi15, vi14` (batch switch at 0x00d8, vi15 = entry + 0x18 = its loop)
+  with the loop's prime count in the delay slot (`iaddiu vi8, vi0, 3` / `1`).
+- Header qw ITOP + 69: .x flags (low nibble cleared and written back; bit 1 = 2: other path at 0x0188, bit 13 =
+  0x2000: second plane pair / clip test, sign: the header-negative path to 0x1120, else the colour set-up at 0x03a8),
+  .y module entry (pairs). The block at ITOP (from qw ITOP) is itself a GIF packet (A+D state) kicked before the
+  vertices; 64-68(ITOP) hold the scale / bounds vectors, 73-78 colour constants, 79-85 are written by the batch
+  switch, 16-19(ITOP + tag.w) the matrix.
+- **Sub-batch header = the vertices' GIF tag** at TOP + vi1: .x NLOOP | EOP (bit 15), .y low nibble = qwords per
+  vertex (vi4, the loop stride), .w = matrix offset. The vertices follow it and the loop writes the output in place
+  over the input (the packet kicked is this tag + its NLOOP vertices). qw 244 after the tag: the bounding sphere.
+- The loops run twice per batch: a prime pass of vi8 vertices into the scratch qw 930+ (fills the software
+  pipeline; this is why qw 931-942 are live between runs), then NLOOP vertices from the tag (vi3 = vi11 = tag qw).
+- Bounding sphere (0x01c8-0x02a0): centre through the matrix, radius * |row 0| (SQRT), then two plane pairs tested
+  by MAC-flag equality (`fmeq vi, vi6` with vi6 = 16: "only w negative" of madd / msub results; the flags read are
+  those of the FMAC op 4 pairs earlier). Outside -> 0x0088: kick the ITOP packet and an empty EOP tag, end. With bit 13,
+  inside the second pair too -> the module callbacks at 0x02d8 / 0x02f8 (7ab32108: they switch vi15 to the
+  3d0d1206 entry's unlit_st loop, which sits 0xd8 before it in the same module), straddling -> the clip path 0x0358.
+- Ends: E bit at 0x00c8 (culled), 0x1698 (header-negative path), 0x1340 (colour path); end pc = E pair + 16.
+- **Walker check** (`check ... exact`, histogram (GIF tags at TOP + vi1, oracle batch-switch calls)): the calls
+  are 1 + 2 x tags on the main diagonal (fight 2/5, 3/7 ... 18/37; menu up to 29/59): every tag is one batch with
+  its prime and main loop call. Off the diagonal: 1/1 (culled: no loop call; fight 203, menu 575 runs) and +2
+  (1/5: fight 1081, menu 776; 1/7, 2/7, 3/9 ...): one extra loop call per run, the clip path's second pass (not
+  read yet). So the walker knows the batches before the run; the per-batch path (culled / clip) needs the sphere test.
+
+**Native runs** (`vu1nat::runNative(state, mem, code, startPC, packets, declinePc)`, ext ps2_vu1_nat_run.inl):
+- Hand-written C++ per VU instruction group of the paths above, with the native blocks' float semantics (vu1n:
+  operands normalised, results clamped, MAC of the unclamped result, round toward zero set by the caller), the
+  loops as plain functions (kUnlitSt of ps2_vu1_hle.inl for the unlit_st loop, `noDivLoop` for the 7ab32108 loop;
+  the lower unit's store of a register the same pair's upper op rewrites stores the old value). Pipeline effects
+  that matter are written out: the MAC flags read 4 pairs after the op, SQRT Q ready at the MULQ 7 pairs later, the
+  DIV in the loop's delay slot read by the next block.
+- Gates: the FNV of the fixed-code ranges transliterated (0x0000-0x0420, 0x1120-0x11d0, 0x1648-0x16a8 =
+  57882ece8537340c, fight and menu), the entry code hash, for 7ab32108 also the 3d0d1206 code 0xd8 before it. Any
+  other branch returns false with the pc (the caller works on copies and falls back to the recompiled VU1).
+- Results: see the handoff at the top (byte-exact on every covered run, 21.2 % / 11.0 % of the VU pairs).

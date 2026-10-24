@@ -2,7 +2,8 @@
 # Native VU1 rendering harness (docs/native-render-study.md): the runtime's VU1 sources (with ps2_vu1_nat.inl) + one
 # generated vu1n_generado set + tools/vu1_nat/main.cpp, x86-64 Linux (WSL, root). Same layout as tools/vu1_harness.
 # usage: tools/vu1_nat/build.sh <name> <ext worktree> <vu1n_generado dir>    -> /root/vu1h/<name>
-#   then: /root/vu1h/<name> check <vifrec> [exact|fast] [dump <file>] | liveout <vifrec> [n] | torec <vifrec> <out.rec>
+#   then: /root/vu1h/<name> check <vifrec> [exact|fast] [dump <file>] | natcheck <vifrec> [dump <file>] | liveout <vifrec> [n] | torec <vifrec> <out.rec>
+#   (paths with spaces break this script: use symlinks, e.g. /root/gowr -> the repo, /root/natvu1w -> the worktree)
 #   REBUILD=1 recompiles everything, OPT=<level> replaces -O2.
 set -e
 name=$1; wt=$2; gen=$3
