@@ -211,3 +211,51 @@ bicubic upscale.
 - The IOP's real cost was the EE calling `runEeCycles` ~3.4 M times/s for ~10 IOP cycles each (full SPU2/timer/scheduler
   service per call): now batched (512 IOP cycles). IOP total 2.8 s -> ~0.2 s per 5 s; boot to Olympus gameplay 95 s -> 20 s.
 - Next: SPU2 / SIO2 / CDVD hardware models -> native services (audio output, pad, file reads); then GS default (Cliffs 10 fps).
+
+## IOP side: native services instead of IRX code (agent nat-iop1, 2026-10-24, ext agent/natiop)
+User directive 2026-10-24: nothing emulated or recompiled; the compiled IRX code is only a scaffold and an oracle.
+Order agreed: pad / memory card first, then VIF/GIF/DMA data path, SPU2 voice mixer, SIF, GS memory image, CDVD last.
+- **Pad + memory card: DONE (native, 2026-10-24).** SIO2MAN, SIO2D, DBCMAN, DS2U_D and MC2_D are no longer loaded;
+  DBCMAN's RPC servers and MC2_D's card commands are hand-written C++ (`NativeDbcService`,
+  ps2xIOP/src/modules/dbcman.cpp; protocol in docs/memory-card.md "Native DBCMAN + MC2_D service"). The pad was
+  already read on the EE (scePad2* overrides). `GOW_NATIVE_PADMC=0` = oracle (the recompiled modules). Left: 3 IRX
+  (LIBSD, 989NOMID, SMPD_IOP), all sound.
+
+### Plan: the sound modules -> a native sound driver (not started)
+Today: 989snd (989NOMID.IRX, 116.8 KB of code, 260k generated lines) is the game's sound driver: bank loading
+(SDBK/SMPD formats, docs/game-internals.md), sound-effect voices (allocation, priorities, stealing, groups /
+pause masks, docs/sound.md), the sequencer (music), streams; SMPD_IOP (29.8 KB) is its streamer plugin (disc reads
+into stream rings, the movie sound's core input); LIBSD (18.1 KB) is already native except its start code and
+Note2Pitch (#13, math). The observable output of the whole stack is the LIBSD call sequence the native SoundEngine
+receives (`GOW_SND_CALLLOG`) plus the RPC replies and SIF DMAs to the EE: the same oracle method as the card service
+works (record RPC + LIBSD call logs with the IRX path, replay the RPC sequence against the native driver, compare).
+Steps, each verified on the zones + movies (tools/movies.py) before the next:
+1. LIBSD as a native import library: register "libsd" exports in the IOP import registry (like the HLE kernel
+   libraries) so 989snd / SMPD's imports call the native functions (+ Note2Pitch in C++); LIBSD.IRX not loaded. Small.
+2. Inventory of the 989snd / SMPD RPC functions the game uses (zones, menus, movies; `PS2X_TRACE_RPC` for their
+   SIDs 0x00123456/7 and SMPD's) and of the data the EE hands them (banks by `sceSifGetOtherData` from EE RAM).
+3. Native bank store: banks parsed into native structures; sample data in the SoundEngine's 2 MB sample RAM at the
+   same addresses 989snd's VoiceTrans uses (keeps the LIBSD-call comparison exact).
+4. Sound effects: play / stop / param / group pause, voice allocation reproduced from 989snd's code (decompiled per
+   routine, as MC2_D was), checked call-for-call against the oracle log.
+5. Sequencer (music): tick timing from the sample clock instead of IOP timer interrupts.
+6. Streams (SMPD): native streamer reading the disc files (DiscSource) into the stream rings / the core input.
+7. Drop the register-level SoundEngine API in favour of direct voice objects owned by the driver.
+Effort: the largest IOP piece (weeks); steps 1-2 are a session each.
+
+### Plan: the IOP OS HLE and the guest IOP clock, once no IRX code remains (not started)
+Everything in ps2xIOP/src/emulator exists to run IRX code: the R3000 semantics (`iop_cpu_exec.h`) + generated code,
+the IOP kernel HLE (threads, semaphores, event flags, vblank, timrman, intrman, loadcore/modload, sifman/sifcmd),
+2 MB IOP RAM, the import registry, and the IOP clock (the EE grants 1/8 of its cycles in 512-cycle batches,
+idle deferral, the optional IOP thread, docs/iop-thread.md). With native services only:
+- An EE RPC becomes a direct C++ call of the service (`IopService::handleRpc` already is); mode-1 calls complete at
+  once. SIF transfers into IOP RAM (banks) go to the service that owns the buffer (addresses the game passes are
+  mapped to service-owned storage).
+- Periodic work (48 kHz mixing, sequencer ticks, stream refills) is driven by the audio output's demand (the mixer
+  thread pulls samples; music time = samples mixed), not by a guest clock: no `runIopCycles`, no batches, no idle
+  deferral, no `IopRun` thread. The A/V sync of movies keeps working from the sample position (docs/fmv.md).
+- Then delete: IopEmulator, the kernel HLE, the import registry, tools/iop/iopn_gen.py output, the
+  native_overrides mechanism. Cost on the console today: core 1's iop_ms 0.8-1.6 s per 5 s (38 % generated IRX code,
+  34 % inline mixing, 8 % import dispatch, docs/switch-deko3d.md "Core 1 budget"): most of it disappears.
+- Caveat: the game's random sequence depends on when IOP replies arrive (docs/iop-thread.md bench note), so the
+  deterministic bench needs a new reference after this step.

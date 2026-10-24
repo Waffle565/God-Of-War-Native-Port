@@ -57,3 +57,43 @@ the same image file (`GOW_MC0`, PCSX2 `.ps2` format).
 ## Still to find (next)
 - Done: SIO2D's probes are native too (pad probe 0x0978 -> none, card probe 0x0a1c -> card image present on port 2/3),
   MC2_D's F3 check 0x08d8 native; no SIO2 transfer exists, the SIO2 model is deleted (ext 2026-10-11).
+
+## Native DBCMAN + MC2_D service (agent nat-iop1, 2026-10-24, ext agent/natiop)
+User directive 2026-10-24: nothing emulated or recompiled. The five IRX of the pad / card chain (SIO2MAN, SIO2D,
+DBCMAN, DS2U_D, MC2_D: ~86k generated lines) are no longer loaded. `IopSubsystem::loadModule` records them as HLE
+modules (log line `[IOP:native] '...MC2_D.IRX' served natively`) and the RPC servers they registered are answered by
+hand-written C++ (ps2xIOP/src/modules/dbcman.cpp, `NativeDbcService`), written from the two modules' code
+(module offsets in the comments). `GOW_NATIVE_PADMC=0` loads the IRX files again (recompiled modules = the
+verification oracle; the old SIO2D / MC2_D / SIO2MAN native overrides stay for that path only).
+What the EE (libdbc + libmc2, the game's own code) talks to, read from DBCMAN.IRX / MC2_D.IRX and checked against an
+oracle trace (port/natiop/oracle1, savetest with `PS2X_TRACE_RPC=800013 PS2X_IOP_TRACE_DMA=1`):
+- **0x80001300** (DBCMAN main, 0x90-byte buffer, synchronous; jump table 0x2560 indexed by fn - 0x80001301):
+  0x1363 version -> word0 = 0x310; 0x1304 -> word1 = EE address of a 0x80-byte table (one word per socket, 1 = a device
+  answers behind it), SIF-DMA'd at once and on every change, word0 = 1; 0x1301 create socket: words 0..3 descriptor
+  (flags 3 = match type + port/slot, type 2 = memory card, port 2/3, slot 0), words 5..7 "MC2SOCKET", word 8 an EE
+  pointer (unused by the IOP), words 10/11 the socket's two EE status addresses (0x324840 / 0x3248c0); reply word 9 =
+  socket index (0, 1). A socket whose port has no card gets no device (its commands answer -23).
+  0x1302 delete, 0x1303 socket -> device (unused by the game).
+- **0x8000131C** (DBCMAN socket server, 0x2090 bytes, `sceSifCallRpc` mode 1): word0 socket, word1 MC2_D command,
+  word2 reply size (MC2_D writes 0x2080), words 3.. MC2_D's parameters p: +0 page, +4 count, +8 page size 0x200,
+  +0xc pages per block 0x10, +0x10 card pages 0x4000, +0x14 / +0x18 backup blocks 1/2 (0x3ff / 0x3fe, from the
+  superblock), +0x1c / +0x20 block arguments, +0x24 ECC flag, +0x28 the write data. The command runs to completion
+  inside the RPC (MC2_D's server thread did the same); the reply is the buffer with the result at +0x208c.
+  0x8000131E/F: the same with 0x90-byte buffers (result +0x8c), unused.
+- MC2_D's results reach the EE by SIF DMA, never through the RPC reply: page data to socket address[0] + 0x80 + n *
+  0x200 (dbcman#9), then a 0x80-byte status block (MC2_D bss 0x4418: +0 command counter (the EE waits for it to
+  change), +4 device, +8 status (1 ok, 0 error, 2 card changed), +0xc.. results). Reads (cmd 1/8) put the status at
+  address[0]; every other command alternates address[0] / address[1] (MC2_D's toggle 0x34f0).
+- Commands (MC2_D 0x1f74, jump table 0x3460): 1 read pages with ECC check/1-bit correction, 2 write pages, 3 specs,
+  4 probe (0/1/2), 5 backup markers, 6 recover an interrupted write, 7 copy block, 8 one raw page + ECC, 9 erase
+  block, 10 clock (sceCdReadClock BCD), 11 raw writes, 12 init card, 13 acknowledge a card change. Before any command
+  but 4/13, a card flagged "changed" (set when the card appears, cleared by 13) answers status 2.
+- Write (cmd 2, power-loss safe): per touched erase block, unless it is a backup block: recover pending markers (cmd
+  6), write marker page backup2*16 = block index, copy the block to backup1 (page-verified), marker page backup2*16+1 =
+  block index, erase the block, write the new pages (ECC computed, read back and checked), restore the other pages
+  from backup1 (verified), erase backup2. The service reproduces this on the card image, including MC2_D's page
+  buffers 0x4498 / 0x48b8 whose stale bytes end up in the marker pages, so the card bytes match the IRX path.
+- ECC: 3 bytes per 128 (table MC2_D .data 0x34f4, = PCSX2's), page buffer = 0x200 + 12 bytes written per page
+  (the last 4 spare bytes stay as they were).
+- Seen per savetest (load slot 1, save): cmd 1 x64.7k, 4 x2k (status poll ~once a frame), 6 x16, 12 x15, 2 x14,
+  10 x2, 13 x1, 3 x1.

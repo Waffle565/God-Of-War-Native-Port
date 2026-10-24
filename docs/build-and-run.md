@@ -19,6 +19,15 @@
 5. Build: `cmake --build out/build --config RelWithDebInfo --parallel --target ps2EntryRunner > port/build.log`
    (rebuild the recompiler itself with `--config Release --target ps2_recomp` after changing ps2xRecomp).
 
+## New PC build folder: turn the log options off (2026-10-24, nat-iop1)
+A fresh `cmake -S . -B out/build-pc` takes the CMakeLists defaults `PS2X_ENABLE_AGRESSIVE_LOGS`, `PS2X_ENABLE_DEBUG_UI`,
+`PS2X_ENABLE_IOP_RPC_TRACE`, `PS2X_ENABLE_RUNTIME_LOGS`, `PS2X_ENABLE_SCCACHE` = ON: the game then runs at ~0.2x speed
+(EE thread saturated by logging, 9-28 fps, saves never reached). Configure with all five `=OFF` (as the existing
+build folders are), plus `PS2X_BUILD_RECOMP/TEST/ANALYZER/STUDIO=OFF`, `PS2X_VU1_PREGENERATED_DIR=<out/vu1pregen>`,
+`PS2X_DK_SHADERS`, `PS2X_VU1_MICROCODE_DIR`, `PS2X_VU1_GENERATOR_SOURCE` (copy them from a working CMakeCache.txt).
+A worktree needs its generated files copied in first: ps2xRuntime/src/runner/* (ignored), ps2xIOP/src/native/iopn_*,
+ps2xRuntime/src/lib/gs/gpu/gs_dk_shaders_gen.cpp, and a vu1pregen folder (e.g. WSL /root/vu1pregen-t2).
+
 ## Build cost (important for planning)
 - Use **RelWithDebInfo** for iteration. Release uses /GL + /LTCG, making every relink a full link-time codegen.
 - Changing any header in the runner's precompiled header (`ps2_runtime.h`, `ps2_call_list.h`, `ee_scheduler.h`,
