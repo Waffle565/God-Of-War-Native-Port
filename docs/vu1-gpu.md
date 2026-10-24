@@ -5,6 +5,59 @@ look the same (pixel comparison against the CPU path, tolerances documented). Pl
 (2) a plain-float CPU reference (HLE) compared with the exact path on the recordings, which also says whether a fast
 CPU HLE alone reaches the target, (3) GPU path, (4) console fps / per-core busy / screenshots.
 
+## Handoff (2026-10-24 night 11, sw-k7 stopped here: ext agent/sw-vu1gpu 10b9644 + gen4 blocks (`/root/vu1pregen-gen4`), package `update_k7d`)
+- **What changed (ext)**: ef2abda GS stage queue lock-free (SPSC ring of packet pointers + producer-side LIFO free list,
+  idle stage polls `GOW_GS_STAGE_SPIN_US`, Switch default 100 us; docs/performance.md "VU1 / GS frontend pipeline");
+  10b9644 `[gsw-idle]` line (the VU1 thread's idle waits between jobs, docs/diagnostics.md). x86 replay dumps fight /
+  menu, HLE=1 / 0, byte-identical to 529de89 and k3g (harnesses `k7c`, `k7d`). The PC was not run (no EE / IOP change;
+  the stage change is portable C++, its sleep protocol is the same on PC with spin 0).
+- **Task 1, the 125-150 s phase (31-37 fps) is VU1-bound, with ~1.8x the VU1 work per frame** (close-up of the big
+  undead on the deck, scratchpad `c/run_la6g/fight_5.jpg`). la6g 135 s: VU1 thread (`[gsw-split] job_ms`) 4638 of 5000
+  ms busy, 309 k VU1 runs = ~1900 per frame (13.1 us each) vs ~950 per frame (15.2 us) at 200 s; EE ee_ms 2.6 s +
+  iop 0.68 s (the EE thread waits 35 % of its samples, `EeScheduler::processDueDeadlines`), GS stage ~62 % busy on
+  core 3, deko3d present_submit 35-45 ms, gsq_wait ~10 ms. Sampler `la6s` 128-147 s (VU1 thread): blocks 23 %,
+  chainStepOut 13 %, idle 8 % (gsWorkerLoop), kUnlitSt 5.5, kCullClip 4.1, kSkinLitSt 3.9, kLitSt 3.3, memmove 3.2,
+  processVIF1Data 3.1, hleChain 2.7, runNative 2.4, svcArbitrateLock 2.0 (flushStaged), unpack ~6. So the fix is VU1
+  throughput in general (no single item); the stage change took ~1-1.5 points of it; the phase stays at 33-37 fps
+  (k7c 35.6 / 33.4 / 37.2, k7d 36.0 / 36.2).
+- **Task 2**:
+  - IOP thread on core 3 re-tested three ways (docs/iop-thread.md, 2026-10-24): no gain in any comparable scene, stays
+    inline. With IopRun above the stage on core 3 the stage is preempted (gs_ms +500 ms per 5 s).
+  - GS stage mutex: the VU1 thread's `pthread_mutex_lock <- flushStaged` was contention with the stage's own lock /
+    wait / wake cycles (the stage held the mutex to recycle buffers and to go to sleep); now 2.1-2.5 % -> ~1.0 % (the
+    rest: wakes after the stage slept through a gap > 100 us). The first ring version (`k7a`, buffers cycled through
+    the whole ring) raised title VU1 time 4 % (L2 misses on every hand-off write); `k7b` (LIFO reuse) is back at la6's
+    3526-3573; `k7c` = k7b + spin. Fight fps unchanged within the run-to-run spread (no fight window comparable).
+  - EE thread (`la6s`, 150-200 s): waits 18 %, flat profile (sub_00162F18 5.5 %, dispatchGuestBranch 4.9, memmove
+    3.3, guestEntry 2.0, SoundEngine::stepVoice 1.75, _free_r 1.2).
+  - **VU1 idle structure** (`[gsw-idle]`, `k7d`): two waits per frame, one 0.5-0.7 ms and one 1.3-1.4 ms (~1.9 ms per
+    frame, 9-11 % of the thread). These are the EE's critical path between a job's end and the next kick (DMA-complete
+    interrupt, game code, `sendDmaChain`'s walk + copy of the next chain: `[gsw-chain]` ~190 ms per 5 s, up to 1.5 ms
+    per chain, which VU1 cannot start before). Shortening that path (start the worker on the first part of a chain
+    while the EE copies the rest) is the next structural lever for both phases.
+  - **Core 1 is the limit in the fastest fight scene**: `k7d` 160-250 s 55-58.6 fps (no run reached that scene before; the screenshots show Kratos alone by a grate after the deck fight, `c/run_k7d/fight_20.jpg`, rendering correct)
+    with ee_ms 4.0-4.1 s + iop_ms 0.75-0.84 s per 5 s (~98 % of core 1), VU1 thread 4450-4470 ms. There the IOP has to
+    leave core 1 (core 3 shares with the stage: try IopRun below the stage with a short spin, or the RPC-free IOP batch
+    work on core 0) and the EE game code shrink.
+- Console runs (handheld, bot fight, GPU max; logs port/switch/logs/20261023_<run>, scratchpad `sum.py`): title 10-20 s
+  59.2-60.0 fps in all; audio misses only in windows 0 and 22 in all; hitches 0-3 per 5 s.
+  | run | package + env | title vu_ms | 125-150 s fps | fight after 145 s |
+  |---|---|---|---|---|
+  | `la6s` | la6 + sampler (3 threads) | - | 45.0 / 34.8 / 31.2 / 31.6 / 33.2 | 42.2-44.8 (150-200 s), static after 205 s |
+  | `la6i` | la6 + IOP core 3 | 3634-3648 | 44.0 / 33.8 / 30.0 / 35.2 | 43.2-45.8 (145-200, avg 44.6) |
+  | `k7a` | ring, no LIFO | 3655-3696 (+4 %) | 44.2 / 34.2 / 32.6 / 34.4 | 43.6-47.6 (145-205, avg 44.9) |
+  | `k7b` | + LIFO free list | 3526-3573 | 45.6 / 35.4 / 33.8 / 32.6 | 41-49.6 (155-225), static after 230 s: VU1 150 vs 162 ms per 5 s (la6s/la6i) |
+  | `k7cp` | + 100 us spin, sampler | 3517-3540 | 45.2 / 35.6 / 33.4 / 37.2 | 44-50 (145-205), 51.6-54 (210-240) |
+  | `k7ci` | k7c + IOP core 3 prio 2 | 3527-3631 | 43.2 / 34.4 / 31.8 / 31.2 | 52-55 (160-260) |
+  | `k7d` | k7c + `[gsw-idle]` | 1733 ee (title vu ~3.55 s) | 46.0 / 36.0 / 36.2 / 48.8 | **55.2-58.6 (160-250, avg ~57.8)** |
+  | `k7di` | k7d + IOP core 3 prio 0, spin 0 | - | 45.4 / 35.2 / 36.6 / 36.0 | 45-48 (150-195), static after 200 s |
+- Console left on DBI's MTP screen with `update_k7d` installed; env.txt deleted from the SD.
+- Next: (1) the EE's kick path (chain walk + copy before the job is queued, the two VU1 waits per frame); (2) core 1
+  in the 58 fps scene (IOP off core 1 without slowing the stage; EE game code); (3) the VU1 thread itself (night 10's
+  levers: chainStepOut 13 %, longer traces, code-change handling ~5.2 %: codeChanged 1.7, slotFor 1.3, hleMatch 1.0,
+  setupTrace 0.7, keyInfo 0.5 on k7cp 128-240 s). A deterministic fight comparison is missing: the bot's fight takes a
+  different course per run (43-58 fps scenes after 145 s), so single runs only compare per scene.
+
 ## Handoff (2026-10-24 night 10, sw-vu1k6 stopped here: ext agent/sw-vu1gpu f53b5b6 + default generator (main aa43294 = gen4, `/root/vu1pregen-gen4`), package `update_la6`)
 - **Result** (`update_la6`, handheld, bot fight, GPU max): title 59.2-60.0 fps / vu_ms 3521-3572 per 5 s (k3g
   3775-3839: -7 %), VU1 17.6-18.1 us per run (k3g 19.0); fight 47.2-56.0 fps over 145-230 s (avg 53.5, mostly 54-56;

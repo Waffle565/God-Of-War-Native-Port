@@ -121,3 +121,16 @@ IOP entry point), `ps2_iop_host.cpp` (deferred EE effects), `Kernel/EeScheduler.
   core's iop_ms from ~800 to 150-220 ms, no lead waits, no extra audio underruns (`GOW_AUDIO_STATS`) or hitches; but
   with the fight VU1-bound it measured 0.7-2.4 fps lower in two pairs of bot fights (42.6 vs 40.2, 42.3 vs 41.6), so
   inline stays the default. Turn it on once core 1 limits (60 fps needs the EE's time).
+- Re-test 2026-10-24 (sw-k7, `update_la6` / `update_k7c` / `update_k7d`, GPU max, handheld bot fight). Fights vary from
+  run to run (the scene after ~145 s runs at 43-46, 53-55 or 57-58 fps depending on how the fight goes), so only
+  windows of the same scene compare:
+  - `la6i` (la6, IOP thread core 3, same priority as the stage) vs `la6s` / `k7a`: 145-200 s avg 44.6 vs 43.3 (sampler
+    on) / 44.9; title VU1 time +2-3 % (3634-3648 vs 3521-3572 ms per 5 s).
+  - `k7ci` (k7c, IOP core 3 one step above the stage, `GOW_PRIO_IopRun=2`): 160-260 s 52-55 fps, the same as k7c
+    without it (51.6-54); core 1's iop_ms 800 -> 150, the VU1 thread idles ~20 % instead of ~11 %, but the stage's
+    `gs_ms` rises 2100 -> 2600 (preempted by IopRun): nothing gained.
+  - `k7di` (k7d, IOP core 3 below the stage, `GOW_PRIO_IopRun=0`, `GOW_GS_STAGE_SPIN_US=0`): its fight was the 46 fps
+    scene (145-195 s 45-48, as k7a/la6i); thread_ms 1.9 s per 5 s (wall time, preempted), EE lock_wait 110 ms.
+  - So inline stays the default. Where core 1 does limit: `k7d`'s 57-58 fps scene (160-250 s) has ee_ms 4.0-4.1 s +
+    iop_ms 0.8 s per 5 s = core 1 ~98 % busy; that is the scene to A/B a core-3 IOP against, if one can be reached on
+    demand (the bot's fight cannot pick it).

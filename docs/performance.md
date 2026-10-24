@@ -266,6 +266,13 @@ Gains per lever above are estimates from the Gemini review (gemini-work/results/
   still sees all queued GS work done. The stage never waits for itself (`onStageThread`), and it wakes the EE after a
   batch when the GS raised an interrupt (FINISH/SIGNAL), as the worker did after a job.
 - `PS2X_GS_PIPELINE=0` keeps the GS frontend on the worker thread (A/B and fallback). Portable C++ (std::thread).
+- Queue (2026-10-24, sw-k7): a single-producer / single-consumer ring of 256 packet pointers. The worker gathers small
+  packets in its current packet and publishes it (16 KB or at the job's end) by moving `head`; the stage frees a packet
+  by moving `tail`; the worker takes freed packets back onto its own LIFO free list, so the buffer it fills next is the
+  one the stage finished last (a plain ring of 256 x 16 KB buffers cycled 4 MB through the console's 2 MB L2: title
+  VU1 time +4 %). The mutex and condition variables are only for sleeping and waking (seq_cst flag / index pairs on
+  both sides). The idle stage polls `GOW_GS_STAGE_SPIN_US` (Switch default 100 us) before it sleeps. Console: the VU1
+  thread's `pthread_mutex_lock <- flushStaged` share 2.1-2.5 % -> ~1.0 %.
 - Measured (idle new-game run, port/newgame/b6idle_*: the ship start with the camera over the rain and sea):
   pipeline on 59.2-60.2 fps through the whole scene, `PS2X_GS_PIPELINE=0` 36-42 fps; game speed 1.00 both.
   Zones 0-4 (port/b6_zones/20261012_143318 + port/b6_zones2/20261012_145143 for slots 2 and 4, whose first runs
