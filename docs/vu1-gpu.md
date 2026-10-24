@@ -5,6 +5,37 @@ look the same (pixel comparison against the CPU path, tolerances documented). Pl
 (2) a plain-float CPU reference (HLE) compared with the exact path on the recordings, which also says whether a fast
 CPU HLE alone reaches the target, (3) GPU path, (4) console fps / per-core busy / screenshots.
 
+## Handoff (2026-10-24 night 10, sw-vu1k6: in progress)
+- **Where the VU1 thread's instructions go** (aarch64 harness `a0` = 76b4fff + gen3 blocks, -O3, fight.rec every 8th
+  record, HLE+DIRECT+TRACES; new tools: `icount.sh` with `PCS=1` writes per-instruction counts, `icann.py` annotates a
+  function with them, `icfun.py` lists every function without re-running qemu; scratchpad `icsrc.py` splits a function
+  set by innermost inlined function through addr2line on a `-g` twin harness with identical code, `pcsrc.py` does the
+  same for console samples on the Switch ELF): of the generated blocks' instructions **chainStep 25 %** (+ chainTo 3.6,
+  pushMacRaw 3.1, commitDue 2.4, scalarStart / finishBlockTiming / finishScalars 3.6), the block body proper ~60 %;
+  runNative ~125 instructions per dispatch. Console samples (kd3 fight, same split): chainStep 33.5 % of the block
+  samples, ~44 % with its helpers = ~15 % of the VU1 thread. The FMAC overflow test per maddc (umaxv + fmov + cmp + b)
+  is ~8 % of the block instructions.
+- **chainStep out of line** (ext 862df5a): chainDirect / chainJr call one non-inlined copy (`chainStepOut`), the block
+  keeps its own indirect branch to the successor. Generated block code in the Switch ELF **22.9 MB -> 8.4 MB** (b0250
+  5.8 -> 1.5 KB). x86 dumps fight / menu, HLE=1 / 0, byte-identical to 529de89 and a61de30 (harness `e1x`).
+  `PS2X_VU1N_CHAIN_INLINE` restores the inlined form.
+  | package | change | title 10-45 s fps / vu_ms | fight fps | other |
+  |---|---|---|---|---|
+  | `k3g` (before) | ka3 + GPU max | 59.2-60.0 / 3775-3839 | 41.2-44.8 (145-200 s, avg 42.3) | hitches 0-1 |
+  | `la1g` | 862df5a + gen3, GPU max | 59.2-60.0 / **3493-3553 (-7.5 %)** | **43.6-47.4 (155-185 s, avg 45.1)**, 34.8-37.4 (125-150 s) | hitches 0-1, audio as before |
+  | `la2g` | 862df5a + gen4 (`--jr`), GPU max | 59.2-60.0 / 3503-3585 | 43.6-48.0 (145-195 s, avg 46.4) | hitches 0-1 |
+  VU1 time per run (`[gsw-split]` vu_ms / runs): title 19.0 us (k3g) -> 17.65 (la1) / 17.7 (la2); fight 15.1-16.9 ->
+  12.9-14.4 / 13.0-15.0 (scenes differ); the static screen after the fight (33 k runs per 5 s) 6.08 -> 5.16 / **4.69**.
+  So `--jr` (JR / JALR exits chain to their profiled targets, then to any block) now pays: its inlined chain steps made
+  it slower in kc4, out of line they cost no code (8.46 MB). The chain steps it adds go through the same function.
+- Console profile `la2p` (la2 + sampler, fight 160-210 s, 42.8-54 fps): **chainStepOut 13.4 % of the VU1 thread** (the
+  top function), idle 10.1 %, kCullClip 7.0, kSkinLitSt 3.1, hleChain 3.0, svcArbitrateLock 2.8, kUnlitSt 2.7,
+  processVIF1Data 2.6 + unpackFast ~5.5, runNative 2.2 (was ~10: `--jr`), code-change handling ~5.8 (codeChanged 1.9,
+  slotFor 1.3, hleMatch 1.1, setupTrace 0.85, keyInfo 0.6), memmove 1.9. Categories (scratchpad cat.sh): blocks 23.4 %,
+  dispatch 18.7 (chainStepOut counted here now), kernels 17.3, idle 10.1, VIF 8.5. chainStep's hot lines: the first
+  loads of the running block's slot (sl.idle / sl.bt: its cache line is often gone by the block's end) and of the next
+  slot's key, the hleStop byte, the stop / budget test.
+
 ## Handoff (2026-10-24 night 9, sw-vu1k5 stopped here: ext agent/sw-vu1gpu 76b4fff + gen3 blocks (`/root/vu1pregen-gen3`), package `update_ka3`, main repo npdm highest_cpu_id 3)
 - **What changed.** npdm `highest_cpu_id` 3 by default (port/switch/nsp/gow.json); **GSStage pinned to core 3 by default**
   (ext ThreadNaming.h, `GOW_CORE_GSStage=0` restores core 0); `PS2X_VU1_ASYNC_WAIT_SPIN_US` (the worker spins for the

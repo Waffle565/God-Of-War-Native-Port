@@ -73,6 +73,16 @@ for (pc, length), c in counts.items():
         tot['mem'] += c * i[1]
         by[i[2]] += c * (1 + i[0])
 print(" ".join(f"{k}={v}" for k, v in tot.items()) + f" a57_cost={tot['insns'] + tot['q']}")
+# --pcs=<file>: executed count of every instruction address (annotate a disassembly with icann.py)
+for a in sys.argv[3:]:
+    if a.startswith('--pcs='):
+        per = collections.Counter()
+        for (pc, length), c in counts.items():
+            for x in range(pc, pc + length, 4):
+                per[x] += c
+        with open(a[6:], 'w') as o:
+            for x, c in sorted(per.items()):
+                o.write(f"{x:x} {c}\n")
 entries = collections.Counter()
 for (pc, _), c in counts.items():
     if pc in starts:

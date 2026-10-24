@@ -15,9 +15,10 @@ that branches back to its own start repeats inside its function (VU1NativeAccess
 (gen_region; off by default, measured slower, see REGIONS).
 --no-direct: no direct chaining (see DIRECT): every block returns to runNative (the output before 2026-10-19 evening);
 also no traces. --no-traces: no traces (see TRACES); --no-trace-entry: traces only from blocks that do not read entry
-flags. --profile <file> / --no-profile: the edge profile the traces follow (see PROFILE). --jr: JR / JALR exits chain
-to their predicted targets, then to any block (see JR; off by default: measured no gain); --jr-traces: traces also go
-on through JR / JALR targets; --jr-max N, --no-jr-any: see JR.
+flags. --profile <file> / --no-profile: the edge profile the traces follow (see PROFILE). --no-jr: JR / JALR exits
+return to runNative instead of chaining to their predicted targets, then to any block (see JR; on by default since
+the runtime's chain step is out of line); --jr-traces: traces also go on through JR / JALR targets; --jr-max N,
+--no-jr-any: see JR.
 """
 import os
 import re
@@ -57,9 +58,11 @@ TRACE_MAX_PAIRS = 48
 # with GOW_VU1N_DIRECT=0 GOW_VU1N_TRACES=0, port/vu1disp/prof.sh): --profile <file>, default vu1n_profile.txt next to the
 # heads file; --no-profile: the static guess only
 PROFILE = {}
-# JR / JALR targets (needs DIRECT; --jr: on, off by default): a JR has no static successor, so its block returns to
-# runNative. Measured (docs/vu1-hle.md "JR / JALR exits"): qemu +0.2 % (ship and PC zone), x86 replay within the noise, so
-# the default output stays the one of 3254106; the runtime keeps chainJr for A/B (env GOW_VU1N_JR=0 on a --jr build).
+# JR / JALR targets (needs DIRECT; on by default, --no-jr: off): a JR has no static successor, so without this its block
+# returns to runNative. Measured first (docs/vu1-hle.md "JR / JALR exits"): qemu +0.2 %, and slower on the console while
+# the runtime inlined the chain step at every exit (kc4, docs/vu1-gpu.md); with the chain step out of line (ext 862df5a)
+# it costs no code and the console's VU1 time per run went down (la2: static screen 5.16 -> 4.69 us, runNative 10 -> 2 %
+# of the thread). The runtime keeps chainJr for A/B (env GOW_VU1N_JR=0).
 # The profile's "j <JR pc> <target> <count>" lines (GOW_VU1N_BLOCKPROF, tools/vu1_harness/edgeprof.sh) give each site's
 # targets: the block function goes on to the JR_MAX most frequent ones (each at least JR_MIN_SHARE of the site's count)
 # through the same guarded chainDirect as a static successor (the next pc must equal the predicted one and the slot must
@@ -68,7 +71,7 @@ PROFILE = {}
 # profile's target when it takes at least JR_TRACE_SHARE of the site (JR_TRACES, --jr-traces: measured +0.25 % on top);
 # the trace's part exit check (the next pc differs from the part after it -> the prefix finishes) guards it like any
 # other branch.
-JR = False
+JR = True
 JRPROF = {}        # JR pc -> {target pc: count}
 JR_MAX = 2
 JR_MIN_SHARE = 0.1
@@ -2061,9 +2064,9 @@ def main():
         elif args[i] == '--no-profile':
             prof_file = ''
             i += 1
-        elif args[i] == '--jr':
+        elif args[i] in ('--jr', '--no-jr'):
             global JR
-            JR = True
+            JR = args[i] == '--jr'
             i += 1
         elif args[i] == '--jr-traces':
             global JR_TRACES
