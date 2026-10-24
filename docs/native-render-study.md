@@ -501,3 +501,75 @@ not cover itself to `vu1nat::runLit` (one line), the natcheck gate asks `vu1nat:
 - **Left** (by share of VU pairs): fight: other programs (startPC not 0 / 0x18 / 0x30) 8.3 %, b12c8560 5.1 %,
   b66a3e7a 3.7 %, e4f3b5c3 3.1 %, ea6b4a01 3.1 %, c79fec55 1.5 %, three small ones 0.9 %; menu: b45e3bab 2.3 %,
   9ffe612e 0.9 %, b12c8560 0.8 %, 29a9fc10 0.5 %, the multi-tag path 0x1278 of 3d0d / 7ab (28 runs).
+
+### Progress: the smaller entries + a third recording (2026-10-24 night, nat-vu1e, ext branch agent/natvu1e, worktree ext/PS2Recomp-kl-natvu1e)
+Branch agent/natvu1e = agent/natvu1d 6f9c60a + 4 commits + a merge of agent/natvu1 1139670 (head c611ec4). Own file
+`ps2_vu1_nat_misc.inl` (namespace `vu1nat::nmisc`), included by ps2_vu1_nat_lit.inl before runLit; runLit reaches it
+through one-line hooks, so these entries run on nat-vu1d's pc state machine (same batch front, colour set-up, tag
+merge, kicks).
+- **Entries** (all with the lit prologue `iaddiu vi14, vi0, 28; jalr vi15, vi14; iaddiu vi8, vi0, N`: batch switch at
+  0x00e0, vi7 = 0; only the prime count N differs, `nmisc::kEntries`). The module code that runs is mostly the loop of
+  the *other* entry of the same module, reached through the batch switch's module callbacks (`vi15 -= 5; jalr`,
+  `vi15 += 3; jalr` into the module: `jr vi14` / `jalr vi15, vi14` with an IADDIU / ISUBIU in the delay slot), which
+  `nmisc::moduleCall` decodes from the code instead of hard-coding (nat-vu1c hard-coded the 7ab32108 case):
+
+  | entry | N | path | loop (by the FNV of its code from vi15) |
+  |---|---|---|---|
+  | b66a3e7a | 1 | second plane pair inside -> callbacks (0x02a8); texGen 0x06d8 | texDivLoop: divide, ST = vf19 + vf16-18 * normal (env mapping) |
+  | e4f3b5c3 / ea6b4a01 | 2 | clip path 0x0858 -> callbacks | windLoop<false / true>: divide, ADC from the triangle winding |
+  | 1dcc471c / 2611f8a2 | 3 | direct | the same windLoop (the other entry of those modules) |
+  | c79fec55 | 2 | clip path -> callbacks | unlitAbLoop: two blocks, divide, ST not divided |
+  | 29a9fc10 | 3 | direct | unlitAbLoop |
+  | b45e3bab | 1 | clip path -> callbacks | colDivLoop: divide, RGBA = min(vf30 * rgba + vf31, I) |
+  | 9ffe612e | 2 | direct | colDivLoop |
+  | b33a96d5 / 5e1e18b3 | 4 / 1 | direct / clip path -> callbacks | posAbLoop: two blocks, position only |
+
+  The entries' own no-divide loops are never reached in the recordings and decline (`nmisc::loop` knows only the
+  loops above).
+- **Fixed-code paths added** (hooks in runLit): 0x02a8 (header bit 13, sphere inside the second plane pair: vi10 bit
+  13 cleared, callbacks), 0x0858 (the cull_clip pass of nat-vu1c for lit entries, copied as `nmisc::clipPath` with the
+  generic callbacks, back to 0x0388 -> 0x03a0; gate `CodeInfo::clipOk`; memory snapshot first), 0x06d8-0x0718
+  (0x06c8: header bit 9 set, vi1 = vi10 << 6 negative: I = -0.5, vf19 = (0.5, 0.5, 0, 0), vf16-18 / vf24-26.xy = matrix rows * vf10.x: the ST matrix of
+  the env-mapped loop), 0x0740-0x0758 (vi4 >= 0 at 0x0730: vf29 / vf7 (/ vf30) += I).
+- **Timing facts the loops depend on** (exact against the oracle): windLoop's FMEQ (p2) reads the MAC flags of the
+  previous pass's `msuby.x vf0` (p11, 4 pairs earlier); in the first pass the flags of the last FMAC before the loop
+  call (runLit's `Op::mac`: the loop prologue's `addi.z vf7` is only 3 pairs before the FMEQ, too recent); its ADC word
+  is `FMEQ(MAC, (w + 127) & 0x8080) - 1` stored by ISW.w. colDivLoop's DIV in p5 is read by the MULQ in p12 (exactly 7
+  pairs: the new Q) and by p1 of the next pass. The two-block loops' MULQ reads the other block's DIV (7 pairs).
+- **Runtime**: `nlit::entryKind` returns 3 + `nmisc::entryKind` for these (CodeInfo::kind 7..), cached per generation
+  as the lit ones; `[vu1nat-run]` counts them as family `misc` (without it the hookup would not offer them).
+  Not built on MSVC this round (the harness g++ build compiles the same ps2_vu1_core.cpp TU).
+- **Third recording** `pcwalk.vifrec` (the natvu1 PC exe, new game from the title, a pad script that walks with the
+  left stick and attacks (`walk.py`), `GOW_VIF1_REC_AT=150`: bench frames ~1100-1140; 3000 runs; archive
+  `D:\Claude Archive\GoW-Archive\natvu1-2026-10-24\pcwalk.vifrec`, scripts in `nat-vu1e\`, WSL `/root/nrs/`). It is
+  the same ship deck as pcfight at a later moment, not another level: 15 entry codes, the mix differs (other programs
+  24.7 %, 93febeec 21.7 %, 7ab32108 17.1 %, 39f38df4 15.0 %, 3d0d1206 8.0 %, c79fec55 3.2 %, 1dcc471c / 2611f8a2 2.9 %
+  each, e4f3b5c3 / ea6b4a01 2.0 % each). A recording of another level is still to do.
+- **Result** (natcheck, every covered run byte-exact: GIF packets, 16 KB VU memory, registers; no declined run left
+  memory changed; hlecmp of the mixed dumps vs the reference dumps: 0 data words differ, every GIF word exact):
+
+  | recording | native share of VU pairs | was (nat-vu1d) | declines | left |
+  |---|---|---|---|---|
+  | pcfight | **85.8 %** (2875 / 2879 covered runs) | 73.4 % | 4 at 0x0940 | other program 8.3 %, b12c8560 5.1 % |
+  | pcmenu | **98.4 %** (2930 / 2958) | 94.3 % | 28 at 0x1278 (3d0d / 7ab multi-tag) | b12c8560 0.8 %, 60641204 0.2 % |
+  | pcwalk | **74.2 %** (2939 / 2945) | - | 6 at 0x0940 | other program 24.7 % (53 runs), 541e797b (2 runs) |
+
+  pcwalk: in 2 runs (825 / 860, e4f3 / ea6b clip path with a one-vertex tag) the native CLIP (0x659590) differs from
+  the harness oracle's (0x000590) but equals the recorded start state of the next run: the harness oracle does not seed
+  its clip-flag chain from the recorded state, so this is an oracle artifact, not a native error (natcheck and check
+  now print the CLIP values).
+- **The "other programs" (fight 8.3 %, walk 24.7 %)**: not other entries of the main program but a **second
+  microprogram** (MPG; 1376 of 2048 code pairs differ from the main program), run in bursts (fight runs 1557-1573, walk
+  1070-1104 and 2203-2234), start pc 0x00 / 0x18 with no module entry in the batch header (entry word 0), 1.3-34 k VU
+  pairs and 5-93 XGKICKs per run. Data driven: control words at 20-31(XTOP), per-element keys unpacked with
+  ITOF12 / FTOI4 / MR32 / MTIR, per-track routines called through `jalr vi15, vi1` (0x04c8, 0x05a0, 0x0668, 0x06e8:
+  interpolation snippets, EEXP), then a quad builder at 0x16d8-0x1d00 (OPMULA / OPMSUB cross products, ERLENG,
+  CLIP, a DIV per corner, SQI into the packet): a particle / ribbon (trail) program, which effect is not identified.
+  In pcwalk even the oracle (native blocks) does not reproduce the game for it: end state != next recorded start
+  state in 8 of its runs (vf4) and the decoder image differs in 12 runs (22 qw, from qw 569), so the reference for it must be
+  settled first (exact interpreter vs native blocks vs the recording).
+- **Next**: (1) the particle program (the largest share left, 8-25 % of the gameplay VU pairs), reference first;
+  (2) b12c8560 (fight 5.1 %: the A entries of the e4f3 / ea6b modules with nat-vu1c's clip code); (3) the 0x0940
+  clipper (4-6 runs per recording), the 0x1278 multi-tag path of 3d0d / 7ab (menu 28 runs), 60641204 / 541e797b;
+  (4) a recording of another level; (5) a runtime bench run with `GOW_VU1_NATIVE_RUN=1` (pixels, fps, `[vu1nat-run]`
+  family `misc`), after an MSVC build of this branch.
