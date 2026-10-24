@@ -296,10 +296,13 @@ struct VU1NativeAccess
     static const uint8_t *entryTimingAfter(VU1Interpreter &vu, VU1Interpreter::NativeState::Slot &sl, uint32_t &cycId,
                                            const VU1Interpreter::NativeState::BlockTiming *predBt, uint32_t predCycId,
                                            uint64_t predLen);
+    static const uint8_t *entryMemo(VU1Interpreter &vu, VU1Interpreter::NativeState::Slot &sl, uint32_t &cycId,
+                                    const VU1Interpreter::NativeState::BlockTiming *predBt, uint32_t predCycId, uint64_t predLen);
     // the FDIV/EFU part of blockTiming's in-flight signature as one word (slack per unit read at entry, 0: not busy)
     static uint32_t scalarKey(const VU1Interpreter &vu, const VU1Interpreter::NativeState::BlockTiming &bt, uint64_t start);
     static void scalarStart(VU1Interpreter &vu, uint64_t issue, uint32_t latency, bool fdiv);
     static void commitDue(VU1Interpreter &vu); // commitReadyPipelines after a native block (FDIV/EFU-only fast path)
+    static void retireScalars(VU1Interpreter &vu);
     static VU1Interpreter::NativeState::Slot &slotFor(VU1Interpreter &vu, const uint8_t *code, uint32_t codeSize, uint32_t pc);
     static VU1Interpreter::NativeState::KeyInfo &keyInfo(VU1Interpreter::NativeState &ns, uint64_t key);
     static VU1Interpreter::NativeState::BlockTiming &timingFor(VU1Interpreter::NativeState &ns, uint64_t key);
@@ -331,6 +334,15 @@ struct VU1NativeAccess
     static uint32_t chainJr(VU1NativeCtx &n, uint32_t pc, uint64_t key);
     static uint32_t chainStep(VU1NativeCtx &n, uint32_t pc, uint64_t key, bool any); // chainDirect / chainJr
     static uint32_t chainStepOut(VU1NativeCtx &n, uint32_t pc, uint64_t key, bool any); // its out-of-line copy
+    static uint32_t chainStepAfter(VU1NativeCtx &n, uint32_t pc, uint64_t key, bool any, uint32_t left);
+    static uint32_t chainStepCommit(VU1NativeCtx &n, uint32_t pc, uint64_t key, bool any, uint32_t left);
+    static uint32_t chainStepTail(VU1NativeCtx &n, uint32_t pc, uint64_t key, bool any, uint32_t left);
+    // chainStepOut's rare paths (out of line, reached by a tail call): from the FDIV/EFU start, from the commit, from the
+    // stop / budget test on
+    static uint32_t chainStepSlow(VU1NativeCtx &n, uint32_t pc, uint64_t key, bool any, uint32_t left);
+    static uint32_t chainStepSlowCommit(VU1NativeCtx &n, uint32_t pc, uint64_t key, bool any, uint32_t left);
+    static uint32_t chainStepEntry(VU1NativeCtx &n, uint32_t pc, uint64_t key, bool any, uint32_t left);
+    static uint32_t chainStepSlowTail(VU1NativeCtx &n, uint32_t pc, uint64_t key, bool any, uint32_t left);
     static VU1NativeFn slotFn(const VU1NativeCtx &n); // the function of the slot chainDirect set up
     static void callLower(VU1NativeCtx &n, uint32_t pc, uint32_t lower, uint32_t upper);
     static void callUpper(VU1NativeCtx &n, uint32_t pc, uint32_t upper);
@@ -470,6 +482,12 @@ VU1N_INLINE void VU1NativeAccess::commitDue(VU1Interpreter &vu)
         vu.commitReadyPipelines();
         return;
     }
+    retireScalars(vu);
+}
+
+// commitDue's FDIV/EFU-only path (nothing else is queued)
+VU1N_INLINE void VU1NativeAccess::retireScalars(VU1Interpreter &vu)
+{
     uint64_t next = ~0ull;
     if (vu.m_fdiv.valid)
     {
@@ -579,6 +597,16 @@ VU1N_INLINE const uint8_t *VU1NativeAccess::entryTimingAfter(VU1Interpreter &vu,
                                                              const VU1Interpreter::NativeState::BlockTiming *predBt, uint32_t predCycId,
                                                              uint64_t predLen)
 {
+    if (const uint8_t *cyc = entryMemo(vu, sl, cycId, predBt, predCycId, predLen))
+        return cyc;
+    return blockTiming(vu, sl, cycId);
+}
+
+// entryTimingAfter's memo lookup alone (reads only; null: no entry fits, blockTiming decides)
+VU1N_INLINE const uint8_t *VU1NativeAccess::entryMemo(VU1Interpreter &vu, VU1Interpreter::NativeState::Slot &sl, uint32_t &cycId,
+                                                      const VU1Interpreter::NativeState::BlockTiming *predBt, uint32_t predCycId,
+                                                      uint64_t predLen)
+{
     using NS = VU1Interpreter::NativeState;
     NS &ns = *vu.m_native;
     const uint64_t start = vu.m_cycle;
@@ -599,7 +627,7 @@ VU1N_INLINE const uint8_t *VU1NativeAccess::entryTimingAfter(VU1Interpreter &vu,
             }
         }
     }
-    return blockTiming(vu, sl, cycId);
+    return nullptr;
 }
 
 // Chained blocks: the generated code puts the blocks of a microprogram that branch to each other into one function
@@ -713,10 +741,41 @@ VU1N_INLINE uint32_t VU1NativeAccess::chainStep(VU1NativeCtx &n, uint32_t pc, ui
     ns.histNext = hnext;
     ++ns.histCount;
     vu.m_cycle = end;
+    return chainStepAfter(n, pc, key, any, left);
+}
+
+// chainStep after the finished block's history entry (vu.m_cycle = its end, ns.histNext past it; n still names the
+// finished block): FDIV/EFU, commit, stop / budget, kernel byte, key, successor set-up
+VU1N_INLINE uint32_t VU1NativeAccess::chainStepAfter(VU1NativeCtx &n, uint32_t pc, uint64_t key, bool any, uint32_t left)
+{
+    using NS = VU1Interpreter::NativeState;
+    VU1Interpreter &vu = *n.vu;
+    const NS::Slot &sl = *static_cast<const NS::Slot *>(n.slot);
     if (sl.scalarCount != 0u)
-        finishScalars(vu, sl, cyc, start);
-    if (end >= vu.m_nextCommitCycle)
+        finishScalars(vu, sl, n.cyc, n.start);
+    return chainStepCommit(n, pc, key, any, left);
+}
+
+// chainStepAfter from the due commit on (the finished block's FDIV/EFU operations are started)
+VU1N_INLINE uint32_t VU1NativeAccess::chainStepCommit(VU1NativeCtx &n, uint32_t pc, uint64_t key, bool any, uint32_t left)
+{
+    VU1Interpreter &vu = *n.vu;
+    if (vu.m_cycle >= vu.m_nextCommitCycle)
         commitDue(vu);
+    return chainStepTail(n, pc, key, any, left);
+}
+
+// chainStepAfter from the stop / budget test on (FDIV/EFU started, due results committed)
+VU1N_INLINE uint32_t VU1NativeAccess::chainStepTail(VU1NativeCtx &n, uint32_t pc, uint64_t key, bool any, uint32_t left)
+{
+    using NS = VU1Interpreter::NativeState;
+    VU1Interpreter &vu = *n.vu;
+    NS &ns = *vu.m_native;
+    const NS::Slot &sl = *static_cast<const NS::Slot *>(n.slot);
+    const uint64_t start = n.start;
+    const uint64_t end = vu.m_cycle;
+    const uint32_t hnext = ns.histNext;
+    const uint32_t predCycId = n.cycId;
     // the slot holds the expected block (its own function or a trace starting with it); a slot whose code changed has key 0
     NS::Slot &next = ns.slots[pc >> 3];
     if (vu.m_stopRequested || vu.m_cycle >= n.budgetEnd)
@@ -747,7 +806,7 @@ VU1N_INLINE uint32_t VU1NativeAccess::chainStep(VU1NativeCtx &n, uint32_t pc, ui
     n.slot = &next;
     n.start = nstart;
     uint32_t cycId = 0u;
-    const uint8_t *ncyc = next.readsEntryFlags ? entryTimingAfter(vu, next, cycId, sl.bt, h.cycId, end - start) : next.idle;
+    const uint8_t *ncyc = next.readsEntryFlags ? entryTimingAfter(vu, next, cycId, sl.bt, predCycId, end - start) : next.idle;
     n.cyc = ncyc;
     n.cycId = cycId;
     if (const VU1TailDesc *desc = next.tail)
@@ -1163,6 +1222,9 @@ namespace vu1n
     template <int C> // raw lane (bits preserved)
     inline float lane(__m128 v)
     {
+#if defined(__aarch64__)
+        return vgetq_lane_f32(v, C); // one lane move (DUP), not a trip through a general register
+#endif
         uint32_t b = static_cast<uint32_t>(_mm_cvtsi128_si32(_mm_castps_si128(_mm_shuffle_ps(v, v, _MM_SHUFFLE(C, C, C, C)))));
         float f;
         std::memcpy(&f, &b, 4);
@@ -1177,6 +1239,12 @@ namespace vu1n
     template <int Shift>
     inline __m128 itofv(__m128 raw)
     {
+#if defined(__aarch64__)
+        // SCVTF with fraction bits: the conversion rounds i / 2^Shift once, which is (float)i * 2^-Shift exactly (scaling by
+        // a power of two is exact for these magnitudes: no subnormal results), one instruction instead of two
+        if constexpr (Shift == 4 || Shift == 12 || Shift == 15)
+            return vcvtq_n_f32_s32(vreinterpretq_s32_f32(raw), Shift);
+#endif
         const __m128 v = _mm_cvtepi32_ps(_mm_castps_si128(raw));
         if constexpr (Shift == 4) return _mm_mul_ps(v, _mm_set1_ps(1.0f / 16.0f));
         if constexpr (Shift == 12) return _mm_mul_ps(v, _mm_set1_ps(1.0f / 4096.0f));
@@ -1187,6 +1255,12 @@ namespace vu1n
     inline __m128 ftoiv(__m128 normalized)
     {
         constexpr float scale = Shift == 0 ? 1.0f : Shift == 4 ? 16.0f : Shift == 12 ? 4096.0f : 32768.0f;
+#if defined(__aarch64__)
+        // FCVTZS with fraction bits truncates x * 2^Shift computed exactly and saturates: the same integer as the product
+        // (exact, or +-inf for a clamped +-FLT_MAX, which saturates the same way) converted, one instruction less
+        if constexpr (Shift == 4 || Shift == 12 || Shift == 15)
+            return vreinterpretq_f32_s32(vcvtq_n_s32_f32(clampv(normalized), Shift));
+#endif
         const __m128 v = _mm_mul_ps(clampv(normalized), _mm_set1_ps(scale));
 #if defined(__aarch64__)
         return vreinterpretq_f32_s32(vcvtq_s32_f32(v)); // FCVTZS saturates like floatToInt (see ftoi)

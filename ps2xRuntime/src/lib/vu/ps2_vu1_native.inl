@@ -1091,8 +1091,17 @@ uint32_t VU1NativeAccess::hleMatch(VU1Interpreter::NativeState &ns, const uint8_
     const auto matches = [&](uint32_t k, uint32_t e) {
         const vu1hle::Kernel &kn = vu1hle::kKernels[k];
         const uint32_t off = kn.entryOff[e];
-        return off != ~0u && pc >= off && pc - off + kn.regionPairs * 8u <= codeSize &&
-               vu1hle::fnv(code + (pc - off), kn.regionPairs * 8u) == kn.regionHash;
+        if (off == ~0u || pc < off || pc - off + kn.regionPairs * 8u > codeSize)
+            return false;
+        const uint8_t *r = code + (pc - off);
+        const uint32_t len = kn.regionPairs * 8u;
+        std::vector<uint8_t> &seen = hs.region[k];
+        if (seen.size() == len && std::memcmp(seen.data(), r, len) == 0)
+            return true; // the bytes of a region that hashed to regionHash
+        if (vu1hle::fnv(r, len) != kn.regionHash)
+            return false;
+        seen.assign(r, r + len);
+        return true;
     };
     uint8_t &known = hs.byKey(vu1hle::windowKey(code, codeSize, pc));
     uint8_t kv = 0u;
@@ -1179,9 +1188,157 @@ namespace
 }
 
 // chainDirect / chainJr's one out-of-line copy of chainStep (see chainDirect)
+#if defined(VU1N_STEP_STATS)
+// harness only (EXTRA=-DVU1N_STEP_STATS, VU1N_STEP_FILE=<file>): chain steps by (from slot, to pc, result); from 0xFFFF:
+// a trace's side exit (prefix slot outside ns.slots). Lines "s <from pc> <to pc> <result> <to reads entry flags> <to is a trace> <count>"
+namespace
+{
+    struct VU1StepStats
+    {
+        struct H { size_t operator()(const std::pair<uint64_t, uint64_t> &k) const { return k.first * 31u + k.second; } };
+        std::unordered_map<std::pair<uint64_t, uint64_t>, uint64_t, H> m;
+        ~VU1StepStats()
+        {
+            if (const char *f = std::getenv("VU1N_STEP_FILE"))
+                if (FILE *o = std::fopen(f, "w"))
+                {
+                    for (const auto &kv : m)
+                        std::fprintf(o, "s %x %x %u %u %u %llu %016llx\n", static_cast<uint32_t>(kv.first.first >> 32) & 0xFFFFu,
+                                     static_cast<uint32_t>(kv.first.first >> 8) & 0xFFFFu, static_cast<uint32_t>(kv.first.first & 3u),
+                                     static_cast<uint32_t>(kv.first.first >> 2) & 1u, static_cast<uint32_t>(kv.first.first >> 3) & 1u,
+                                     static_cast<unsigned long long>(kv.second), static_cast<unsigned long long>(kv.first.second));
+                    std::fclose(o);
+                }
+        }
+    };
+    VU1StepStats g_vu1StepStats;
+}
+#endif
+
 VU1N_NOINLINE uint32_t VU1NativeAccess::chainStepOut(VU1NativeCtx &n, uint32_t pc, uint64_t key, bool any)
 {
-    return any ? chainStep(n, pc, 0u, true) : chainStep(n, pc, key, false);
+#if defined(VU1N_STEP_STATS)
+    const VU1Interpreter::NativeState &ns0 = *n.vu->m_native;
+    const auto *from = static_cast<const VU1Interpreter::NativeState::Slot *>(n.slot);
+    const uint64_t fpc = (from >= ns0.slots && from < ns0.slots + 2048) ? static_cast<uint64_t>(from - ns0.slots) * 8u : 0xFFFFu;
+    const uint64_t fkey = from->key;
+    const uint32_t r = any ? chainStep(n, pc, 0u, true) : chainStep(n, pc, key, false);
+    const auto &to = ns0.slots[(pc & 0x3FF8u) >> 3];
+    ++g_vu1StepStats.m[{(fpc << 32) | (static_cast<uint64_t>(pc & 0xFFFFu) << 8) | (to.trace ? 8u : 0u) | (to.readsEntryFlags ? 4u : 0u) | r, fkey}];
+    return r;
+#else
+    // chainStep with its common case as a leaf (no call, no stack frame): the finished block's history entry, the due
+    // FDIV/EFU retirement, and, when there is no stop / budget end / kernel byte / diag and the successor is the expected
+    // block with an idle-pipeline table, its set-up; the other cases continue out of line (chainStepSlow*, chainStepEntry:
+    // tail calls) exactly where chainStep would. As one function,
+    // the calls on the rare paths (commitReadyPipelines, hleChain, blockTiming) gave every step a 160-byte frame with six
+    // callee-saved registers (~10 % of its samples).
+    using NS = VU1Interpreter::NativeState;
+    const uint32_t left = n.chainLeft;
+    if (left == 0u)
+        return 0u;
+    VU1Interpreter &vu = *n.vu;
+    NS &ns = *vu.m_native;
+    const NS::Slot &sl = *static_cast<const NS::Slot *>(n.slot);
+    const uint8_t *cyc = n.cyc;
+    const uint64_t start = n.start;
+    const uint64_t end = start + (cyc == sl.idle ? sl.idleEnd : cyc[sl.pairs - 1u] + 1u);
+    const uint32_t hn = ns.histNext;
+    NS::Hist &h = ns.hist[hn];
+    h.bt = sl.bt;
+    h.cyc = cyc;
+    h.start = start;
+    h.end = end;
+    h.cycId = n.cycId;
+    const uint32_t hnext = (hn + 1u) % NS::kHist;
+    ns.histNext = hnext;
+    ++ns.histCount;
+    vu.m_cycle = end;
+    // the due FDIV/EFU retirement (commitDue) where it needs no call; a block that started FDIV/EFU operations, or a
+    // commit with other queues busy, continues out of line from that point
+    if (sl.scalarCount != 0u) // (inline, its loops cost the whole step a stack frame and saved registers)
+        return chainStepSlow(n, pc, key, any, left);
+    if (end >= vu.m_nextCommitCycle)
+    {
+        if ((vu.m_storePending | vu.m_vfPending | vu.m_viPending | vu.m_accPending) != 0u || vu.m_flagCount != 0u)
+            return chainStepSlowCommit(n, pc, key, any, left);
+        retireScalars(vu);
+    }
+    NS::Slot &next = ns.slots[pc >> 3];
+    const bool match = any ? (next.known && next.fn) : next.key == key;
+#if defined(VU1N_SLOW_STATS) // harness only: why steps take the slow tail (printed at exit)
+    {
+        static struct C { uint64_t c[9] = {}; ~C() { std::fprintf(stderr, "[slow] fast=%llu stop=%llu budget=%llu hle=%llu diag=%llu nomatch=%llu entry=%llu\n",
+            (unsigned long long)c[0], (unsigned long long)c[3], (unsigned long long)c[4],
+            (unsigned long long)c[5], (unsigned long long)c[6], (unsigned long long)c[7], (unsigned long long)c[8]); } } st;
+        uint32_t cid = 0u;
+        const int why = vu.m_stopRequested ? 3 : end >= n.budgetEnd ? 4 : (ns.hleStop && ns.hleStop[pc >> 3]) ? 5 : ns.diag ? 6 : !match ? 7 :
+                        (next.readsEntryFlags && !entryMemo(vu, next, cid, sl.bt, n.cycId, end - start)) ? 8 : 0;
+        ++st.c[why];
+    }
+#endif
+    if (vu.m_stopRequested || end >= n.budgetEnd || (ns.hleStop && ns.hleStop[pc >> 3]) || ns.diag || !match)
+        return chainStepSlowTail(n, pc, key, any, left);
+    if (next.readsEntryFlags) // (inline, the memo lookup cost the whole step a stack frame and saved registers)
+        return chainStepEntry(n, pc, key, any, left);
+    n.chainLeft = left - 1u;
+    n.slot = &next;
+    n.start = end;
+    const uint8_t *ncyc = next.idle;
+    n.cyc = ncyc;
+    n.cycId = 0u;
+    if (const VU1TailDesc *desc = next.tail)
+    {
+        VU1FlagTail &t = ns.hist[hnext].tail;
+        t.desc = desc;
+        t.cyc = ncyc;
+        t.start = end;
+        n.tail = &t;
+    }
+    return 1u;
+#endif
+}
+
+// chainStepOut's successor that reads entry flags (all checks passed): its entry timing from the memo, else the slow tail
+VU1N_NOINLINE uint32_t VU1NativeAccess::chainStepEntry(VU1NativeCtx &n, uint32_t pc, uint64_t key, bool any, uint32_t left)
+{
+    using NS = VU1Interpreter::NativeState;
+    VU1Interpreter &vu = *n.vu;
+    NS &ns = *vu.m_native;
+    const NS::Slot &sl = *static_cast<const NS::Slot *>(n.slot);
+    NS::Slot &next = ns.slots[pc >> 3];
+    const uint64_t end = vu.m_cycle;
+    uint32_t cycId = 0u;
+    const uint8_t *ncyc = entryMemo(vu, next, cycId, sl.bt, n.cycId, end - n.start);
+    if (!ncyc)
+        return chainStepSlowTail(n, pc, key, any, left);
+    n.chainLeft = left - 1u;
+    n.slot = &next;
+    n.start = end;
+    n.cyc = ncyc;
+    n.cycId = cycId;
+    if (const VU1TailDesc *desc = next.tail)
+    {
+        VU1FlagTail &t = ns.hist[ns.histNext].tail;
+        t.desc = desc;
+        t.cyc = ncyc;
+        t.start = end;
+        n.tail = &t;
+    }
+    return 1u;
+}
+
+VU1N_NOINLINE uint32_t VU1NativeAccess::chainStepSlow(VU1NativeCtx &n, uint32_t pc, uint64_t key, bool any, uint32_t left)
+{
+    return any ? chainStepAfter(n, pc, 0u, true, left) : chainStepAfter(n, pc, key, false, left);
+}
+VU1N_NOINLINE uint32_t VU1NativeAccess::chainStepSlowCommit(VU1NativeCtx &n, uint32_t pc, uint64_t key, bool any, uint32_t left)
+{
+    return any ? chainStepCommit(n, pc, 0u, true, left) : chainStepCommit(n, pc, key, false, left);
+}
+VU1N_NOINLINE uint32_t VU1NativeAccess::chainStepSlowTail(VU1NativeCtx &n, uint32_t pc, uint64_t key, bool any, uint32_t left)
+{
+    return any ? chainStepTail(n, pc, 0u, true, left) : chainStepTail(n, pc, key, false, left);
 }
 
 // A direct chain (chainStep) about to enter pc, whose hleStop byte is set: runs the kernel there itself, as runNative

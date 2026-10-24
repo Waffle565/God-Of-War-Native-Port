@@ -84,6 +84,10 @@ inline uint32_t kUnlitSt(Ctx &c, uint32_t entry)
     __m128 f1 = ldv(s, 1), f2 = ldv(s, 2), f3 = ldv(s, 3), f4 = ldv(s, 4), f5 = ldv(s, 5), f6 = ldv(s, 6), f7 = ldv(s, 7),
            f8 = ldv(s, 8), f9 = ldv(s, 9), f10 = ldv(s, 10), acc = _mm_loadu_ps(s.acc);
     const __m128 m20 = ldv(s, 20), m21 = ldv(s, 21), m22 = ldv(s, 22), m23 = ldv(s, 23);
+    // f1, f2, f5, f6, f7, f10 keep their other lanes through the loop and every use inside it reads only the lanes the loop
+    // writes (bc<0..2>, xyz stores, xy converts): the loop runs on the full values and blends the kept lanes back once at
+    // exit (six fewer 128-bit blends per vertex). f8 / f9 keep z, which f10's product reads: they stay blended.
+    const __m128 e1 = f1, e2 = f2, e5 = f5, e6 = f6, e7 = f7, e10 = f10;
     float q = s.q;
     int32_t vi2 = s.vi[2], vi3 = s.vi[3], vi5 = s.vi[5];
     if (vi5 <= 0) // the loop would wrap the 16-bit counter: left to the native blocks
@@ -105,21 +109,21 @@ inline uint32_t kUnlitSt(Ctx &c, uint32_t entry)
             // A: f9/f4 set, Q from B's DIV (vf3)
             const __m128 st = ldq(d, vi2 + 1);
             f9 = bl<3>(f9, itof<12>(f7));
-            f7 = bl<3>(f7, st);
-            f6 = bl<7>(f6, ftoi<4>(f5));
+            f7 = st;
+            f6 = ftoi<4>(f5);
             vi2 = sx(vi2 + vi4);
             acc = madd(acc, m20, bc<0>(f2));
-            f1 = bl<7>(f1, ldq(d, vi2));
+            f1 = ldq(d, vi2);
             acc = madd(acc, m21, bc<1>(f2));
             vi5 = sx(vi5 - 1);
             f4 = madd(acc, m22, bc<2>(f2));
             stq<7>(d, vi3 + 1, f10);
             acc = _mm_add_ps(m23, _mm_setzero_ps());
             vi3 = sx(vi3 + vi4);
-            f5 = bl<7>(f5, _mm_mul_ps(f3, _mm_set1_ps(q)));
+            f5 = _mm_mul_ps(f3, _mm_set1_ps(q));
             stq<7>(d, vi3, f6);
-            f2 = bl<7>(f2, itof<4>(f1));
-            f10 = bl<7>(f10, _mm_mul_ps(f8, _mm_set1_ps(q)));
+            f2 = itof<4>(f1);
+            f10 = _mm_mul_ps(f8, _mm_set1_ps(q));
             q = rcpw(f4);
             cyc += 9u;
             if (vi5 == 0)
@@ -133,21 +137,21 @@ inline uint32_t kUnlitSt(Ctx &c, uint32_t entry)
         {
             const __m128 st = ldq(d, vi2 + 1);
             f8 = bl<3>(f8, itof<12>(f7));
-            f7 = bl<3>(f7, st);
-            f6 = bl<7>(f6, ftoi<4>(f5));
+            f7 = st;
+            f6 = ftoi<4>(f5);
             vi2 = sx(vi2 + vi4);
             acc = madd(acc, m20, bc<0>(f2));
-            f1 = bl<7>(f1, ldq(d, vi2));
+            f1 = ldq(d, vi2);
             acc = madd(acc, m21, bc<1>(f2));
             vi5 = sx(vi5 - 1);
             f3 = madd(acc, m22, bc<2>(f2));
             stq<7>(d, vi3 + 1, f10);
             acc = _mm_add_ps(m23, _mm_setzero_ps());
             vi3 = sx(vi3 + vi4);
-            f5 = bl<7>(f5, _mm_mul_ps(f4, _mm_set1_ps(q)));
+            f5 = _mm_mul_ps(f4, _mm_set1_ps(q));
             stq<7>(d, vi3, f6);
-            f2 = bl<7>(f2, itof<4>(f1));
-            f10 = bl<7>(f10, _mm_mul_ps(f9, _mm_set1_ps(q)));
+            f2 = itof<4>(f1);
+            f10 = _mm_mul_ps(f9, _mm_set1_ps(q));
             q = rcpw(f3);
             cyc += 9u;
             if (vi5 == 0)
@@ -157,6 +161,7 @@ inline uint32_t kUnlitSt(Ctx &c, uint32_t entry)
             }
         }
     }
+    f1 = bl<7>(e1, f1); f2 = bl<7>(e2, f2); f5 = bl<7>(e5, f5); f6 = bl<7>(e6, f6); f7 = bl<3>(e7, f7); f10 = bl<7>(e10, f10);
     stv(s, 1, f1); stv(s, 2, f2); stv(s, 3, f3); stv(s, 4, f4); stv(s, 5, f5); stv(s, 6, f6); stv(s, 7, f7);
     stv(s, 8, f8); stv(s, 9, f9); stv(s, 10, f10);
     _mm_storeu_ps(s.acc, acc);
@@ -186,6 +191,10 @@ inline uint32_t kLitSt(Ctx &c, uint32_t)
     float iv;
     std::memcpy(&iv, &ibits, 4);
     const __m128 I = _mm_set1_ps(iv);
+    // f1, f7, f9 keep their other lanes through the loop, read only in the lanes it writes (bc<0..2>, xy converts, xyz
+    // stores): no blends inside, the kept lanes blended back at exit. f3's w lane never leaves the pass (p16 writes all
+    // of f3 before any read of w), so its two blends go too. Six fewer 128-bit blends per vertex.
+    const __m128 e1 = f1, e7 = f7, e9 = f9;
     float q = s.q;
     int32_t vi2 = s.vi[2], vi3 = s.vi[3], vi5 = s.vi[5];
     if (vi5 <= 0) // the loop would wrap the 16-bit counter: left to the native blocks
@@ -198,25 +207,25 @@ inline uint32_t kLitSt(Ctx &c, uint32_t)
         {                                                                  // p1
             const __m128 st = ldq(d, vi2 + 1);
             f8 = bl<3>(f8, itof<12>(f7));
-            f7 = bl<3>(f7, st);
+            f7 = st;
         }
         f5 = itof<0>(f5);                                                  // p2
         vi2 = sx(vi2 + vi4);
         acc = bl<7>(acc, _mm_mul_ps(m27, bc<0>(f4)));                     // p3
-        f3 = bl<7>(f3, ldq(d, vi2 - 2));
+        f3 = ldq(d, vi2 - 2);
         acc = bl<7>(acc, madd(acc, m28, bc<1>(f4)));                       // p4
         const float qn = rcpw(f2);
         acc = bl<8>(acc, _mm_add_ps(f4, bc<2>(f4)));                       // p5
-        f1 = bl<7>(f1, ldq(d, vi2));
+        f1 = ldq(d, vi2);
         f4 = _mm_add_ps(acc, _mm_mul_ps(m29, _mm_set1_ps(1.0f)));          // p6
-        f3 = bl<7>(f3, itof<15>(f3));                                      // p7
+        f3 = itof<15>(f3);                                      // p7
         acc = _mm_add_ps(m31, _mm_setzero_ps());                           // p8
-        f1 = bl<7>(f1, itof<4>(f1));                                       // p9
+        f1 = itof<4>(f1);                                       // p9
         f4 = madd(acc, f4, f5);                                            // p10
         f5 = ldq(d, vi2 - 1);
         q = qn;                                                            // p11
         f2 = bl<7>(f2, _mm_mul_ps(f2, _mm_set1_ps(q)));
-        f9 = bl<7>(f9, _mm_mul_ps(f8, _mm_set1_ps(q)));                    // p12
+        f9 = _mm_mul_ps(f8, _mm_set1_ps(q));                    // p12
         acc = _mm_mul_ps(m16, bc<0>(f3));                                  // p13
         acc = madd(acc, m17, bc<1>(f3));                                   // p14
         f2 = bl<7>(f2, ftoi<4>(f2));                                       // p15
@@ -233,6 +242,7 @@ inline uint32_t kLitSt(Ctx &c, uint32_t)
         f4 = _mm_max_ps(f3, m11);
         cyc += 22u;
     } while (vi5 != 0);
+    f1 = bl<7>(e1, f1); f7 = bl<3>(e7, f7); f9 = bl<7>(e9, f9);
     stv(s, 1, f1); stv(s, 2, f2); stv(s, 3, f3); stv(s, 4, f4); stv(s, 5, f5); stv(s, 7, f7); stv(s, 8, f8); stv(s, 9, f9);
     _mm_storeu_ps(s.acc, acc);
     s.q = q;
@@ -263,6 +273,10 @@ inline uint32_t kSkinLitSt(Ctx &c, uint32_t)
     float iv;
     std::memcpy(&iv, &ibits, 4);
     const __m128 I = _mm_set1_ps(iv);
+    // f3, f5, f10 keep their other lanes through the loop, read only in the lanes it writes: no blends inside, the kept
+    // lanes blended back at exit; f1's two partial writes (w from vi1, xyz loaded) are one blend, f2's two (ST*Q, ftoi4)
+    // one on the product. Six fewer 128-bit blends per vertex.
+    const __m128 e3 = f3, e5 = f5, e10 = f10;
     float q = s.q;
     int32_t vi1 = s.vi[1], vi2 = s.vi[2], vi3 = s.vi[3], vi5 = s.vi[5];
     if (vi5 <= 0)
@@ -274,13 +288,13 @@ inline uint32_t kSkinLitSt(Ctx &c, uint32_t)
         {                                                                  // q0
             const __m128 st = ldq(d, vi2 + 1);
             f9 = bl<3>(f9, itof<12>(f10));
-            f10 = bl<3>(f10, st);
+            f10 = st;
         }
         f2 = madd(acc, m14, bc<2>(f1));                                   // q1
         {                                                                  // q2
             const __m128 n = ldq(d, vi2 + 2);
             f7 = _mm_max_ps(f6, m11);
-            f3 = bl<7>(f3, n);
+            f3 = n;
         }
         acc = _mm_add_ps(m23, _mm_setzero_ps());                           // q3
         acc = madd(acc, m20, bc<0>(f1));                                   // q4
@@ -292,16 +306,15 @@ inline uint32_t kSkinLitSt(Ctx &c, uint32_t)
         acc = madd(acc, m21, bc<1>(f1));                                   // q5
         acc = madd(acc, m22, bc<2>(f1));                                   // q6
         f2 = madd(acc, f2, bc<3>(f1));                                     // q7
-        f3 = bl<7>(f3, itof<15>(f3));                                      // q8
+        f3 = itof<15>(f3);                                      // q8
         acc = bl<7>(acc, _mm_mul_ps(m27, bc<0>(f7)));                     // q9
         vi1 = sx(vi1 + vi1);
         acc = bl<7>(acc, madd(acc, m28, bc<1>(f7)));                       // q10
         acc = bl<8>(acc, _mm_add_ps(f7, bc<2>(f7)));                       // q11
         const float qn = rcpw(f2);
         f7 = _mm_add_ps(acc, _mm_mul_ps(m29, _mm_set1_ps(1.0f)));          // q12
-        f1 = bl<8>(f1, _mm_castsi128_ps(_mm_set1_epi32(vi1)));
         acc = _mm_mul_ps(m24, bc<0>(f3));                                  // q13
-        f1 = bl<7>(f1, ldq(d, vi2 + 4));
+        f1 = bl<7>(_mm_castsi128_ps(_mm_set1_epi32(vi1)), ldq(d, vi2 + 4)); // q12's w (vi1), q13's xyz
         acc = madd(acc, m25, bc<1>(f3));                                   // q14
         f6 = madd(acc, m26, bc<2>(f3));                                    // q15
         f4 = ldq(d, vi2 + 3);
@@ -309,14 +322,14 @@ inline uint32_t kSkinLitSt(Ctx &c, uint32_t)
         f7 = madd(acc, f8, f7);                                            // q17
         f1 = itof<4>(f1);                                                  // q18
         q = qn;                                                            // q19
-        f5 = bl<7>(f5, _mm_mul_ps(f9, _mm_set1_ps(q)));
+        f5 = _mm_mul_ps(f9, _mm_set1_ps(q));
         vi2 = sx(vi2 + vi4);
-        f2 = bl<7>(f2, _mm_mul_ps(f2, _mm_set1_ps(q)));                    // q20
+        const __m128 f2q = _mm_mul_ps(f2, _mm_set1_ps(q));                   // q20 (xyz into f2 with q24)
         f7 = _mm_min_ps(f7, I);                                            // q21
         vi1 = vi3;
         f8 = itof<0>(f4);                                                  // q22
         acc = _mm_mul_ps(m16, bc<0>(f3));                                  // q23
-        f2 = bl<7>(f2, ftoi<4>(f2));                                       // q24
+        f2 = bl<7>(f2, ftoi<4>(f2q));                                       // q24
         stq<7>(d, vi1 + 1, f5);
         acc = madd(acc, m17, bc<1>(f3));                                   // q25
         acc = madd(acc, m18, bc<2>(f3));                                   // q26
@@ -330,6 +343,7 @@ inline uint32_t kSkinLitSt(Ctx &c, uint32_t)
         vi3 = sx(vi3 + vi4);
         cyc += 31u;
     } while (vi5 != 0);
+    f3 = bl<7>(e3, f3); f5 = bl<7>(e5, f5); f10 = bl<3>(e10, f10);
     stv(s, 1, f1); stv(s, 2, f2); stv(s, 3, f3); stv(s, 4, f4); stv(s, 5, f5); stv(s, 6, f6); stv(s, 7, f7);
     stv(s, 8, f8); stv(s, 9, f9); stv(s, 10, f10);
     _mm_storeu_ps(s.acc, acc);
@@ -1117,4 +1131,8 @@ struct VU1HleState
         }
     }
     void reset(uint32_t i) { tried[i] = kernel[i] = 0u, stop[i] = 1u; }
+    // per kernel: the bytes of a region that matched its hash; a region equal to them matches without the byte-wise FNV
+    // (a remembered kernel is re-confirmed at every code change near its pc: the FNV of up to 320 bytes, one dependent
+    // multiply per byte, was most of hleMatch's samples). Other bytes still go through the hash: the same decisions.
+    std::vector<uint8_t> region[vu1hle::kKernelCount > 0 ? vu1hle::kKernelCount : 1];
 };

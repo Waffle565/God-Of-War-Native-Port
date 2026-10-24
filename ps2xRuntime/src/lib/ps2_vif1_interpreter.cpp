@@ -188,10 +188,59 @@ namespace
             _mm_storeu_si128(reinterpret_cast<__m128i *>(row), r);
     }
 
+    // CL == WL (the usual layout): the destination is vuAddr + i (mod 1024), so vectors go out in groups of four between
+    // wraps, without the per-vector cycle position, block multiply and branch (independent loads and stores the A57
+    // can overlap). The same vectors in the same order as unpackLoop.
+    template <unsigned VN, unsigned VL, unsigned MODE, bool ZX>
+    void unpackLinear(uint8_t *vuData, const uint8_t *src, uint32_t count, uint32_t vuAddr, uint32_t row[4])
+    {
+        constexpr bool v45 = (VL == 3u);
+        constexpr bool useRow = !v45 && MODE != 0u;
+        constexpr uint32_t bpv = v45 ? 2u : (VN + 1u) * (VL == 0u ? 4u : VL == 1u ? 2u : 1u);
+        __m128i r = useRow ? _mm_loadu_si128(reinterpret_cast<const __m128i *>(row)) : _mm_setzero_si128();
+        const auto one = [&](uint8_t *dest, const uint8_t *s) {
+            __m128i v = unpackVector<VN, VL, ZX>(s, dest);
+            if constexpr (useRow && MODE == 1u)
+                v = _mm_add_epi32(v, r);
+            else if constexpr (useRow && MODE == 2u)
+                r = v = _mm_add_epi32(v, r);
+            else if constexpr (useRow)
+                r = v;
+            _mm_storeu_si128(reinterpret_cast<__m128i *>(dest), v);
+        };
+        uint32_t a = vuAddr & 0x3FFu, i = 0u;
+        while (i < count)
+        {
+            uint32_t run = std::min<uint32_t>(count - i, 0x400u - a); // up to the wrap
+            i += run;
+            uint8_t *dest = vuData + a * 16u;
+            a = (a + run) & 0x3FFu;
+            for (; run >= 4u; run -= 4u, dest += 64u, src += 4u * bpv)
+            {
+                one(dest, src);
+                one(dest + 16u, src + bpv);
+                one(dest + 32u, src + 2u * bpv);
+                one(dest + 48u, src + 3u * bpv);
+            }
+            for (; run != 0u; --run, dest += 16u, src += bpv)
+                one(dest, src);
+        }
+        if constexpr (useRow && MODE >= 2u)
+            _mm_storeu_si128(reinterpret_cast<__m128i *>(row), r);
+    }
+
     template <unsigned VN, unsigned VL, unsigned MODE>
     void unpackFast(uint8_t *vuData, const uint8_t *src, uint32_t count, uint32_t vuAddr, uint32_t cl, uint32_t wl,
                     bool zeroExtend, uint32_t row[4])
     {
+        if (cl == wl)
+        {
+            if (zeroExtend)
+                unpackLinear<VN, VL, MODE, true>(vuData, src, count, vuAddr, row);
+            else
+                unpackLinear<VN, VL, MODE, false>(vuData, src, count, vuAddr, row);
+            return;
+        }
         if (zeroExtend)
             unpackLoop<VN, VL, MODE, true>(vuData, src, count, vuAddr, cl, wl, row);
         else
