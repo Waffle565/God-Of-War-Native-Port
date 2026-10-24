@@ -105,11 +105,17 @@ class Switch:
     def _get(self, path, local):
         tmp = local + '.part'
         missing = None
-        with open(tmp, 'wb') as out:
-            try:
-                self.ftp.retrbinary('RETR ' + sd(path), out.write, blocksize=1 << 16)
-            except ftplib.error_perm as e:
-                missing = e
+        try:
+            with open(tmp, 'wb') as out:
+                try:
+                    self.ftp.retrbinary('RETR ' + sd(path), out.write, blocksize=1 << 16)
+                except (ftplib.error_perm, ftplib.error_temp) as e:
+                    if not str(e).startswith(('550', '450')):
+                        raise
+                    missing = e  # sys-ftpd answers "450 failed to open file" for a missing file
+        except BaseException:
+            os.remove(tmp)
+            raise
         if missing is not None:
             os.remove(tmp)
             raise Missing(f'not a file on the SD card: {path} ({missing})')
@@ -140,7 +146,9 @@ class Switch:
     def _rm(self, path):
         try:
             self.ftp.delete(sd(path))
-        except ftplib.error_perm as e:
+        except (ftplib.error_perm, ftplib.error_temp) as e:
+            if not str(e).startswith(('550', '450')):
+                raise
             raise Missing(f'no such file: {path} ({e})')
 
     def ls(self, directory=''):
