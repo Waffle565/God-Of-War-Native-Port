@@ -25,7 +25,8 @@ CPU HLE alone reaches the target, (3) GPU path, (4) console fps / per-core busy 
   39.3 / 39.2, 50.1 / 50.2, 52.6 / 52.6, 4739-4763**. VU1 stays the limit in every scene (~4.75 s per 5 s); no other
   thread became the limit. The gain (~2 % VU1 work per frame) is far from 60 fps (VU1 ~24 ms per heavy frame, needs 16.7).
 - Packages (port/switch/nsp/out): update_k10a (t1), k10b (t1 + prefetch), **k10c (t2 + prefetch = default)**, k10d (t3:
-  + mem origins, crashed/hung run), k10e (t4: + store aliasing, never run). ELFs `/root/elf_k10*.elf`.
+  + mem origins; its run did NOT hang: the battery ran flat (max GPU/EMC clocks draw more than the PC USB port
+  charges) and the console went to sleep, so k10d is untested, not broken), k10e (t4: + store aliasing, never run). ELFs `/root/elf_k10*.elf`.
 - Next: (1) re-run k10d / k10e twice on the console (they cut another ~1.5 % of the qemu cost); (2) the queued sampler
   pair `k10e + pcs.env` vs `pcs0.env` (`GOW_VIF_PREFETCH=0`) to see what the prefetch does to the unpack samples
   (scratchpad `k10/pcs*.env`); (3) EFU blocks in traces (11.5 % of the chain steps; needs the scalar pipeline handled
