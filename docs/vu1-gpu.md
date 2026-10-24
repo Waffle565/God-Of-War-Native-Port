@@ -5,6 +5,38 @@ look the same (pixel comparison against the CPU path, tolerances documented). Pl
 (2) a plain-float CPU reference (HLE) compared with the exact path on the recordings, which also says whether a fast
 CPU HLE alone reaches the target, (3) GPU path, (4) console fps / per-core busy / screenshots.
 
+## Handoff (2026-10-24 midday, sw-k10 stopped here: ext agent/sw-vu1gpu 0927485 + default generator (main 74752a8) = t2 blocks (`/root/vg_t2`, `/root/vu1pregen-t2`), package `update_k10c`)
+- **CONSOLE NEEDS A MANUAL RESET**: the bench run `k10d1` (update_k10d = t3 blocks with `--mem-origins` + VIF prefetch)
+  was fighting normally at 11:21:17 and went black at 11:21:48; since then the bot (port 6000) times out and MTP is
+  down (ping answers). No log. env.txt of that run (bench env, no diagnostics) is still on the SD; `update_k10d` is
+  installed. After the reset: install `update_k10c` (or re-run k10d to see whether it was the build) and delete
+  `switch/gow/env.txt`.
+- **Profile of k9g** (`k10p`, heavy): blocks 25.9 %, chainStepOut 7.0, kCullClip 6.1, idle 5.3, kUnlitSt 4.8, VIF
+  3.7 + unpack 7.4, hleChain 3.3, kSkinLitSt 3.25, memmove 2.9, kLitSt 2.7, runNative 2.5, chainStepSlow* 3.0, kCull
+  1.9, per-run ~5, code-change ~4 (docs/performance.md "VU1 thread throughput, part 2").
+- **Changes**: (1) generator: fast variants of traces (range analysis over a whole trace; traces had none since sw-k9
+  made them the bulk of the work), JR trace share 0.6 -> 0.3 (fight.rec steps 146.7 k -> 139.1 k), loaded values as
+  origins with store-alias checks (`--mem-origins`, OFF by default after the k10d run); docs/vu1-hle.md "Fast traces
+  and loaded values". (2) ext 0927485: VIF1 source prefetch (`GOW_VIF_PREFETCH`, 512): the unpack samples sat on the
+  source loads. All exact: x86 dumps fight / menu HLE=1 / 0 identical to 529de89 and k3g (t1..t4), aarch64 qemu dumps
+  identical to g9, bench signatures identical per start state.
+- **Bench** (heavy / mid / late, VU1 busy heavy): k9g 38.3-38.9 / 49.1-49.7 / 50.9-51.7, 4755-4765 ms; k10a (fast
+  traces) 39.3 / 39.0, 50.1 / 49.8, 51.9 / 52.2, 4764-4769; k10b (+ prefetch) 39.2, 50.0, 52.9, 4753; **k10c (+ JR 0.3)
+  39.3 / 39.2, 50.1 / 50.2, 52.6 / 52.6, 4739-4763**. VU1 stays the limit in every scene (~4.75 s per 5 s); no other
+  thread became the limit. The gain (~2 % VU1 work per frame) is far from 60 fps (VU1 ~24 ms per heavy frame, needs 16.7).
+- Packages (port/switch/nsp/out): update_k10a (t1), k10b (t1 + prefetch), **k10c (t2 + prefetch = default)**, k10d (t3:
+  + mem origins, crashed/hung run), k10e (t4: + store aliasing, never run). ELFs `/root/elf_k10*.elf`.
+- Next: (1) re-run k10d / k10e twice on the console (they cut another ~1.5 % of the qemu cost); (2) the queued sampler
+  pair `k10e + pcs.env` vs `pcs0.env` (`GOW_VIF_PREFETCH=0`) to see what the prefetch does to the unpack samples
+  (scratchpad `k10/pcs*.env`); (3) EFU blocks in traces (11.5 % of the chain steps; needs the scalar pipeline handled
+  between parts: efuOp's calloutCommit, MFP after an EFU in an earlier part); (4) VI registers computed in a trace as
+  load bases in the entry check (t0ec8's I11 rows: half its remaining `maddc`); (5) kCullClip's path A/B branch
+  (mispredicted, data-dependent) and its loop-carried vf29 chain.
+- Tools (scratchpad `k10/`): `gen.sh <name> [args]` (generate /root/vg_<name>), `v1.sh <name> <gen dir>` (x86 dumps +
+  aarch64 harness + icount vs g9a + qemu dumps), `fs.sh` (fast hit stats), `cnt.py` (maddc / clampv per function kind),
+  `icd.py` (icount per function, two harnesses), `fn.py` (print a generated function), `jrs.sh` (step totals per JR
+  share), `q.sh` (bench queue with seed state), `w.sh` (run a k10 script in WSL). Kill queue scripts explicitly.
+
 ## Handoff (2026-10-24 morning, sw-k9 stopped here: ext agent/sw-vu1gpu 47e05b5 + default generator = g9 blocks (`/root/vu1pregen-g9`), package `update_k9g`)
 - **Result** (deterministic bench, docs/benchmark.md; GPU max): heavy **36.4 -> 38.3 / 38.9**, mid **46.5 -> 49.1 /
   49.7**, late **48.2 -> 50.9 / 51.7** (`k9s` = update_s4 today vs `k9g1` / `k9g2`). VU1 thread still ~4.76 s busy per
