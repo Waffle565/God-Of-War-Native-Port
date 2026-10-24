@@ -57,7 +57,16 @@ namespace
     {
         DkFence fence{};
         uint64_t serial = 0;
+        uint32_t tsEnd = 0; // GOW_DK_GPU_TIME: the report index after this list's last one
     };
+
+    // GOW_DK_GPU_TIME=1 (with GOW_PERF_DIAG=1): GPU time per kind of work. A timestamp report (end of pipe) goes into the
+    // command list wherever the kind of work changes (the draw program, clears, copies, uploads, the swapchain wait) and
+    // at every list end; the time between two reports of one list belongs to the kind the first one started. Printed as
+    // [gs-dk-gpu] every 5 s: busy time, per kind, and the draw programs with the most time.
+    constexpr uint32_t kTsSlots = 1u << 16;
+    constexpr uint32_t kCatEnd = 0xFFFFFFFFu, kCatClear = 0xFFFFFFF0u, kCatUpload = 0xFFFFFFF1u, kCatCopy = 0xFFFFFFF2u,
+                       kCatReadback = 0xFFFFFFF3u, kCatAcquire = 0xFFFFFFF4u;
 
     struct Texture
     {
@@ -238,6 +247,15 @@ namespace
                  vtxBinds = 0, vtxBufferBinds = 0, rtBinds = 0, barrierCount = 0, drawNanos = 0;
         uint64_t acquireNanos = 0, presentSubmitNanos = 0, submitNanos = 0;
         std::chrono::steady_clock::time_point statsAt = std::chrono::steady_clock::now();
+        // GOW_DK_GPU_TIME (see kTsSlots)
+        bool gpuTime = false;
+        DkMemBlock tsMem = nullptr;
+        const volatile uint64_t *tsCpu = nullptr; // 16 bytes per report: value, timestamp
+        DkGpuAddr tsGpu = 0;
+        uint32_t tsNext = 0, tsRead = 0, tsCat = kCatEnd;
+        std::vector<uint32_t> tsCatOf = std::vector<uint32_t>(kTsSlots);
+        std::unordered_map<uint32_t, uint64_t> gpuNanos; // kind -> ns this window
+        uint64_t gpuBusyNanos = 0, tsDropped = 0;
     };
 
     State *s = nullptr;
@@ -263,12 +281,49 @@ namespace
         return dkMemBlockCreate(&maker);
     }
 
+    // ---- GPU time per kind of work (GOW_DK_GPU_TIME) -----------------------------------------------------------------
+    // a report where the kind of work changes (kind: a draw program id or a kCat* value; kCatEnd ends a list)
+    void gpuMark(uint32_t kind)
+    {
+        if (!s->gpuTime || kind == s->tsCat)
+            return;
+        if (s->tsNext - s->tsRead >= kTsSlots - 1u)
+        {
+            ++s->tsDropped; // ring full: this kind's time joins the previous one
+            return;
+        }
+        const uint32_t i = s->tsNext % kTsSlots;
+        dkCmdBufReportCounter(s->cmd, DkCounter_Timestamp, s->tsGpu + i * 16u);
+        s->tsCatOf[i] = kind;
+        ++s->tsNext;
+        s->tsCat = kind;
+    }
+    // a finished list's reports (up to `end`): the time between two reports to the first one's kind
+    void gpuCollect(uint32_t end)
+    {
+        for (; s->tsRead + 1u < end; ++s->tsRead)
+        {
+            const uint32_t i = s->tsRead % kTsSlots, j = (s->tsRead + 1u) % kTsSlots;
+            if (s->tsCatOf[i] == kCatEnd)
+                continue;
+            const uint64_t a = s->tsCpu[i * 2u + 1u], b = s->tsCpu[j * 2u + 1u];
+            if (b <= a)
+                continue;
+            const uint64_t ns = dkTimestampToNs(b - a);
+            s->gpuNanos[s->tsCatOf[i]] += ns;
+            s->gpuBusyNanos += ns;
+        }
+        s->tsRead = std::max(s->tsRead, end);
+    }
+
     // ---- submission and completion -------------------------------------------------------------------------------
     void retire()
     {
         while (!s->submits.empty() && dkFenceWait(&s->submits.front().fence, 0) == DkResult_Success)
         {
             s->doneSerial = s->submits.front().serial;
+            if (s->gpuTime)
+                gpuCollect(s->submits.front().tsEnd);
             s->submits.pop_front();
         }
         while (!s->garbage.empty() && s->garbage.front().serial <= s->doneSerial)
@@ -291,6 +346,8 @@ namespace
         {
             dkFenceWait(&s->submits.front().fence, -1);
             s->doneSerial = s->submits.front().serial;
+            if (s->gpuTime)
+                gpuCollect(s->submits.front().tsEnd);
             s->submits.pop_front();
         }
         ++s->waits;
@@ -305,9 +362,11 @@ namespace
     uint64_t submit()
     {
         const uint64_t serial = s->nextSerial++;
+        gpuMark(kCatEnd);
         s->submits.emplace_back();
         Submit &sub = s->submits.back();
         sub.serial = serial;
+        sub.tsEnd = s->tsNext;
         dkCmdBufSignalFence(s->cmd, &sub.fence, true);
         const auto start = std::chrono::steady_clock::now();
         const DkCmdList list = dkCmdBufFinishList(s->cmd);
@@ -469,6 +528,7 @@ namespace
             return;
         DkCopyBuf copy{src, 0u, 0u};
         DkImageRect rect{static_cast<uint32_t>(x), static_cast<uint32_t>(y), 0u, w, h, 1u};
+        gpuMark(kCatUpload);
         dkCmdBufCopyBufferToImage(s->cmd, &copy, &t.view, &rect, 0u);
         s->imageInvalidate = true;
         ++s->uploads;
@@ -825,6 +885,46 @@ namespace
                      s->presentSubmitNanos * 1e-6, s->submitNanos * 1e-6, (unsigned long long)s->poolCreates,
                      (unsigned long long)s->poolReuses);
         s->poolCreates = s->poolReuses = 0;
+        if (s->gpuTime)
+        {
+            // per kind: the kCat* kinds by name, draw programs summed per family, and the 8 programs with the most time
+            uint64_t fam[16] = {}, other[5] = {};
+            std::vector<std::pair<uint64_t, uint32_t>> progs;
+            for (const auto &[kind, ns] : s->gpuNanos)
+            {
+                if (kind >= kCatClear)
+                    other[std::min<uint32_t>(kind - kCatClear, 4u)] += ns;
+                else
+                {
+                    const Program *p = kind < s->programs.size() ? &s->programs[kind] : nullptr;
+                    const uint32_t f = p && p->family ? static_cast<uint32_t>(p->family - GSDK::kFamilies) : 15u;
+                    fam[std::min<uint32_t>(f, 15u)] += ns;
+                    progs.emplace_back(ns, kind);
+                }
+            }
+            std::sort(progs.begin(), progs.end(), [](const auto &a, const auto &b) { return a.first > b.first; });
+            char buf[768];
+            int n = std::snprintf(buf, sizeof buf, "[gs-dk-gpu] busy_ms=%.1f clear=%.1f upload=%.1f copy=%.1f readback=%.1f acquire=%.1f",
+                                  s->gpuBusyNanos * 1e-6, other[0] * 1e-6, other[1] * 1e-6, other[2] * 1e-6, other[3] * 1e-6,
+                                  other[4] * 1e-6);
+            for (uint32_t f = 0; f < 16u && n < static_cast<int>(sizeof buf) - 48; ++f)
+                if (fam[f])
+                    n += std::snprintf(buf + n, sizeof buf - n, " %s=%.1f", f < 15u ? GSDK::kFamilies[f].name : "?", fam[f] * 1e-6);
+            if (s->tsDropped)
+                n += std::snprintf(buf + n, sizeof buf - n, " dropped=%llu", (unsigned long long)s->tsDropped);
+            std::fprintf(stderr, "%s\n", buf);
+            n = std::snprintf(buf, sizeof buf, "[gs-dk-gpu-prog]");
+            for (size_t k = 0; k < progs.size() && k < 8u && n < static_cast<int>(sizeof buf) - 64; ++k)
+            {
+                const Program &p = s->programs[progs[k].second];
+                const uint64_t h = p.stages.empty() ? 0u : p.stages.back()->hash;
+                n += std::snprintf(buf + n, sizeof buf - n, " p%u:%s:%08llx=%.1f", progs[k].second, p.family ? p.family->name : "?",
+                                   (unsigned long long)(h & 0xFFFFFFFFu), progs[k].first * 1e-6);
+            }
+            std::fprintf(stderr, "%s\n", buf);
+            s->gpuNanos.clear();
+            s->gpuBusyNanos = s->tsDropped = 0;
+        }
         s->vtxBinds = s->vtxBufferBinds = s->rtBinds = s->barrierCount = s->drawNanos = 0;
         s->acquireNanos = s->presentSubmitNanos = s->submitNanos = 0;
         s->statsAt = now;
@@ -850,6 +950,7 @@ namespace
             // into a pixel pack buffer: no wait (the caller fences); out is the offset in it
             const Buffer &b = s->buffers[s->packBuffer];
             DkCopyBuf dst{b.gpu + reinterpret_cast<uintptr_t>(out), 0u, 0u};
+            gpuMark(kCatReadback);
             dkCmdBufCopyImageToBuffer(s->cmd, &t.view, &rect, &dst, 0u);
             return;
         }
@@ -861,6 +962,7 @@ namespace
             s->readMem = makeMem(s->readSize, DkMemBlockFlags_CpuUncached | DkMemBlockFlags_GpuCached);
         }
         DkCopyBuf dst{dkMemBlockGetGpuAddr(s->readMem), 0u, 0u};
+        gpuMark(kCatReadback);
         dkCmdBufCopyImageToBuffer(s->cmd, &t.view, &rect, &dst, 0u);
         waitSerial(submit());
         const uint8_t *src = static_cast<const uint8_t *>(dkMemBlockGetCpuAddr(s->readMem));
@@ -974,6 +1076,7 @@ namespace
     {
         Buffer *r = bound(readTarget), *w = bound(writeTarget);
         if (r && w && r->mem && w->mem)
+            gpuMark(kCatCopy);
             dkCmdBufCopyBuffer(s->cmd, r->gpu + readOffset, w->gpu + writeOffset, static_cast<uint32_t>(size));
     }
     void *dkMapBufferRange(GLenum target, GLintptr offset, GLsizeiptr, GLbitfield access)
@@ -1430,10 +1533,10 @@ namespace
             const uint32_t m = (s->mask[0] ? DkColorMask_R : 0u) | (s->mask[1] ? DkColorMask_G : 0u) |
                                (s->mask[2] ? DkColorMask_B : 0u) | (s->mask[3] ? DkColorMask_A : 0u);
             if (m)
-                dkCmdBufClearColorFloat(s->cmd, 0, m, s->clearColor[0], s->clearColor[1], s->clearColor[2], s->clearColor[3]);
+                { gpuMark(kCatClear); dkCmdBufClearColorFloat(s->cmd, 0, m, s->clearColor[0], s->clearColor[1], s->clearColor[2], s->clearColor[3]); }
         }
         if ((mask & kDepthBit) && s->boundDepth && s->depthWrite)
-            dkCmdBufClearDepthStencil(s->cmd, true, s->clearDepth, 0, 0);
+            { gpuMark(kCatClear); dkCmdBufClearDepthStencil(s->cmd, true, s->clearDepth, 0, 0); }
     }
 
     void dkGenVertexArrays(GLsizei n, GLuint *ids)
@@ -1496,7 +1599,10 @@ namespace
         barriers();
         flushViewport();
         flushFixedState();
-        return flushProgram(false) && flushVertices();
+        if (!flushProgram(false) || !flushVertices())
+            return false;
+        gpuMark(s->program);
+        return true;
     }
     struct DrawTimer
     {
@@ -1576,6 +1682,7 @@ namespace
         dkCmdBufBarrier(s->cmd, DkBarrier_Fragments, 0);
         DkImageRect ra{static_cast<uint32_t>(sx), static_cast<uint32_t>(sy), 0u, static_cast<uint32_t>(w), static_cast<uint32_t>(h), 1u};
         DkImageRect rb{static_cast<uint32_t>(dx), static_cast<uint32_t>(dy), 0u, static_cast<uint32_t>(w), static_cast<uint32_t>(h), 1u};
+        gpuMark(kCatCopy);
         dkCmdBufCopyImage(s->cmd, &a.view, &ra, &b.view, &rb, 0u);
         s->imageInvalidate = true;
     }
@@ -1641,6 +1748,7 @@ namespace
         dkSwapchainAcquireImage(s->swapchain, &slot, &acquired);
         s->acquireNanos += static_cast<uint64_t>(
             std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - acquireStart).count());
+        gpuMark(kCatAcquire);
         dkCmdBufWaitFence(s->cmd, &acquired);
         dkCmdBufBarrier(s->cmd, DkBarrier_Fragments, DkInvalidateFlags_Image);
         DkImageView view;
@@ -1650,6 +1758,7 @@ namespace
         dkCmdBufSetViewports(s->cmd, 0, &vp, 1);
         DkScissor sc{0u, 0u, kScreenW, kScreenH};
         dkCmdBufSetScissors(s->cmd, 0, &sc, 1);
+        gpuMark(kCatClear);
         dkCmdBufClearColorFloat(s->cmd, 0, DkColorMask_RGBA, 0.f, 0.f, 0.f, 1.f);
         const Texture *t = texture && texture < s->textures.size() && s->textures[texture].valid ? &s->textures[texture] : nullptr;
         if (t && s->scaleProgram && s->programs[s->scaleProgram].linked)
@@ -1694,6 +1803,7 @@ namespace
             p.samplerUnit[0] = 0;
             s->programDirty = true;
             flushProgram(false);
+            gpuMark(s->scaleProgram);
             dkCmdBufDraw(s->cmd, DkPrimitive_Triangles, 3, 1, 0, 0);
             s->units[0] = savedUnit0;
             frame.minFilter = savedMin, frame.magFilter = savedMag, frame.wrapS = savedS, frame.wrapT = savedT;
@@ -1834,6 +1944,16 @@ namespace
         step("queue created");
         s->cmdMem = makeMem(kCmdChunk * kCmdChunks, DkMemBlockFlags_CpuUncached | DkMemBlockFlags_GpuCached);
         step("command memory");
+        if (const char *v = std::getenv("GOW_DK_GPU_TIME"); v && *v && *v != '0')
+        {
+            s->tsMem = makeMem(kTsSlots * 16u, DkMemBlockFlags_CpuUncached | DkMemBlockFlags_GpuCached);
+            if (s->tsMem)
+            {
+                s->tsCpu = static_cast<const volatile uint64_t *>(dkMemBlockGetCpuAddr(s->tsMem));
+                s->tsGpu = dkMemBlockGetGpuAddr(s->tsMem);
+                s->gpuTime = true;
+            }
+        }
         DkCmdBufMaker cm;
         dkCmdBufMakerDefaults(&cm, s->device);
         cm.cbAddMem = addMemory;
