@@ -105,8 +105,8 @@ atiop-20261024\oracle1-core1-exe-trace):
   `[IOP] no native code for libsd.irx base=0x10000`). Goes away when those three are native too.
 
 ### Verification (PC, ext agent/natiop 7953c07 = sw-vu1gpu 0927485 + this, Release, logs off; port/natiop/v)
-- Protocol A/B (`savetest`, IRX path `GOW_NATIVE_PADMC=0` vs native, both traced; comparator scratchpad
-  `padmc_cmp.py`: per card command its words, data DMAs (address, size, FNV of the payload), status block and reply):
+- Protocol A/B (`savetest`, IRX path `GOW_NATIVE_PADMC=0` vs native, both traced; comparator
+  `tools/padmc_cmp.py ORACLE_LOG NATIVE_LOG [--replies]`, card diff `tools/cardcmp.py`: per card command its words, data DMAs (address, size, FNV of the payload), status block and reply):
   64.7k commands identical through boot, title, load of slot 1, gameplay and the save menus; the runs part only where
   the game's own timing differs (an extra probe pair), plus two trace lines cut by another thread's log line. The 16
   write-side commands (14 x cmd 2, 2 x cmd 10) are the same with the same results.
