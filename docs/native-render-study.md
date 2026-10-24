@@ -4,7 +4,21 @@
 Steps 0 and 1 of the plan below, PC / WSL only (no console). Everything new is off by default (env switches).
 Details in "Progress" (end of this file). Next agent: read "Progress", then start step 2 (`unlit_st`).
 
-<!-- HANDOFF-RESULTS -->
+- **Done**: step 0 (EE access counter `GOW_EE_VUACC`, VIF1 stream + run recorder `GOW_VIF1_REC`, live-out recorder
+  and per-GIF-write oracle dumps in the harness `tools/vu1_nat`) and step 1's decoder + run classifier (`vu1nat`, ext
+  ps2_vu1_nat.inl). The batch walker and the native batch switch are not done; step 2 not started.
+- **Verified** (consecutive PC recordings: 3000 runs of the bench fight + 3000 of the menu): no EE access to VU memory
+  / VIF registers at all; the native VIF decoder reproduces VU data memory, micro memory and VIF state byte-exact
+  before every run; the native dispatch (entry from the batch header) equals the oracle's in every main-program run;
+  every run reads state the run before it left (packet areas, qw 928-942, vf3-19 / vf24-31 / P / CLIP / Q / vi9).
+- **Decided**: fallback per run (MSCAL), keyed by (module slot hash, entry offset); a native run writes its packet in
+  place in the VU image and leaves the live-out registers. Reasons and numbers in "Progress".
+- **Next**: the native batch walker (header words), then the batch switch + `unlit_st` entries 7ab32108 / 3d0d1206
+  natively, checked per GIF write against `check ... fast dump` with tools/vu1_hle/hlecmp.py.
+- Build / run: PC build in `ext/PS2Recomp-kl-natvu1/out/build-pc` (Release; the git-ignored generated runner files
+  were copied from ext/PS2Recomp-kl-natiop, same base 0927485; full build ~45 min); bench-fight PC run script
+  `nv/pcrun.sh` in the session scratchpad (copied to the archive folder below); harness in WSL:
+  `bash tools/vu1_nat/build.sh nv1 <worktree> <worktree>/out/vu1pregen/vu1n_generado`, recordings in `/root/nrs`.
 
 The question (user, 2026-10-24): replace the recreated VU1 path (VIF1 UNPACK into VU memory, the translated
 microprograms with exact VU state, flags and cycle model, XGKICK'd GIF packets re-parsed by the GS stage) with
@@ -287,12 +301,91 @@ All off by default. Runtime (ext `ps2xRuntime`):
   in the menu 102 of 2000 runs also jump into a second module slot. So the run is the unit of dispatch, but the
   per-run key must be the set of modules the run's batches use (the batch switch re-reads the header), not only the
   entry. Batch-switch calls per run are odd (1, 3, 5, ... up to 59): most runs 1-5.
+- **The dispatch key is the entry code, not the module.** A module slot holds several loop variants and the batch
+  header's word picks the entry (e.g. module 40c144db: 0x32f0 = transform + ST + RGBA without divide, 0x3218 = the
+  `unlit_st` loop with the perspective divide). Each entry calls the fixed batch switch (`iaddiu vi14, vi0, 27;
+  jalr vi15, vi14`, pair 27 = 0xd8: XTOP, header, matrices vf20-23, vi2 / vi3 / vi4 / vi5 = input, output, stride,
+  count), runs its loop and returns with `jr vi14`. `classifyRun` hashes the entry's code up to that JR + delay slot
+  (`entryHash`, position independent). fight.rec: **18 distinct entry codes** for 58 modules; by oracle VU pairs
+  39f38df4 (skin_lit_st, 2 modules) 28.2 %, non-main programs 19.9 %, 7ab32108 (`unlit_st`, 9 modules) 15.8 %,
+  93febeec (lit_st, 6 modules) 12.4 %, 3d0d1206 (unlit transform without divide, 9 modules) 10.4 %, then 13 entries
+  for the last 13 %. menu.rec: 8 entry codes, 6df5c750 (skinned) 82.5 %, 7ab32108 11.4 %; 7 of the 8 also occur in
+  the fight. The first 4 entries cover ~67 % of the fight's VU pairs and ~96 % of the menu's.
+  But the entry code alone is not a safe key: the batch switch calls back into the module **relative to the return
+  address** (`isubiu vi15, vi15, 5; jalr vi14, vi15` ...). The oracle's fixed-code jumps into the module land at
+  entry -224, -208, -192, -184 ... -16, +0, +24, +112 bytes in the fight (the module's other routines: the second
+  loop variant, the lane writers). So the safe dispatch key is **(module slot hash, entry offset in the slot)**, with
+  the entry hash as the grouping of keys that share code; a native family is registered for a list of such keys,
+  each verified in the harness. In the menu, the 102 runs that touch a second module jump far outside the entry's
+  slot (-5000 ... +5632): the batch header names more than one module there, and the native batch walker has to read
+  those header words before it can decide (open).
 - **Loop table is not a family table**: the 28-pair block 5181a0b08a6d0989 (`skin_lit28`) occurs in modules that also
   hold `skin_lit_st`, `cull`, `5bb209bd` and `476fc4cf` loops. Coverage by loops found per module: fight runs
   unlit_st 55.9 %, skin_lit_st(+5181) 17.8 %, lit_st 15.2 %, others < 2.3 % each, none 2.0 % (but 20 % of the VU
   pairs: the non-main programs are long); menu unlit_st 44 %, skin_lit_st(+5181) 45.8 % (82.5 % of pairs). Native code
   will register per module hash (58 distinct modules in fight.rec, 6 in menu.rec) with a family behind it.
-- **Oracle**: in this harness the exact interpreter and the native blocks (the PC pregen of 0927485) do not give the
-  same packets on fight.rec (4881 of ~106 k XYZ writes beyond tolerance). Which one is right is decided on a
-  consecutive recording (end state of run k == recorded start state of run k+1; the decoder's data check covers the
-  memory): see below.
+- **Oracle**: the exact interpreter and the native blocks (PC pregen of 0927485) agree: fight.rec 382 300 GIF words
+  identical, data memory identical, only the sticky STATUS flags differ (the native blocks do not keep them; nothing
+  reads them); menu.rec 342 142 GIF words identical, 45 within tolerance (1-ulp ST / Z, the known native-vs-exact
+  rounding cases of docs/vu1-native-flags.md), 253 data words and a few vf15-17 lanes 1 ulp apart. The harness must
+  set the VU rounding mode (round toward zero) itself, as execute() does: without it the exact interpreter gave
+  1-ulp differences in every run.
+
+### Results on consecutive PC recordings (2026-10-24, natvu1 build, bench fight script)
+Recorded with the PC build of ext 42f2f0a (out/build-pc of the worktree; `GOW_VIF1_REC_N=3000`): `pcfight.vifrec`
+(gameplay, bench frames ~600-700 = the heavy 10-20 s scene; 3000 consecutive runs, 3.9 MB VIF stream) and
+`pcmenu.vifrec` (title / main menu, 3000 runs, 5.0 MB stream). Copies: WSL `/root/nrs/`, archive
+`D:\Claude Archive\GoW-Archive\natvu1-2026-10-24\` (game data: keep out of git). Oracle dump of the fight:
+`/root/nrs/pcfe.dump` (exact interpreter, REPLAY_DUMP format).
+- **EE readback (step 0): none.** `GOW_EE_VUACC=1` over the fight run (160 s: boot, menus, gameplay) and the menu
+  run (95 s): no EE load or store reached VU0 / VU1 memory, the VIF0 / VIF1 registers or the VIF FIFOs (no
+  `[ee-vuacc]` line; the counter prints the first access at once). With the constant-address grep of section 2 this
+  closes "no readback": the EE needs only the DMA completion and the GS FINISH / SIGNAL / LABEL writes. (No positive
+  control was run: the game makes no such access to trigger the counter.)
+- **Native VIF decoder: byte-exact.** Fight and menu: the decoder's input image equals the recorded VU data memory
+  before **every one of the 2 x 2999 runs** (0 qwords differ), micro images (MPG) identical, VIF state (CYCLE, MASK,
+  MODE, ROW, COL, BASE, OFST, TOPS, ITOPS, TOP, ITOP, DBF) identical, every segment ends exactly at the recorded MSCAL
+  / MSCNT with the recorded start pc. Fight: 17 639 UNPACKs (643 770 qw), 48 DIRECT (40 KB), 62 MPG; menu: 17 257
+  UNPACKs, 213 DIRECT (1.19 MB), 69 MPG. (The decoder's image for run k+1 is the oracle's output memory of run k plus
+  the decoded stream in between, so this also shows the VIF writes never race the running program here.)
+- **Oracle**: the exact interpreter's end state equals the next run's recorded start state in 2999 / 2999 fight runs;
+  in the menu in 2464 / 2999 (535 runs 1 ulp apart in vf15-17, 366 runs with a data qword 1 ulp apart: the game ran
+  the native blocks, and these are the known native-vs-exact rounding cases). With the native blocks as the oracle
+  (`check ... fast`) the menu is 0 / 2999 on both. hlecmp exact vs native: fight 602 883 GIF words identical; menu
+  525 035 identical + 32 within tolerance. So per-GIF-write checks use the native-block oracle (`fast dump`).
+- **Dispatch**: fight 2987 / 2987 native entries equal the oracle's (13 runs of other programs fall back), menu
+  3000 / 3000. Fight: one module per run in all 3000 runs; menu: 121 runs also use a second module. Entry codes:
+  fight 13 (93febeec lit_st 22.2 % of VU pairs, 7ab32108 unlit_st 21.2 %, 39f38df4 skin_lit_st 19.9 %, 3d0d1206
+  unlit transform 10.9 %, other programs 8.3 %, b12c8560 5.1 %, ...), menu 10 (6df5c750 skinned 80.5 %, ...).
+- **Live-out (what a run reads of the runs before it)**: every run reads memory the run before it wrote (fight and
+  menu 2999 / 2999): the three output / packet areas qw 0-243, 341-585, 682-926 (the packet a run kicks is built in
+  place over the previous one: the software-pipelined loops' first passes and the parts a batch does not rewrite),
+  the shared words qw 928-929 (2986 runs: the batch switch's `isw.z vi13, 928(vi0)` etc.) and 931-942. Registers read
+  across runs: vf11-vf19 and vf24-vf31 (lights / colour matrices / camera, 1300-2700 of 2999 runs), vf3-vf9 (pipeline
+  values, 60-660 runs), P and CLIP (1490 / 2690 fight runs), vi9 (490), Q (68); vf20-23 / vi4 / vi11 / vi13 only in
+  the other programs' runs. (vi0 / vf0 show as live only because they are constants: ignore.)
+
+### Decision: fallback granularity = per run (MSCAL)
+- Every main-program run dispatches once, at its start, from the batch header in the input the VIF just delivered,
+  and the decoder reproduces that input exactly, so the native side can decide per MSCAL before the run starts.
+- Runs of one DMA chain mix many entries (fight: 13 entry codes in 3000 consecutive runs), so a per-chain fallback
+  would send a whole chain to the recompiled VU1 for one uncovered entry and cut the coverage to the share of chains
+  without any uncovered run.
+- The live-out does not argue for chains either: registers and the packet areas flow from run to run across chain
+  boundaries too. What it requires instead: **a native run must leave the VU state a later recompiled run reads**:
+  its GIF packet written into the image in place (option (b) output = the packet in the VU memory layout, handed to the
+  GS stage as the XGKICK is today), the shared words 928-942, and the registers above (vf3-19, vf24-31, P, CLIP, Q,
+  vi9) as the VU leaves them. The harness's `liveout` mode lists them; the hybrid's check is the next run's oracle
+  result after a native run.
+- Per-run key: (module slot hash, entry offset), plus all modules the run's batches name (menu: 4 % of runs use a
+  second module).
+
+### Next steps
+1. Native batch walker: the header words at 69(ITOP) .x / .z / .w and the sub-batch headers at TOP + vi1 (count,
+   matrix offset in vf1.w, flags), so the native side knows the batches, their modules and counts before the run
+   (check: the oracle's batch-switch calls per run, odd 1-59 in the histograms, and the menu's second-module runs).
+2. Native batch switch (fixed code 0xd8-0x12a8 of the main version: XTOP, matrices vf20-23, bounds / clip tests, GIF
+   tag and A+D, XGKICK) for one entry first: 7ab32108 (`unlit_st`, 21 % of the fight's pairs) and 3d0d1206 (the
+   no-divide variant in the same modules, 11 %), checked with `check ... fast dump` + hlecmp per GIF write on pcfight /
+   pcmenu, and with the next run's oracle result after the native run (live-out).
+3. Then the step 2-5 order of the plan, with the entry hashes above as the list to cover.
