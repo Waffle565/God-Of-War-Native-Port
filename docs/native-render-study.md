@@ -759,3 +759,151 @@ Not built on MSVC this round (the harness g++ build compiles the same TU).
 runLit's tag merge 0x1278 / 0x0e30 is the model); (3) 60641204 / 541e797b (lit prologue, vi8 1, own loops at entry + 0x18 not written yet: registering them alone
 declines at the 0x1228 loop call); (4) an MSVC build and a runtime bench with
 `GOW_VU1_NATIVE_RUN=1` (pixels: the rain / trails of the second program, fps, `[vu1nat-run]` family misc).
+
+### Progress: the clipper, the multi-tag path, two more levels, the removal plan (2026-10-24 night, nat-vu1h, ext branch agent/natvu1h, worktree ext/PS2Recomp-kl-natvu1h)
+Branch agent/natvu1h = agent/natvu1f ffb4f4c + 3 commits (079f82d, 1b0f9c9, bdf2add) + a merge of agent/natvu1 4a7faf8
+(nat-vu1g's Op::macNow / Undo::logRange work) + 5184cc7 (nclip on the merged Op API); natcheck re-verified after the
+merge on all six recordings. New file `ps2_vu1_nat_clip.inl` (namespace `vu1nat::nclip`, included by ps2_vu1_nat_lit.inl
+after ps2_vu1_nat_misc.inl); hooks: one line in runNativeBody (ps2_vu1_nat_run.inl), the prologue / loop / 0x0388 lines
+and four `case` labels in runLit, the 0x0940 / 0x0bb8 lines of nmisc::clipPath (+ an optional packets parameter), one
+forward declaration; ps2_vu1_nat_part.inl got the new snippets and builders in place (same switch statements).
+
+**The unlit entries on runLit's state machine.** 3d0d1206 / 7ab32108 (nat-vu1c's linear path in ps2_vu1_nat_run.inl)
+now run through runLit with `litKind` nclip::kUnlit3d0d / kUnlit7ab (100 / 101): prologue `iaddiu vi14, vi0, 27` (the
+batch switch from 0x00d8, so vi7 = 1), vi8 = 3 / 1, their loops by nclip::loop (kUnlitSt A / B, nrun::noDivLoop), and at
+0x0388 the header sign -> nclip::path1120 (the matrix scale 0x1120-0x11c8, loop calls 0x1648 / 0x1668, kicks 0x1678).
+Everything else is the lit entries' code: the sphere test's second plane pair through nmisc::secondPair, the clip path
+through nmisc::clipPath, and **the multi-tag path 0x1278 -> 0x0e30** (merge the next tag's NLOOP, its matrix, loop again),
+which runLit already had. The old path stays behind `GOW_VU1NAT_OLDUNLIT=1` (A/B only). pcmenu: 28 -> 0 declines.
+
+**The triangle clipper** (0x0940 + 0x16a8-0x2150 + 0x1350; the flow is in the comment at the top of nclip's clipper part):
+- 0x0940 `copy0940` (in nmisc::clipPath, which snapshots memory first): when the cull pass found a partly outside
+  triangle (929.z bit 1), the batch (tags + vertices) is copied to the next input buffer (vi13 >= 673 -> 341, >= 331 -> 0,
+  else 683), every copied vertex's w word gets `| 0x8000, + 0x4000`, 69.z = the original batch, 928.z = the copy, 69.x /
+  929.z |= 2 (| 4 for the unlit entries), and the ITOP packet is kicked (XGKICK at 0x09e8); then 0x0b38 and straight to
+  0x0388 (0x0bb8 `ibne`), without the module callbacks.
+- First pass, on the copy: the strip clip test 0x16a8 (runLit; now also its second frustum pair 0x17a0-0x17c0, taken when
+  the FMAND of 0x1770 is 0: two more CLIPs, `vi10 = 3055 - fcget`) marks the outside triangles (ADC); a partly outside
+  one goes to **0x1808 `polyClip`**: ADC on the triangle, OPMULA / OPMSUB (the winding test 0x1820-0x1868 runs only for a
+  negative 928.x and declines), the three vertices as the linked list 1004 -> 1005 -> 1006 (w word = outcode << 10 |
+  next, made with the float trick `itof0(code) + 8192.98`, ADDI then MTIR), clipped against the six guard-band planes
+  vf14 +- vf13 / vf11 / vf12 (0x1bd8 `clipPlane`: Sutherland-Hodgman on the list, 0x1da0 `isect`: the intersection in
+  barycentric coordinates, its outcode from CLIP / FCGET), then the polygon's GIF packet (0x19b8-0x1ba8: the batch's
+  first tag, NLOOP = the vertex count, ST / RGBA / XYZ of each vertex interpolated from the triangle's corners with the
+  barycentric weights) into the double buffer vi13 = 1897 - vi13, `jr 928.x + 2` = 0x20d8 for the unlit modules (928.x
+  = the loop's exit vi1, 1049) -> 0x14e8 with the fixed-code loop 0x20e8 (`loop20e8`: prime + main, Q of the pass
+  before), XGKICK vi13, the restore 0x1540 and back to 0x1720. A polygon clipped away entirely (0x1c20) skips the kick.
+- **0x1350 `secondPass`** (0x1318: 69.x bit 1): the ITOP packet again, vi7 = header bit 2, the module callbacks
+  (nmisc::moduleCall at 0x13b0 / 0x13d0), then 0x0110 on the original batch (69.z): tag, matrix, header bit 1 -> `b
+  0x0308` with vi10 &= -8208 -> 0x0388, and the batch is drawn again normally (its partly outside triangles carry ADC).
+- Pipeline facts the transliteration depends on (all "value ready", so it is sequential): the FCGETs at 0x18b8 / 0x1e38
+  come 4 pairs after their CLIPs; in isect the MULQ at 0x1e08 issues 9 cycles after its DIV (stalls at 0x1dc0 / 0x1de0 /
+  0x1df0 on vf3 / vf4); in loop20e8 the DIV of 0x2110 is read 7 pairs later. Same-pair reads of I take the old I (the
+  I-bit LOI lands after the upper op). The clipper snapshots memory (its single stores exceed the 32-entry undo log).
+
+**Two more levels** (task: coverage not overfit to the ship and Athens). PC natvu1 exe, save card ref/saves/Mcd002.ps2
+loaded from the title (slot 2 Desert of Lost Souls, slot 3 Cliffs of Madness), then the left stick in six directions with
+square / triangle attacks from 6 s into the gameplay (`slot.py`, `srec.sh <name> <slot> <secs> GOW_VIF1_REC=...
+GOW_VIF1_REC_AT=<s>`), 3000 runs each: `pcdesert.vifrec` (gameplay start 116.6 s, REC_AT 135), `pccliffs.vifrec` (129.8 s,
+REC_AT 145); archive `D:\Claude Archive\GoW-Archive\natvu1-2026-10-24\` (+ logs and scripts in `nat-vu1h\`), WSL
+`/root/nrs/`. At first: Desert 90.3 % (60 declines, all in the second program: snippets 0x07d8 / 0x0580 / 0x05c0, builders
+0x0f28 / 0x1ed0), Cliffs 98.3 % (12 runs, snippet 0x07d8). Added to npart: snippet 0x0580 (product a * b), 0x05c0
+(linear in t.z stored to vi3++ and in t.x), 0x07d8 (a two-age blend with P = EEXP of the age), builder 0x0f28 -> element
+0x0f88 (a streak between the points 548 / 549, the far end at min(t / 21.z, 548.w)), 0x1ed0 -> 0x1f78 (a strip of vf17.z
+quads along the axes vf17 / vf18). The new code lies outside nat-vu1f's hash ranges, so it has its own gate
+(npart::kExtValue 0e5396b3c6991acb over 0x07d8-0x0848, 0x0f28-0x10b8, 0x1ed0-0x21c0; the same in all six recordings).
+
+**Result** (natcheck: every covered run byte-exact, GIF packets, 16 KB VU memory, registers; no declined run left memory
+changed; the CLIP differences are the oracle's seeding artifact of nat-vu1e / nat-vu1f: native = the recorded next start):
+
+| recording | native share of VU pairs | was (nat-vu1f) | left |
+|---|---|---|---|
+| pcfight | **100.0 %** (3000 / 3000 runs) | 99.2 % | - |
+| pcmenu | **99.8 %** (2991 / 2991 covered) | 99.1 % | 9 runs of 60641204 / other entries (not offered: no loop) |
+| pcwalk | **100.0 %** (2998 / 2998 covered) | 98.9 % | 541e797b 2 runs; CLIP artifact runs 825 / 860 |
+| pcathn02 | **99.6 %** (2997 / 2999 covered) | 94.9 % | 2 runs at 0x1228 (e4f3b5c3 / ea6b4a01 runs 1656 / 1657); 541e797b 1 run; CLIP artifact run 2019 |
+| pcdesert (new) | **99.9 %** (2994 / 2994 covered) | 90.3 % before this round | 6 runs of other entries |
+| pccliffs (new) | **99.9 %** (2997 / 2997 covered) | 98.3 % before this round | 3 runs of other entries |
+
+Native time (x86 harness, one pass, cold caches per run) vs the oracle's native blocks: fight 38 vs 124 ms, menu 47 vs
+137, walk 40 vs 125, Athens 36 vs 120, Desert 42 vs 131, Cliffs 40 vs 129. Not built on MSVC this round (the harness g++
+build compiles the same TU); no console.
+
+What Athens runs 1656 / 1657 need (lit entries e4f3 / ea6b with a clipped batch): their own loop at module entry + 0x18
+(0x3990 there: the "own no-divide loops" nat-vu1e left out; reached in the copy pass), the winding test 0x1820-0x1868
+(928.x negative for these modules), and their output pair `jr 928.x + 2` -> 0x2170 / 0x2428 -> 0x1570 with the loop
+0x2438 (vs 0x20d8 / 0x20e8 for the unlit modules).
+
+**Tools**: `GOW_VU1NAT_DECL=1` (natcheck lists every declined run with its entry hash), scratch `slot.py` / `srec.sh`
+(save-slot recordings), `clipdis.txt` (the clipper's disassembly, nops removed), archived in `nat-vu1h\`.
+
+#### Plan: the recompiled VU1 out of the shipped build
+**What runs where today.** `VU1Interpreter::run` offers every MSCAL to `VU1NatAccess::tryRun` (`GOW_VU1_NATIVE_RUN=1`,
+off by default): native when covered; a declined run leaves memory unchanged (nrun::Undo) and the recompiled VU1 (the
+generated native blocks vu1n_generado + the HLE kernels + the step interpreter for what has no block) runs it in place.
+The recompiled VU1 is also the harness oracle (native blocks for the main program, the exact engine + hwminmax for the
+second program).
+
+**How unknown code is detected** (already in place, per micro-memory generation `PS2Memory::getVU1CodeGeneration`, cached
+in nrun::CodeInfo): the main program's fixed code by FNV over the transliterated ranges (nrun::coveredHash,
+nlit::fixedHash, nrun::clipHash), the second program by npart::codeHash (+ kExtValue for the nat-vu1h parts), each entry
+by the FNV of its code from the module entry (nlit / nmisc / nrun entry kinds), each loop by the FNV of its code
+(nmisc::loop), the fixed-code loops by address after the fixed hash. Every path the native code does not know returns
+`false` with a decline pc, before or after a memory snapshot. So "unknown" is exact: an MPG that changes any byte of a
+transliterated range, a new entry or loop, a new branch direction.
+
+**Steps** (each on PC first, then one console bench):
+1. *Default on* (next round): `GOW_VU1_NATIVE_RUN=1` by default after an MSVC build and the PC bench check of nat-vu1c
+   (`[bench]` signatures, pixels within the run-to-run band, `[vu1nat-run]` counters); the remaining fallback stays.
+   Note for the pixel check: in the second program the native code follows the hardware's same-register MAX (the
+   recompiled VU1 does not), so its packets differ from the recompiled run in some runs (Desert 30, walk 12) on purpose.
+2. *Decline census in the field*: the runtime logs each distinct (code generation hash, entry hash, decline pc) once
+   (`[vu1nat-unknown]`), and `GOW_VU1NAT_DUMP=<file>` writes the first run of each as a vifrec record (the VIF1
+   recorder's format: the run's start state, memory and micro memory), so a play-through (the zone gate's five zones +
+   the save slots + a new game) gives the exact list of what is left, each with a harness input. Close the list
+   (expected: the e4f3 / ea6b clipped path above, 60641204, 541e797b, the 0x1e80 strip test, the other modules' output
+   loops after the clipper, the entries' own no-divide loops).
+3. *Fallback without the recompiled VU1*: a run that is still unknown is skipped: no kick (its batch is not drawn for
+   one frame), VU memory and registers as the run found them (the undo restore), one log line. VU1 output feeds only the
+   GIF (no readback: step 0's EE access counter), so the game state cannot change; what a skipped run could break is the
+   state the next run reads (928-942, registers: `liveout`), which the next run's own set-up rewrites in the recordings
+   (checked per family with `liveout`). A build flag `PS2X_VU1_ORACLE` (off in the Switch / release build) keeps the
+   recompiled VU1 for the harness and a PC debug build.
+4. *Remove from the shipped build*: vu1n_generado (the generator step in the build, the generated block sources: 41 MB
+   of C++ in the PC pregen set), the cycle model, the HLE kernels' exact-flag variants, the block cache and its chaining, the VU1 interpreter
+   (ps2_vu1_lower / upper / step: kept only under `PS2X_VU1_ORACLE`). What stays: the VIF1 decoder and VU data memory
+   image (the input format; replacing that is the separate "VIF/GIF/DMA" item of the no-emulation order), the native runs.
+   Gate: a full play-through with zero `[vu1nat-unknown]` lines, the zone gate, the bench.
+
+**Step 7: direct draws into deko3d instead of GIF records** (the GPU at the default clocks is the limit: docs/performance.md
+"The GPU at the default clocks": ~7 M fragments per frame, the alpha-tested pass / fail pairs 203425 / 205425 and
+202925 / 204925 ~2.3 s of the 4 s of draws per 5 s). Order, each measured with `GOW_DK_GPU_TIME` on the console:
+1. *A draw sink beside the kick*: the native runs already know, per batch, the GIF tag (PRIM, NLOOP), the vertex arrays
+   before packing (ST / Q, RGBA, XYZ as floats before FTOI4), the ADC bits, and the ITOP A+D block (TEX0, CLAMP, ALPHA,
+   TEST, FRAME, ZBUF). The sink takes them instead of the packet bytes: the A+D block parsed once per content (hash),
+   the vertices written straight into the backend's per-frame vertex buffer. Ordering: the sink appends to the same
+   ordered GS command stream as PATH2 / PATH3 uploads, CLUT loads and FINISH (one record per batch), so texture /
+   palette order stays. Check: the backend draws from the sink vs from the packets, same `HwVertex` arrays per batch
+   (exact), bench pixels.
+2. *Draw merging*: consecutive batches with the same state key (the A+D block's registers + PRIM + the texture /
+   palette binding) become one draw: strips to indexed triangle lists, ADC (culled / clipped) triangles dropped from the
+   index list instead of drawn degenerate, the clipper's polygons appended as fans. Fewer draws (14 k per 5 s in the
+   fight) and no culled vertices uploaded; the backend heuristics that read packet shapes (usedW / usedH, the
+   Z-inversion box test, the soft-blend flat-colour check) get the batch's bounding box from the sink.
+3. *Single-pass alpha test*: the TEST register is known per batch, so the pass / fail pair can shrink where AFAIL
+   allows it: KEEP is one pass with discard already; for FB_ONLY (colour everywhere, depth only where the test passes)
+   one depth buffer cannot take a per-fragment "write or keep" from a single draw, so the options to measure are (i) the
+   colour pass with depth write off + a depth-only pass for the passing texels with a short shader (alpha only: no
+   palette colour, no blend), (ii) one pass for the families whose failing fragments are never covered later (decided per
+   module family: the native code knows which module drew the batch). Target: the fail passes' ~0.9 s per 5 s.
+4. *Native stencil shadows*: the shadow-volume modules (`cull` / `cull_swap`, COLCLAMP = 0 counting batches, today drawn
+   by the backend as wrap groups with texture barriers) emit their volumes as a stencil increment / decrement pass
+   (front / back faces from the ADC winding the module computes) and one full-screen darkening draw with the stencil
+   test, instead of the per-triangle counting groups. Check by pixels against the counting path (a triangle more or less
+   is a visible shadow error; the native set is the exact one).
+5. Then shorter specialised fragment shaders for the hot variants and the scaler choice (docs/performance.md levers).
+
+**Next** (in order): (1) MSVC build of agent/natvu1h + the PC bench with `GOW_VU1_NATIVE_RUN=1` (the nat-vu1c check:
+signatures, pixels, `[vu1nat-run]`), then console (nat-vu1g owns it); (2) the census of step 2 above on a PC
+play-through; (3) the e4f3 / ea6b clipped path (Athens 1656 / 1657), 60641204 / 541e797b loops; (4) step 3 / 4 of the
+removal plan; (5) step 7.
