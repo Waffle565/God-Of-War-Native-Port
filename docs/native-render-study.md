@@ -1,5 +1,45 @@
 # Native rendering instead of the recreated VU1: study and migration plan (2026-10-24)
 
+## Handoff (2026-10-24 night, nat-vu1c stopped here: ext agent/natvu1 head 1139670, package update_nv1)
+The native runs are wired into the game (off by default) and the clip path of 7ab32108 is native. Details in
+"Progress: runtime hookup + clip path" (end of this file).
+
+- **Switch**: `GOW_VU1_NATIVE_RUN=1` (=`m`: measure only). ext ps2_vu1_core.cpp `VU1Interpreter::run` offers every MSCAL
+  run to `VU1NatAccess::tryRun` (ps2_vu1_nat.inl): native when covered, else the recompiled VU1 as before. Declined runs
+  leave VU memory unchanged (undo log), so no 16 KB copy per run. Counters per entry family every 5 s (`[vu1nat-run]`).
+- **Clip path** 0x0358 -> 0x0858-0x0c18 (tag scan, per-tag set-up, vu1hle::kCullClip, matrix reload, module
+  callbacks) native and byte-exact. Coverage with nat-vu1d's entries (merged, 6f9c60a): natcheck **fight 73.4 %**
+  (2621 / 2625 covered runs; 4 decline at 0x0940, the triangle clipper), **menu 94.3 %** (28 decline at 0x1278, the
+  multi-tag batch); 0 packet / memory / register differences; declined runs leave memory unchanged (checked).
+- **PC game check** (bench fight, PC build, `GOW_PERF_DIAG=1`; runs off1-3, m4, on1-5 in the session scratchpad `nv/`):
+  - `[bench]` signatures: the PC bench also has two start states (seed at frame 60 c2f11671 = A or f72fa8ad = B, at
+    random, positions identical). Same state: **on5 (A, native, final build) = off3 (A) at every frame 60-3780** (the 63
+    deterministic seconds), on4 (B) = off2 (B) through 3120 (all of on4's frames). on3 (A) left off3 at frame 3240 (rand
+    seed, position from 3360) but on5 and off3 / m4 agree there, so that was run-to-run (on3 vs on5 differ at 3240).
+  - **Pixels**: bench shots every 300 frames (`GOW_BENCH_SHOT=300`) differ in 80-92 % of the pixels (mean abs 2.6-4.1
+    per channel) between ANY two runs, recompiled vs recompiled too (off3 vs m4): the rain streaks and the lightning
+    brightness are not deterministic on PC. Native vs recompiled is inside that band at every frame before the
+    divergence (off3 / on3, off2 / on4); scene, geometry, HUD look the same. A byte-level picture check needs the rain
+    masked; the byte-exact packets (natcheck) are the real proof.
+  - **VU1 time** (PC: the EE is the limit at ~10-13 fps, VU1 ~5 % of a core): per run, same build, measure mode vs
+    native (m4 / on4, fight frames 60-3060): 3d0d1206 **2.76 -> 0.97 us**, 7ab32108 **3.86 -> 1.05 us**, 93febeec 2.84
+    -> 2.66 us, 39f38df4 **4.60 -> 5.44 us (slower native)**; covered runs 11.8 s recompiled -> 6.8 s native + 2.0 s
+    for the 23 k declined runs (0x0940 / 0x1278, ~90 us each in the recompiled VU1); the other entries cost 7.0-7.3 s
+    (15 us per run: b12c8560, non-0 start pcs). VU1 time per game frame: off3 5.16 ms / on3 5.30 ms (quiet machine), m4
+    6.31 / on4 5.80 ms (with the Switch build running), **off3 5.16 / on5 4.43 ms (-14 %, final build, quiet machine;
+    3.48 vs 4.06 us per run)**; on5 per run: 3d0d1206 0.72, 7ab32108 0.80, 93febeec 2.09, 39f38df4 4.26 us, declined
+    68 us, other entries 11.8 us. fps: EE-bound (off3 10.09 / on5 10.58), no loss.
+- **Package** `port/switch/nsp/out/update_nv1` (ext 1139670, t4 blocks `/root/vu1pregen-t4`, build `/root/gow-switch-nv1`):
+  built, **not run on the console**. Console test: env.txt `GOW_VU1_NATIVE_RUN=1` (+ `GOW_PERF_DIAG=1` for the
+  counters), bench vs the same package with `GOW_VU1_NATIVE_RUN=m` (same code, all recompiled + per-family times).
+- **Next**: (1) console bench nv1 on / m (the VU1 thread is the limit there); (2) skin_lit_st native is slower than
+  the HLE kernel (5.44 vs 4.60 us on PC): its loop with exact semantics vs kSkinLitSt's plain float; (3) the remaining
+  15 us-per-run entries (b12c8560 is the next: its 0x0858 path with loops 0x0b38-0x0db0 **overlaps the clip path
+  code here**: 0x0858-0x0940 / 0x0b38-0x0c18 are the same fixed code, so reuse the clip path's transliteration and
+  its `clipHash` gate), the clipper 0x0940 and the multi-tag path 0x1278 (~90 us per run, 23 k runs per 300 s);
+  (4) a kick sink straight into the GIF stage instead of the packets vector (one copy less; only once no decline can
+  follow a kick).
+
 ## Handoff (2026-10-24 night, nat-vu1b stopped here: ext agent/natvu1 head a2d6559, worktree ext/PS2Recomp-kl-natvu1)
 First native runs, harness only (WSL x86; nothing is wired into the runtime yet, so there is no GOW_ switch and no
 game run). Details in "Progress: step 1 walker / step 2 first native runs" (end of this file).
