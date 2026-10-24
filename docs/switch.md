@@ -213,8 +213,11 @@ The PAKs are 4 GB each: the SD card must be exFAT (FAT32 has a 4 GB file limit).
   - A full NSP (RomFS, icon or metadata changes) still goes over USB (DBI's MTP "install" folder or DBI backend):
     the SD card has only ~4 GB free (232 GB card), less than the 8.5 GB NSP, so "copy to SD, install from SD card"
     does not fit.
-  - State 2026-10-24: installed over MTP and the console rebooted (port 5000 answers); FTP login, the WLAN cycle
-    and the WLAN bench are not yet run on the console (battery flat, waiting for the wall charger).
+  - Verified 2026-10-24 (console on a wall charger, USB unplugged): FTP login, put/get/compare/delete of a 1 MB file;
+    `UPDATE=port/switch/nsp/out/update_k10c bash tools/switch_cycle.sh wlan1 60 -` pushed the ExeFS and deleted
+    env.txt over FTP, started the game (after the reboot hbmenu was the first tile: `sw_launch` closed it and took
+    the second), reached the title menu (`port/switch/logs/run_wlan1/shots/title.jpg`), closed it and pulled the log
+    over FTP. A missing file (the pcs_*.txt of a run without PC sampling) is reported and skipped.
 - RomFS is case-sensitive (Windows and the SD card's FAT are not), and the game opens e.g. `cdrom0:\IOP_MOD\sio2man.irx`
   while the disc file is `SIO2MAN.IRX`. `PS2Vfs::resolveHostPath` (ext ps2_vfs.cpp) therefore matches `cdrom` paths
   component by component without case when the exact path is missing (ISO9660 semantics); without it the NSP boots

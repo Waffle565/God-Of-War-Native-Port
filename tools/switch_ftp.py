@@ -104,12 +104,15 @@ class Switch:
 
     def _get(self, path, local):
         tmp = local + '.part'
-        try:
-            with open(tmp, 'wb') as out:
+        missing = None
+        with open(tmp, 'wb') as out:
+            try:
                 self.ftp.retrbinary('RETR ' + sd(path), out.write, blocksize=1 << 16)
-        except ftplib.error_perm as e:
+            except ftplib.error_perm as e:
+                missing = e
+        if missing is not None:
             os.remove(tmp)
-            raise Missing(f'not a file on the SD card: {path} ({e})')
+            raise Missing(f'not a file on the SD card: {path} ({missing})')
         os.replace(tmp, local)
         return os.path.getsize(local)
 

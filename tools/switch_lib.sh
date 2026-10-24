@@ -62,6 +62,13 @@ sw_launch() {
   B shot "$S/0_tile.jpg" >/dev/null
   B click A; sleep 6
   t=$(B title); [ "$t" = "$GAME_TID" ] || { B click A; sleep 6; t=$(B title); }   # user selection, if asked
+  if [ "$SW_T" = ftp ] && [ "$t" = "$HB_TID" ]; then
+    # nothing ran and hbmenu was the first tile (e.g. after a reboot from Quick Reboot): close it, game is second
+    echo "hbmenu started instead of the game: closing it, taking the second tile"
+    sw_home_close "$S"; B click DRIGHT; sleep 1; B shot "$S/0_tile2.jpg" >/dev/null
+    B click A; sleep 6
+    t=$(B title); [ "$t" = "$GAME_TID" ] || { B click A; sleep 6; t=$(B title); }
+  fi
   [ "$t" = "$GAME_TID" ] || { echo "game did not start (title $t)"; B shot "$S/fail.jpg" >/dev/null; return 1; }
 }
 sw_close() {
