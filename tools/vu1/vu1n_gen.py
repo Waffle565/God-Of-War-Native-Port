@@ -10,7 +10,9 @@ heads.txt (optional): extra entry pcs (hex, one per line), e.g. misses logged by
 --locals: each block keeps the VU registers it uses in C++ locals (loaded at entry, stored back at every exit) and a block
 that branches back to its own start repeats inside its function (VU1NativeAccess::chainTo); needs a runtime with chainTo
 (ext branch agent/sw-vu1 and later). Without it the blocks read and write the VU1State directly (same output as before).
---no-fast: no fast variants (range analysis, see Bounds; on by default with --locals).
+--no-fast: no fast variants (range analysis, see Bounds; on by default with --locals); --no-fast-traces: none for
+traces (FAST_TRACES); --no-mem-origins: loaded values stay unknown to the analysis (MEM_ORIGINS); --jr-trace-share X:
+see JR_TRACE_SHARE (0.3 since sw-k10).
 --no-cycles: no two-block cycles (gen_cycle) and no loop regions; --regions: loops of more blocks in one function
 (gen_region; off by default, measured slower, see REGIONS).
 --no-direct: no direct chaining (see DIRECT): every block returns to runNative (the output before 2026-10-19 evening);
@@ -84,7 +86,7 @@ JR = True
 JRPROF = {}        # JR pc -> {target pc: count}
 JR_MAX = 2
 JR_MIN_SHARE = 0.1
-JR_TRACE_SHARE = 0.6
+JR_TRACE_SHARE = 0.3   # 0.6 before sw-k10 (fight.rec steps 146.7 k -> 139.1 k; 0.15 gives no more)
 JR_TRACES = True   # traces go on through a JR with a known target (sw-k9; --no-jr-traces: they end at a JR)
 JR_USED = False    # some exit uses the JR macros (JR_PREAMBLE)
 JR_ANY = True      # after the predicted targets, any target the slot holds a block for (chainJr with key 0); --no-jr-any
@@ -239,6 +241,8 @@ class Regs:
     def setvi(self, r, expr):
         if not self.local:
             return f"s.vi[{r}] = {expr};"
+        if BND is not None:
+            BND.viw.add(r)
         self._def(('i', r))
         return f"I{r} = {expr};"
 
@@ -401,6 +405,12 @@ def callout_kind(l, u):
 # blocks when the saving exceeds the check (fast_straight). Bit-exact by construction: each change is an identity under
 # the proven bounds.
 FAST = True
+# fast variants of traces too (fast_trace; --no-fast-traces: off, the output before sw-k10): since sw-k9 most of the run
+# time is in traces, which had none (their MADDs all went through maddc's test)
+FAST_TRACES = True
+# loaded values as range-analysis origins in one-pass fast variants (Bounds.load; --no-mem-origins: off, sw-k10): the
+# entry check reads the quadword an LQ will read (a VI register at its entry value + offset, no store before it)
+MEM_ORIGINS = True
 # plain MADD decided on all four lanes, as maddc tests them (VU1N_FAST_DEST=1: on the DEST lanes only, as the exact engine
 # does; 282 of the 1832 PC zone-walk records then differ from the native blocks: a huge or NaN lane outside DEST sends
 # maddc to the wide path, whose single rounding gives other DEST values than the two-step fast path)
@@ -434,6 +444,32 @@ class Bounds:
         self.score = 0
         self.fails = []   # origins of MADDs left on maddc although every lane is known (_search lowers their bounds)
         self.last = None
+        # loaded values as origins (MEM_ORIGINS; one-pass functions only: fast_straight, fast_trace without a loop): an
+        # LQ / LQI / LQD whose address is a VI register still at its entry value plus a constant, with no store before
+        # it in the function, reads what the entry check can read at entry ('m', vi, offset, lane)
+        self.mem = False
+        self.emap = {}        # the run's entry bounds (load origins' bounds)
+        self.viw = set()      # VI registers written so far
+        # stores emitted so far: their addresses when the entry check can compute them (VI at its entry value + offset),
+        # else stored = True (no load after it is an origin)
+        self.stored = False
+        self.stores = []
+        self.alias = {}       # load (vi, offset) -> the stores before it: the check makes sure none hits its quadword
+
+    def store(self, base, off):
+        if base in self.viw:
+            self.stored = True
+        elif (base, off) not in self.stores:
+            self.stores.append((base, off))
+
+    def load(self, key, m, base, off):
+        """bounds of a load into `key` (DEST m) from VI[base] + off: entry-check origins when allowed, else unknown"""
+        same = any(b == base and (o - off) % 1024 == 0 for b, o in self.stores)
+        if self.mem and not self.stored and base not in self.viw and not same:
+            self.alias[(base, off)] = [(b, o) for b, o in self.stores if b != base]
+            self.setv(key, m, [(self.emap.get(('m', base, off, k), FAST_E0), frozenset({('m', base, off, k)})) for k in range(4)])
+        else:
+            self.setv(key, m, [None] * 4)
 
     @staticmethod
     def entry(Emap, Edef):
@@ -490,6 +526,9 @@ class Bounds:
             for o in val[1]:
                 if self.req.get(o, 0) < level:
                     self.req[o] = level
+                if o[0] == 'm':
+                    for b, off in self.alias.get((o[1], o[2]), ()):
+                        self.req[('alias', o[1], o[2], b, off)] = 1
 
     def require_lanes(self, key, lanes, vals):
         for k in range(4):
@@ -924,20 +963,28 @@ def emit_lower(l, pc, upper, bkp, mac_expr, clip_expr, clip_var):
     def unknown(reg):
         if BND is not None:
             BND.setv(('f', reg), m, [None] * 4)
-    def sq(addr, reg):
+    def loaded(reg, base, off):
+        if BND is not None:
+            BND.load(('f', reg), m, base, off)
+    def stored(base, off):
+        if BND is not None:
+            BND.store(base, off)
+    def sq(addr, reg, base, off):
+        stored(base, off)
         if not RG.local:
             return f"vu1n::stq<{m}>(n, {addr}, vu1n::ld(s, {reg}));"
         return f"vu1n::stq<{m}>(n, {addr}, {V(reg)});"
     if op == 0x00:
         if ft:
             L.append(f"{{ uint32_t a = vu1n::qaddr(n, {VI(fs)} + {imm11}); {SETF(ft, m, 'vu1n::ldq(n, a)')} }}")
-            unknown(ft)
+            loaded(ft, fs, imm11)
         return L
     if op == 0x01:
-        return [f"{{ uint32_t a = vu1n::qaddr(n, {VI(ft)} + {imm11}); {sq('a', fs)} }}"]
+        return [f"{{ uint32_t a = vu1n::qaddr(n, {VI(ft)} + {imm11}); {sq('a', fs, ft, imm11)} }}"]
     if op == 0x04:
         return vi_set(ft, f"vu1n::ldWord(n, vu1n::qaddr(n, {VI(fs)} + {imm11}), {dest_comp(dest)})")
     if op == 0x05:
+        stored(fs, imm11)
         return [f"vu1n::stWords(n, vu1n::qaddr(n, {VI(fs)} + {imm11}), {VI(ft)}, {dest});"]
     if op == 0x08:
         return vi_set(ft, f"vu1n::sx16({VI(fs)} + {f['imm15']})")
@@ -991,12 +1038,12 @@ def emit_lower(l, pc, upper, bkp, mac_expr, clip_expr, clip_var):
             out = []
             if ft:
                 out.append(f"{{ uint32_t a = vu1n::qaddr(n, (uint16_t){VI(fs)}); {SETF(ft, m, 'vu1n::ldq(n, a)')} }}")
-                unknown(ft)
+                loaded(ft, fs, 0)   # qaddr keeps 10 bits: (uint16_t)v and v + 0 give the same address
             if fs:
                 out.append(RG.setvi(fs, f"vu1n::sx16({VI(fs)} + 1)"))
             return out
         if sp == 0x35:  # SQI
-            out = [f"{{ uint32_t a = vu1n::qaddr(n, (uint16_t){VI(ft)}); {sq('a', fs)} }}"]
+            out = [f"{{ uint32_t a = vu1n::qaddr(n, (uint16_t){VI(ft)}); {sq('a', fs, ft, 0)} }}"]
             if ft:
                 out.append(RG.setvi(ft, f"vu1n::sx16({VI(ft)} + 1)"))
             return out
@@ -1012,7 +1059,7 @@ def emit_lower(l, pc, upper, bkp, mac_expr, clip_expr, clip_var):
             out = []
             if ft:
                 out.append(RG.setvi(ft, f"vu1n::sx16({VI(ft)} - 1)"))
-            out.append(f"{{ uint32_t a = vu1n::qaddr(n, (uint16_t){VI(ft)}); {sq('a', fs)} }}")
+            out.append(f"{{ uint32_t a = vu1n::qaddr(n, (uint16_t){VI(ft)}); {sq('a', fs, ft, 0)} }}")
             return out
         fsf, ftf = (l >> 21) & 3, (l >> 23) & 3
         if sp in (0x38, 0x39, 0x3A) and BND is not None:
@@ -1042,6 +1089,7 @@ def emit_lower(l, pc, upper, bkp, mac_expr, clip_expr, clip_var):
         if sp == 0x3E:
             return vi_set(ft, f"vu1n::ldWord(n, vu1n::qaddr(n, (uint16_t){VI(fs)}), {dest_comp(dest)})")
         if sp == 0x3F:
+            stored(fs, 0)
             return [f"vu1n::stWords(n, vu1n::qaddr(n, (uint16_t){VI(fs)}), {VI(ft)}, {dest});"]
         if sp == 0x64:
             if ft:
@@ -1464,7 +1512,59 @@ def gen_trace(parts, name, loop):
     BND = saved
     if body is None:
         return None
-    return body, tails, tr['ptails']
+    ptails = tr['ptails']
+    fb = fast_trace(parts[0][0], allpairs, tr, union, name, loop) if FAST and FAST_TRACES and name != "probe" else None
+    tr['ptails'] = ptails
+    return body, tails, ptails, fb
+
+
+def fast_trace(pc0, allpairs, tr, union, name, loop):
+    """fast variant of a trace (FAST_TRACES): the range analysis of fast_self_loop (loop: the start state's fixed point
+    over the whole pass, which is what flows back through chainTo) / fast_straight (one pass) over all its parts, entry
+    check, else the exact trace <name>_x. Part exits are unchanged (they only store the registers). Body lines or None."""
+    global BND
+
+    def seeded():
+        r = Regs(True)
+        r.defined = list(union.defined)
+        r.need = list(union.defined)
+        r.dirty = list(union.dirty)
+        if loop:
+            r.inv = {k[1] for k in union.defined if k[0] == 'f' and k not in union.dirty and k[1] != 0}
+        return r
+
+    def gen_with(start, Emap):
+        global BND
+        BND = Bounds(start)
+        BND.mem, BND.emap = MEM_ORIGINS and not loop, Emap
+        tr['ptails'] = []
+        body = gen_block(pc0, allpairs, [], name if loop else None, regs=seeded(), pieces=None, trace=tr)
+        b, BND = BND, None
+        return body, b
+
+    def run(Emap):
+        entry = Bounds.entry(Emap, FAST_E0)
+        start = entry
+        if loop:
+            def gen(st):
+                body, b = gen_with(st, Emap)
+                return None if body is None else [b.st]
+            start = _fixpoint(gen, entry)
+            if start is None:
+                return None
+        body, b = gen_with(start, Emap)
+        if body is None or 'decls' not in LAST or bool(LAST.get('self_loop')) != bool(loop):
+            return None
+        return (body, LAST['decls'], b.score, b.req, b.fails)
+    saved = BND
+    best = _search(run)
+    BND = saved
+    if best is None or not best[0][2]:
+        return None
+    if not loop and best[0][2] - _check_cost(best[0][3]) < FAST_STRAIGHT_MIN:
+        return None
+    (body, nd, score, req, _), Emap = best
+    return body[:nd] + _check_lines(req, Emap, FAST_E0, name + "_x") + body[nd:]
 
 
 def static_succs(pc, pairs):
@@ -1764,11 +1864,15 @@ def _lim(E):
 def _check_lines(req, Emap, Edef, xname):
     """entry check of a fast variant: every entry lane its code relied on (origin) below 2^E in magnitude (E per origin),
     else the exact function"""
-    vf, acc, scal = {}, {}, []
+    vf, acc, scal, mem, alias = {}, {}, [], {}, []
     for o, level in req.items():
         E = Emap.get(o, Edef) if level == 2 else 128
-        if o[0] == 'f':
+        if o[0] == 'alias':
+            alias.append(o[1:])
+        elif o[0] == 'f':
             vf.setdefault(o[1], {})[o[2]] = E
+        elif o[0] == 'm':
+            mem.setdefault((o[1], o[2]), {})[o[3]] = E
         elif o[0] == 'acc':
             acc[o[1]] = E
         else:
@@ -1778,12 +1882,17 @@ def _check_lines(req, Emap, Edef, xname):
         l = [_lim(lanes[k]) if k in lanes else 0x7FFFFFFF for k in range(4)]
         return f"_mm_set_epi32(0x{l[3]:08x}, 0x{l[2]:08x}, 0x{l[1]:08x}, 0x{l[0]:08x})"
     pairs = [(f"F{r}", limv(ln)) for r, ln in sorted(vf.items())]
+    # loaded values (Bounds.load): the quadword the load will read, read here (no store comes before it)
+    pairs += [(f"_mm_loadu_ps(reinterpret_cast<const float *>(n.data + vu1n::qaddr(n, I{b} + {off})))", limv(ln))
+              for (b, off), ln in sorted(mem.items())]
     if acc:
         pairs.append(("ACC", limv(acc)))
     pairs += [(f"_mm_set_ss({x})", limv({0: E})) for x, E in sorted(scal)]
     if not pairs:
         return []
     terms = [f"vu1nf::gt({v}, {lv})" for v, lv in pairs]
+    # a store before a load the check read must not hit its quadword (else the load reads the stored value)
+    acond = " || ".join(f"vu1n::qaddr(n, I{b} + {off}) == vu1n::qaddr(n, I{sb} + {soff})" for b, off, sb, soff in sorted(alias))
     # registers with the same per-lane limits: maximum of the magnitudes first (two vector ops per register), one compare
     groups = {}
     for v, lv in pairs:
@@ -1797,7 +1906,7 @@ def _check_lines(req, Emap, Edef, xname):
     expr = cmps[0]
     for t in cmps[1:]:
         expr = f"_mm_or_si128({expr}, {t})"
-    out = [f"if (vu1nf::any({expr})) // fast variant: entry values in range (vu1n_gen.py Bounds)",
+    out = [f"if ({'(' + acond + ') || ' if acond else ''}vu1nf::any({expr})) // fast variant: entry values in range (vu1n_gen.py Bounds)",
            "{",
            f"    VU1NF_MISS(\"{xname}\");",
            "#if defined(VU1N_FAST_STATS_REGS)"]
@@ -1896,8 +2005,8 @@ def fast_self_loop(pc, pairs, name):
 
 def _check_cost(req):
     """instructions of the entry check: two per register (magnitude, maximum), a compare per limit vector, the branch"""
-    regs = {o[:2] for o in req}
-    return 2 * len(regs) + 6
+    regs = {o[:3] if o[0] == 'm' else o[:2] for o in req}
+    return 2 * len(regs) + 2 * sum(1 for r in regs if r[0] == 'm') + 6   # a loaded value: its address and load too
 
 
 FAST_STRAIGHT_MIN = 8   # a block that runs once per entry needs this many instructions saved beyond its check
@@ -1908,6 +2017,7 @@ def fast_straight(pc, pairs, name):
     def run(Emap):
         global BND
         BND = Bounds(Bounds.entry(Emap, FAST_E0))
+        BND.mem, BND.emap = MEM_ORIGINS, Emap
         body = gen_block(pc, pairs, [], name)
         b, BND = BND, None
         if body is None or LAST.get('self_loop') or 'decls' not in LAST:
@@ -2059,6 +2169,18 @@ def main():
             global FAST
             FAST = False
             i += 1
+        elif args[i] in ('--fast-traces', '--no-fast-traces'):
+            global FAST_TRACES
+            FAST_TRACES = args[i] == '--fast-traces'
+            i += 1
+        elif args[i] in ('--mem-origins', '--no-mem-origins'):
+            global MEM_ORIGINS
+            MEM_ORIGINS = args[i] == '--mem-origins'
+            i += 1
+        elif args[i] == '--jr-trace-share':
+            global JR_TRACE_SHARE
+            JR_TRACE_SHARE = float(args[i + 1])
+            i += 2
         elif args[i] == '--no-cycles':
             global CYCLES
             CYCLES = False
@@ -2219,6 +2341,7 @@ def main():
     # traces (after every image's blocks and cycles)
     traces = {}       # trace key -> (parts [(pc, key, pairs)], name, body, tails, ptails, reads_entry, images)
     trace_heads = {}  # head block key -> {trace key: images}
+    trace_fast = {}   # trace key -> fast variant body (fast_trace); the exact one becomes <name>_x
     if TRACES and DIRECT and LOCALS and CYCLES:
         local_ok = {}
         # blocks whose function is a loop (gen_cycle's A and B, self-loops) keep it: no trace starts at or runs through them
@@ -2350,9 +2473,11 @@ def main():
                 if g is None:
                     trace_heads[key].pop(tkey)
                     continue
-                body, tails, ptails = g
+                body, tails, ptails, fbody = g
                 reads_entry = any("macAt(" in ln or "clipAt(" in ln for ln in body)
                 traces[tkey] = ([(q, k, len(ps)) for q, k, ps in path], name, body, tails, ptails, reads_entry, loop)
+                if fbody is not None:
+                    trace_fast[tkey] = fbody
     # loops of more blocks (after every image's blocks and cycles): the loop's blocks get a function that runs the loop
     # from them (gen_region); the block's own function body stays as <name>_x when it has no exact twin yet
     if CYCLES and REGIONS:
@@ -2404,6 +2529,8 @@ def main():
             cands = cands_of([k for _, k, _ in tr[0]])
             jrc = list(dict.fromkeys(t for _, k, _ in tr[0] for t in jr_of.get(k, [])))
             traces[tkey] = tr[:2] + (direct_exits(tr[2], cands, jrc),) + tr[3:] + (cands,)
+            if tkey in trace_fast:
+                trace_fast[tkey] = direct_exits(trace_fast[tkey], cands, jrc)
     os.makedirs(out, exist_ok=True)
     texts = [[] for _ in range(parts)]
     regs = [[] for _ in range(parts)]
@@ -2460,10 +2587,16 @@ def main():
         for k, pt in enumerate(ptails):
             if pt:
                 t.append(f"static const VU1TailDesc {name}_ptail{k} = {desc(pt)};")
+        if tkey in trace_fast:
+            # the exact trace stays as <name>_x (the fast variant's entry check falls back to it)
+            t += [f"static VU1N_NOINLINE uint32_t {name}_x(VU1NativeCtx &n)", "{", "    VU1State &s = *n.s;"]
+            t += ["    " + ln for ln in body]
+            t += ["}", ""]
+            body = trace_fast[tkey]
         t += [f"static uint32_t {name}(VU1NativeCtx &n)", "{", "    VU1State &s = *n.s;"]
         t += ["    " + ln for ln in body]
         t += ["}", ""]
-        t.append(f"static const uint16_t {name}_pcs[] = {{{', '.join(f'{q}u' for q, _, _ in tparts)}}};")
+        t.append(f"static const uint16_t {name}_pcs[]= {{{', '.join(f'{q}u' for q, _, _ in tparts)}}};")
         t.append(f"static const uint16_t {name}_counts[] = {{{', '.join(f'{c}u' for _, _, c in tparts)}}};")
         t.append(f"static const uint64_t {name}_keys[] = {{{', '.join(f'0x{k:016x}ull' for _, k, _ in tparts)}}};")
         texts[part].append("\n".join(t))

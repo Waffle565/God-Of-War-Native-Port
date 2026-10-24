@@ -366,6 +366,31 @@ compares (`vu1nf::clipv`), FTOI without the clamp (`vu1nf::ftoiv`).
   `-DVU1N_FAST_STATS_REGS` (the register, lane values and limits of each failed check); port/vu1fast/dbg_fast.py runs the
   search for one block (not in git).
 
+**Fast traces and loaded values (2026-10-24, sw-k10, main generator only).** Since sw-k9 most of the VU1 time runs in
+traces (every block may start one), and traces had no fast variant: every MADD in them went through `maddc`'s test and
+every ADD/SUB/MUL through `clampv` (g9: 7984 `maddc` in trace bodies against 4759 in block bodies).
+- `fast_trace` (`--no-fast-traces`: off): the same analysis over all parts of a trace, one pass (`fast_straight`'s rule:
+  only when the saving exceeds the check by 8) or, for a trace that loops, the start state's fixed point over the whole
+  pass (what flows back through `chainTo`). The exact trace stays as `<name>_x`; part exits are unchanged (they only
+  store the registers). 1022 of 1297 g9 traces get one; their `maddc` 7876 -> 1631, `clampv` 5530 -> 0.
+- **Loaded values as origins** (`Bounds.load`, `--no-mem-origins`: off), one-pass variants only: an LQ / LQI whose
+  address is a VI register still at its entry value plus a constant reads a quadword the entry check can read at entry,
+  so its lanes get an assumed bound like an entry register (the matrix rows the vertex code loads from VU memory). A
+  store before the load keeps it an origin only when the store's address is also an entry VI + constant (not the same
+  quadword); the check then also tests that the two addresses differ (`qaddr(...) == qaddr(...)` -> exact function).
+  A store through a VI written before it, or a load through one, keeps the value unknown. Loops never use it (a pass
+  reads other memory than the entry check would).
+- Entry checks pass almost always (harness `-DVU1N_FAST_STATS`, t4 blocks): fight.rec 47382 fast / 54 exact, menu.rec
+  78867 / 60.
+- JR targets: traces now go on through a JR whose most frequent target takes >= 30 % of the site
+  (`--jr-trace-share`, 60 % before): fight.rec steps 146.7 k -> 139.1 k, menu.rec 266 k -> 255 k (0.15 gives no more).
+- Bit-exact: x86 replay dumps fight / menu, HLE=1 / 0, identical to 529de89 / k3g; aarch64 qemu dumps identical to g9;
+  bench signatures identical (docs/benchmark.md). aarch64 qemu cost (ics_fight, one warm pass, harness hashing
+  included): a57_cost 33.56 M (g9) -> 33.32 (fast traces + JR 0.3) -> 33.21 (+ loaded values) -> 33.18 (+ stores with
+  known addresses); about -4.5 % of the VU1 work without the hashing. The hottest trace (t0ec8, a matrix compose) 147 k
+  -> 113 k instructions per pass; what is left in it are MADDs on rows loaded through a VI computed in the trace (I11 =
+  a lane of VF1 + I12) and register spills (~30 vector registers live).
+
 ## The VU1 thread on the console: split, overlap, sync points (2026-10-19, ext agent/sw-vu1-par)
 **Handoff (where this stopped).** Branch `agent/sw-vu1-par` (worktree ext/PS2Recomp-kl-vu1par, own build dirs
 `out/build-pc`, WSL `/root/gow-switch-par`, VU1 blocks `out/vu1pregen` = sw-vu1-hle's; agent/sw-ee5 merged, Switch
