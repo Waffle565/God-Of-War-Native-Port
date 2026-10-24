@@ -4,6 +4,8 @@ All are opt-in environment variables (added by us; implementations noted).
 
 | Variable | Output | Where implemented |
 |---|---|---|
+| VU1 harness only: `EXTRA=-DVU1N_STEP_STATS` + `VU1N_STEP_FILE=<file>`; `EXTRA=-DVU1N_SLOW_STATS` | chain steps of a replay: `s <from pc> <to pc> <result> <to reads entry flags> <to is a trace> <count> <from key>` (from ffff: a trace's side exit); `[slow] fast=... hle=... entry=...` at exit: why chainStepOut left its leaf path (sw-k9, docs/performance.md "VU1 thread throughput") | ext ps2_vu1_native.inl chainStepOut |
+| `VU1N_GEN_TRACELOG=<file>` (tools/vu1/vu1n_gen.py) | every trace head tried: `trace <head> <key> <parts> stop <reason> next <pc> keys ...` (nosucc = a JR without a known target, part:<looped / entryflags / EDTbits / local / nobody>, maxpairs, loop, revisit) or `head <pc> <key> no <reason>`; with the step file it says why a hot step is not inside a trace | tools/vu1/vu1n_gen.py |
 | `PS2X_HEARTBEAT=<s>` | every s seconds: debug PC/RA, EE cycle, **live** context PC + regs (v0 v1 a0-a3 s0-s3 ra), EE threads (status/wait), IOP cycles/modules/threads/RPC servers/services/diagnostics | ps2xRuntime/src/main.cpp — no longer in the runtime (2026-10-13) |
 | `PS2X_HEARTBEAT_PEEK=[iop:]addr:len,…` | hex dump of EE RAM (or IOP RAM with `iop:`) each heartbeat | main.cpp — no longer in the runtime (2026-10-13) |
 | `PS2X_TRACE_CALLS=hex,…` | wraps listed EE functions: `[call] addr(a0..a3) ra=` / `[ret ] addr -> v0=` | main.cpp (replaceFunction; original found via ctx->pc) — no longer in the runtime (2026-10-13) |

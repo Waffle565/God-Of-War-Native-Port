@@ -60,6 +60,10 @@ the mean per 5 s window lying inside the scene (ms per 5 s): `ee` (EE game code)
 | **heavy** | 10-20 | the crowd of undead around Kratos (`b1a/shots/g3.jpg`); VU1 thread 4.61 s busy per 5 s, ~= the bot's 125-150 s phase (33-37 fps) | **35.3 / 35.3** |
 | mid | 30-60 | the deck fight, 3-5 undead | 45.2 / 45.2 |
 | late | 90-150 | the deck fight goes on (the script never walks, so the bot's "Kratos alone" 57 fps scene does not come) | 47.0-47.6 |
+Two start states (sw-k9, 2026-10-24): a run gets one of two rand seeds at frame 60 (A `1e559a6a`, B `bd5bc50d`; same
+position), apparently at random (`s4a`, `s4b`, `k9a2`, `k9e2` B; `k9p`, `k9s`, `k9a1`, `k9c1`, `k9e1` A), so compare
+`--ref` against a run of the same start state: runs of one state are identical up to the 64 s divergence (A vs `k9s`:
+63-73 s; B vs `s4a`: 70 s). Per-scene fps is not affected beyond the usual spread.
 Run-to-run spread: 0.0-0.2 fps in the identical part, up to ~0.8 fps after 64 s. Wall time per run ~7 min (330 s
 game + boot + menus + pull), `BENCH_GAME_S=150`.
 
@@ -69,4 +73,13 @@ game + boot + menus + pull), `BENCH_GAME_S=150`.
 | `b2a` / `b2b` | update_b2 (bench from boot), `GOW_CHAIN_STREAM_KB=0` = before sw-k8 | 53.4 / 53.6 | 35.3 / 35.3 | 44.1 / 44.1 | 45.2 / 45.2 | 46.6 / 45.8 | 47.6 / 47.0 | 47.2 / 47.3 |
 | `s4a` | update_s4 (chain streaming, default) | 54.0 | **36.4** | 45.3 | **46.4** | 47.6 | 48.7 | **48.7** |
 | `e4p` | update_s4 + `GOW_EE_SAMPLE` | (0-30: 43.9) | | | 46.6 | 47.1 | 49.8 | 48.4 |
+Later runs report heavy / mid / late only (`--scenes 10-20,30-60,90-150`); sw-k9 (docs/performance.md "VU1 thread throughput"):
+| run | package | heavy 10-20 | mid 30-60 | late 90-150 | seed at frame 60 |
+|---|---|---|---|---|---|
+| `k9p` | update_s4 + `GOW_PC_SAMPLE=1000` (GSWorker) | 35.8 | 45.7 | 47.9 | A |
+| `k9s` | update_s4 (reference of the day) | 36.4 | 46.5 | 48.2 | A |
+| `k9a1` / `k9a2` | update_k9a (g7 blocks) | 36.6 / 36.3 | 46.9 / 46.9 | 49.5 / 48.7 | A / B |
+| `k9c1` | update_k9c (+ chainStep leaf, first form) | 36.8 | 47.3 | 49.9 | A |
+| `k9e1` / `k9e2` | update_k9e (+ kernels, NEON helpers, hleMatch, unpack) | 37.9 / 37.9 | 48.4 / 48.2 | 50.9 / 50.2 | A / B |
+| **`k9g1` / `k9g2`** | **update_k9g (sw-k9 final: g9 blocks + runtime)** | **38.3 / 38.9** | **49.1 / 49.7** | **50.9 / 51.7** | B / B |
 Other runs (IOP thread, streaming variants): docs/iop-thread.md, docs/performance.md "VIF1 chain streaming".

@@ -18,7 +18,11 @@ also no traces. --no-traces: no traces (see TRACES); --no-trace-entry: traces on
 flags. --profile <file> / --no-profile: the edge profile the traces follow (see PROFILE). --no-jr: JR / JALR exits
 return to runNative instead of chaining to their predicted targets, then to any block (see JR; on by default since
 the runtime's chain step is out of line); --jr-traces: traces also go on through JR / JALR targets; --jr-max N,
---no-jr-any: see JR.
+--no-jr-any: see JR. --no-trace-all-heads: traces start only at loop heads and blocks no block likely goes on to
+(TRACE_ALL_HEADS); --trace-max-pairs N (96). Since sw-k9 (2026-10-24) --jr-traces and all heads are the default and the
+profile port/vu1n_profile.txt includes fight.rec / menu.rec (--no-jr-traces --no-trace-all-heads --trace-max-pairs 48
+with the old profile = gen4).
+VU1N_GEN_TRACELOG=<file>: every trace head tried, its parts and why it stopped (docs/diagnostics.md).
 """
 import os
 import re
@@ -53,7 +57,11 @@ DIRECT = True
 # is exact); TRACE_ENTRY: the first part may (runtime: its entry timing, then the idle tables of the others).
 TRACES = True
 TRACE_ENTRY = True
-TRACE_MAX_PAIRS = 48
+TRACE_MAX_PAIRS = 96  # 48 before sw-k9 (--trace-max-pairs)
+# --trace-all-heads: every block may start a trace, not only loop heads and blocks no other block likely goes on to (a
+# block that is some block's likely successor is otherwise only reached inside that block's trace; at run time it is
+# also entered from side exits and other predecessors, through a chain step each time)
+TRACE_ALL_HEADS = True  # sw-k9 (--no-trace-all-heads: the former head choice)
 # edge profile for the traces' likely successors ("e <from> <to> <count>", hex pcs, from the replay harness: GOW_VU1N_BLOCKPROF
 # with GOW_VU1N_DIRECT=0 GOW_VU1N_TRACES=0, port/vu1disp/prof.sh): --profile <file>, default vu1n_profile.txt next to the
 # heads file; --no-profile: the static guess only
@@ -68,7 +76,8 @@ PROFILE = {}
 # through the same guarded chainDirect as a static successor (the next pc must equal the predicted one and the slot must
 # hold the predicted block key, else the block returns to runNative as before). Traces continue through a JR when the
 # target is known: a return to the link a BAL / JALR earlier in the same trace set (call/return pair), else the
-# profile's target when it takes at least JR_TRACE_SHARE of the site (JR_TRACES, --jr-traces: measured +0.25 % on top);
+# profile's target when it takes at least JR_TRACE_SHARE of the site (JR_TRACES; qemu +0.25 % when measured first, fewer
+# chain steps and faster on the console since the chain step is out of line: docs/performance.md "VU1 thread throughput");
 # the trace's part exit check (the next pc differs from the part after it -> the prefix finishes) guards it like any
 # other branch.
 JR = True
@@ -76,7 +85,7 @@ JRPROF = {}        # JR pc -> {target pc: count}
 JR_MAX = 2
 JR_MIN_SHARE = 0.1
 JR_TRACE_SHARE = 0.6
-JR_TRACES = False  # traces go on through a JR with a known target (--jr-traces); else they end at a JR
+JR_TRACES = True   # traces go on through a JR with a known target (sw-k9; --no-jr-traces: they end at a JR)
 JR_USED = False    # some exit uses the JR macros (JR_PREAMBLE)
 JR_ANY = True      # after the predicted targets, any target the slot holds a block for (chainJr with key 0); --no-jr-any
 REGION_MAX_BLOCKS = 10
@@ -2068,10 +2077,18 @@ def main():
             global JR
             JR = args[i] == '--jr'
             i += 1
-        elif args[i] == '--jr-traces':
+        elif args[i] in ('--jr-traces', '--no-jr-traces'):
             global JR_TRACES
-            JR_TRACES = True
+            JR_TRACES = args[i] == '--jr-traces'
             i += 1
+        elif args[i] in ('--trace-all-heads', '--no-trace-all-heads'):
+            global TRACE_ALL_HEADS
+            TRACE_ALL_HEADS = args[i] == '--trace-all-heads'
+            i += 1
+        elif args[i] == '--trace-max-pairs':
+            global TRACE_MAX_PAIRS
+            TRACE_MAX_PAIRS = int(args[i + 1])
+            i += 2
         elif args[i] == '--no-jr-any':
             global JR_ANY
             JR_ANY = False
@@ -2208,6 +2225,20 @@ def main():
         looped = set(fused) | {k for k in blocks if any(f"b{blocks[k][0]:04x}_{k & 0xFFFFFFFF:08x}" in v for v in fused.values())}
         looped |= {k for k in blocks if blocks[k][2] is not None and any(ln.startswith("for (;;)") for ln in blocks[k][2])}
 
+        TLOG = open(os.environ["VU1N_GEN_TRACELOG"], "w") if os.environ.get("VU1N_GEN_TRACELOG") else None
+
+        def why_not(pc, pairs, key, first):
+            b = blocks.get(key)
+            if b is None or b[2] is None:
+                return "nobody"
+            if key in looped:
+                return "looped"
+            if b[4] and not (first and TRACE_ENTRY):
+                return "entryflags"
+            if any((u >> 30) & 1 or (u >> 28) & 1 or (u >> 27) & 1 for (l, u) in pairs):
+                return "EDTbits"
+            return "local" if not part_ok(pc, pairs, key, first) else "ok"
+
         def part_ok(pc, pairs, key, first):
             b = blocks.get(key)
             if b is None or b[2] is None or key in looped or (b[4] and not (first and TRACE_ENTRY)):
@@ -2265,7 +2296,7 @@ def main():
                     nx = likely(pc, pairs)
                     if nx is not None:
                         nlikely[nx] = nlikely.get(nx, 0) + 1
-            todo = [pc for pc in hs if pc in back or not nlikely.get(pc)]
+            todo = [pc for pc in hs if TRACE_ALL_HEADS or pc in back or not nlikely.get(pc)]
             done = set()
             while todo:
                 h = todo.pop()
@@ -2274,6 +2305,8 @@ def main():
                 done.add(h)
                 pairs, key = get(h)
                 if not pairs or not part_ok(h, pairs, key, True):
+                    if TLOG and pairs:
+                        TLOG.write(f"head {h:x} {key:016x} no {why_not(h, pairs, key, True)}\n")
                     continue
                 path, total, loop = [(h, key, pairs)], len(pairs), False
                 cur, cp = h, pairs
@@ -2281,17 +2314,23 @@ def main():
                 while True:
                     nx = likely(cur, cp, h, links)
                     links = vi_links(cur, cp, links)
+                    stop = None
                     if nx is None:
-                        break
-                    if nx == h:
+                        stop = "nosucc"
+                    elif nx == h:
                         loop = True
-                        break
-                    if any(nx == q for q, _, _ in path):
-                        break
-                    np_, nk = get(nx)
-                    if not np_ or total + len(np_) > TRACE_MAX_PAIRS or not part_ok(nx, np_, nk, False):
-                        if np_ and nx not in done:
-                            todo.append(nx)   # the trace stops before it: it starts one of its own
+                        stop = "loop"
+                    elif any(nx == q for q, _, _ in path):
+                        stop = "revisit"
+                    if stop is None:
+                        np_, nk = get(nx)
+                        if not np_ or total + len(np_) > TRACE_MAX_PAIRS or not part_ok(nx, np_, nk, False):
+                            if np_ and nx not in done:
+                                todo.append(nx)   # the trace stops before it: it starts one of its own
+                            stop = "maxpairs" if np_ and total + len(np_) > TRACE_MAX_PAIRS else f"part:{why_not(nx, np_, nk, False) if np_ else 'nopairs'}"
+                    if stop is not None:
+                        if TLOG:
+                            TLOG.write(f"trace {h:x} {key:016x} {'/'.join(f'{q:x}' for q, _, _ in path)} stop {stop} next {nx if nx is None else hex(nx)} keys {' '.join(f'{k:016x}' for _, k, _ in path)}\n")
                         break
                     path.append((nx, nk, np_))
                     total += len(np_)

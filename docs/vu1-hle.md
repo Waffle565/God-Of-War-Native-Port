@@ -157,6 +157,10 @@ can still give. Small next steps: chainTo already tested the pending queues, so 
 the FDIV/EFU part; a cycle's A -> B -> A steps could keep the successor slot and its memo entry in registers.
 
 ## Dispatch: direct chaining and traces (2026-10-19, ext agent/sw-vu1disp)
+Update 2026-10-24 (sw-k9, docs/performance.md "VU1 thread throughput"): traces now also go through JR targets, start at
+every block and run up to 96 pairs, with an edge profile that includes fight.rec / menu.rec (generator defaults; chain
+steps on fight.rec 204 k -> 147 k), and the runtime's chain step is a leaf function in its common case.
+
 **Handoff.** Branch `agent/sw-vu1disp` (ext 823cf54 + 665d3ce; worktree ext/PS2Recomp-kl-vu1disp, own build dir
 `out/build-pc` configured like sw-vu1cyc's with `-DPS2X_VU1N_GEN_OVERRIDE=<root>/port/vu1disp/gen/vu1n_gen.py` = the
 committed tools/vu1/vu1n_gen.py). Runtime (ps2_vu1_native.h / .inl) and generator changed together: the new default

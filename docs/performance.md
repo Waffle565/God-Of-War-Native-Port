@@ -311,6 +311,63 @@ Gains per lever above are estimates from the Gemini review (gemini-work/results/
 - Exactness: x86 replay dumps fight.rec / menu.rec, HLE=1 / 0, byte-identical (harness `s4x`; the VU1 path is not
   touched); the streamed parse is equivalent by construction (above) and the console bench's game state is identical.
 
+## VU1 thread throughput: fewer and cheaper chain steps, leaner kernels, linear unpack (2026-10-24, sw-k9)
+- Where the VU1 thread went (bench `k9p` = update_s4 + `GOW_PC_SAMPLE=1000`, heavy scene 75-85 s wall): generated blocks
+  24 %, chainStepOut 13.9, kCullClip 5.6, kUnlitSt 5.6, idle 5.0, processVIF1Data 3.6, kLitSt 3.6, kSkinLitSt 3.1,
+  hleChain 3.0, memmove 2.7, runNative 2.3, unpackFast ~7 (six formats), codeChanged 1.2, slotFor / hleMatch 0.75 each.
+  memmove is `ps2_gs_stage::push <- GifArbiter::submitAndDrain` (`GOW_PC_SAMPLE_LR` on memcpy/memmove): the copy of
+  each XGKICK packet into the GS stage queue. The mid scene (100-140 s) has the same shares.
+- A chain step costs ~40 A57 cycles for ~128 instructions (3.4 M steps/s at ~14 % of the thread): instruction-bound,
+  not miss-bound, so fewer instructions per step and fewer steps both pay.
+- **Fewer chain steps (generator, main)**: a harness-only step profile (`EXTRA=-DVU1N_STEP_STATS`,
+  `VU1N_STEP_FILE=<file>`: steps by from slot / key, to pc, result) against the generator's trace log
+  (`VU1N_GEN_TRACELOG=<file>`: every trace head with its parts and why it stopped) showed where the 204 k steps of
+  fight.rec (2 passes) come from: 41 % leave a block or trace at a JR / JALR (traces stopped there), 20 % leave blocks
+  that never start a trace (a block that is some block's likely successor only ran inside that block's trace; at run
+  time it is entered from side exits and other predecessors), 11 % are side exits, 8 % blocks the trace probe rejects,
+  ~5 % stop before loop blocks, 3 % at the 48-pair limit; only 1.6 % go to blocks that read entry flags. The edge
+  profile was also stale (from recordings lost with the distro). Now: `port/vu1n_profile.txt` = the old profile plus
+  fight.rec + menu.rec (`tools/vu1_harness/edgeprof.sh`), traces through JR targets (`--jr-traces`), every block may
+  start a trace (`--trace-all-heads`), 96 pairs per trace (`--trace-max-pairs`). Steps on fight.rec 204 k -> 147 k
+  (gen4 -> g9; `--jr-traces` alone 182 k), menu.rec 307 k -> 266 k; generated code 8.46 -> 9.32 MB.
+- **chainStepOut as a leaf (ext)**: the out-of-line step had a 160-byte frame with six callee-saved registers on every
+  call (the rare paths call commitReadyPipelines, hleChain, blockTiming). The common case is now a leaf without a frame:
+  history entry, the due FDIV/EFU retirement (`retireScalars`), stop / budget / kernel byte / key checks, successor
+  set-up; a block that started FDIV/EFU operations, a commit with other queues busy, a kernel pc, a key mismatch or a
+  successor that reads entry flags (`chainStepEntry`: the memo) continue out of line by tail call exactly where
+  chainStep would (`chainStepSlow` / `chainStepSlowCommit` / `chainStepSlowTail`). On fight.rec 111 k of 143 k steps
+  take the leaf (`-DVU1N_SLOW_STATS`); the rest are kernel entries (31 k, hleChain anyway) and FDIV/EFU blocks.
+  aarch64 harness: chainStepOut + slow parts 2.06 -> ~1.4 M instructions per warm pass (ics_fight.rec).
+- **Kernels (ext)**: kUnlitSt, kLitSt, kSkinLitSt ran every partial register write as a 128-bit blend, as the VU code
+  does. A register whose other lanes stay untouched through the loop and are never read inside it (only bc<0..2>,
+  xyz stores, xy converts) is now kept unblended in the loop and blended once at the exit; two partial writes that
+  together cover the register are one blend. Six blends fewer per vertex in each (aarch64 harness: kUnlitSt 0.753 ->
+  0.569 M, kSkinLitSt 0.754 -> 0.634, kLitSt 0.325 -> 0.262 instructions per warm pass). The A57 executes a 128-bit
+  NEON op as two 64-bit micro-ops: these loops are FP-pipe bound (~29 cycles per vertex in kUnlitSt), not latency
+  bound. kCullClip (flag-exact, branchy) is unchanged.
+- **NEON helpers (ext, ps2_vu1_native.h, aarch64 only)**: `itofv<4/12/15>` is one SCVTF with fraction bits (was SCVTF +
+  FMUL: scaling an integer conversion by 2^-n is exact, one rounding either way), `ftoiv<4/12/15>` one FCVTZS with
+  fraction bits after the clamp (the product by 2^n is exact or saturates the same way), `lane<C>` one DUP (was a trip
+  through a general register). Used by every generated block and kernel.
+- **hleMatch (ext)**: a remembered kernel was re-confirmed at every code change near its pc by the byte-wise FNV of its
+  region (up to 320 dependent multiplies); the bytes of a region that matched are kept per kernel and an equal region
+  matches by memcmp (other bytes still go through the hash: the same decisions).
+- **VIF1 UNPACK with CL == WL (ext ps2_vif1_interpreter.cpp `unpackLinear`)**: the destination is vuAddr + i (mod 1024),
+  so vectors go out in groups of four between wraps without the per-vector cycle position, block multiply and branch.
+  A unit test (scratchpad `k9/ut`) compares it with unpackLoop for every format, mode, sign and wrap: identical.
+- Exactness: x86 replay dumps fight.rec / menu.rec, HLE=1 / 0, byte-identical to 529de89 and k3g with gen4 and with
+  the new blocks (harnesses `c2x`..`c8x`, `g7x`, `g9x`); aarch64 (qemu) dumps of ics_fight / ic_menu, HLE=1 / 0,
+  identical between the old and the new runtime (`aq.sh`). Bench signatures identical (see below).
+- Console bench (heavy 10-20 / mid 30-60 / late 90-150 game s; `k9s` = update_s4 again today, the reference):
+  | run | package | heavy | mid | late | VU1 busy heavy (ms / 5 s) |
+  |---|---|---|---|---|---|
+  | `k9s` | update_s4 (before) | 36.4 | 46.5 | 48.2 | 4797 |
+  | `k9a1` / `k9a2` | g7 blocks (profile + `--jr-traces`) | 36.6 / 36.3 | 46.9 / 46.9 | 49.5 / 48.7 | 4797 / 4783 |
+  | `k9c1` | + chainStep leaf (first form) | 36.8 | 47.3 | 49.9 | 4786 |
+  | `k9e1` / `k9e2` | + kernels, NEON helpers, hleMatch, unpack | 37.9 / 37.9 | 48.4 / 48.2 | 50.9 / 50.2 | 4765 / 4778 |
+  | **`k9g1` / `k9g2`** | **update_k9g (+ g9 blocks: all heads, 96 pairs; chainStep leaf incl. commit / entry memo)** | **38.3 / 38.9** | **49.1 / 49.7** | **50.9 / 51.7** | 4765 / 4755 |
+  VU1 busy stays ~4.75 s per 5 s: the thread is still the limit, it just gets more frames out of it.
+
 ## Menu clock: the Load Game menu ran 8 % fast (2026-10-13, ext branches agent/menuclock, agent/menuclock2)
 - Measured (port/menuclock, `GOW_DELTA_DIAG`, `GOW_VBLANK_DIAG`, `GOW_IOP_DRIFT`, `GOW_AUDIO_STATS`): title screen,
   main menu, pause menu and gameplay run at game speed 1.000, VBlank 59.99-60.00 Hz, IOP clock 1.000 +- 0.0004 of wall

@@ -5,6 +5,41 @@ look the same (pixel comparison against the CPU path, tolerances documented). Pl
 (2) a plain-float CPU reference (HLE) compared with the exact path on the recordings, which also says whether a fast
 CPU HLE alone reaches the target, (3) GPU path, (4) console fps / per-core busy / screenshots.
 
+## Handoff (2026-10-24 morning, sw-k9 stopped here: ext agent/sw-vu1gpu 47e05b5 + default generator = g9 blocks (`/root/vu1pregen-g9`), package `update_k9g`)
+- **Result** (deterministic bench, docs/benchmark.md; GPU max): heavy **36.4 -> 38.3 / 38.9**, mid **46.5 -> 49.1 /
+  49.7**, late **48.2 -> 50.9 / 51.7** (`k9s` = update_s4 today vs `k9g1` / `k9g2`). VU1 thread still ~4.76 s busy per
+  5 s in the heavy scene (it does ~6 % more frames in it). Rendering checked on the bench screenshots. Details and the
+  step-by-step table: docs/performance.md "VU1 thread throughput".
+- What changed: generator defaults (main) `--jr-traces`, every block may start a trace, 96 pairs per trace, edge
+  profile with fight.rec / menu.rec (`port/vu1n_profile.txt`; chain steps on fight.rec 204 k -> 147 k); runtime (ext
+  47e05b5) chainStepOut leaf fast path, kernels without dead blends, SCVTF/FCVTZS with fraction bits + DUP lane,
+  hleMatch by memcmp, linear UNPACK for CL == WL. All exact: x86 dumps fight / menu, HLE=1 / 0, identical to 529de89 /
+  k3g (gen4 and g9 blocks), aarch64 qemu dumps identical, bench signatures identical (per start state, below).
+- Per step (heavy / mid / late): g7 blocks (profile + `--jr-traces`) 36.6/36.3, 46.9, 49.5/48.7; + first chainStep
+  leaf 36.8, 47.3, 49.9; + kernels / NEON helpers / hleMatch / unpack 37.9/37.9, 48.4/48.2, 50.9/50.2; + all heads, 96
+  pairs, chainStep leaf incl. commit and entry memo = k9g.
+- **Bench start states**: a run starts in one of two rand-seed states at frame 60 (A `1e559a6a`, B `bd5bc50d`), seemingly
+  at random; runs of one state are identical up to ~64-73 s. Compare with `--ref` against a run of the same state
+  (A: `k9s`, B: `s4a`). Also: `GOW_PC_SAMPLE` does not change the game state.
+- Profile now (heavy, `k9p` = s4 + sampler): blocks 24 %, chainStepOut 13.9, kCullClip 5.6, kUnlitSt 5.6, idle 5,
+  processVIF1Data 3.6, kLitSt 3.6, kSkinLitSt 3.1, hleChain 3.0, memmove 2.7 (= `ps2_gs_stage::push`, XGKICK packets
+  copied into the stage queue), unpackFast ~7, code-change handling ~3.4. A chain step costs ~40 cycles for ~128
+  instructions: instruction-bound, so instruction cuts do pay here (unlike the earlier kCullClip experience); the
+  vertex kernels are FP-pipe bound (128-bit NEON = two micro-ops).
+- Not re-profiled after the changes (no sampler run of k9g): do that first.
+- Next levers: (1) the remaining chain steps (trace log + step stats: `VU1N_GEN_TRACELOG`, harness `-DVU1N_STEP_STATS`;
+  8 % of the steps leave blocks the trace probe rejects (`gen_trace` returns None: find which instructions), side
+  exits 11 %); (2) kCullClip (5.6 %, flag-exact) and kCull; (3) the FMAC overflow test per maddc (bic/bic/umax/umaxv/fmov:
+  ~8 % of block instructions); (4) per-run overhead (VU1Interpreter::run, exportFlags, flushPipelines, execEfu,
+  finishXgkick, syncInflight ~5.5 %); (5) the GS stage packet copy (memmove 2-2.7 %).
+- Console left on DBI's MTP screen with `update_k9g` installed (the last bench run); env.txt deleted by the bench script.
+- Tools (scratchpad `k9/`): `brun.sh <run> <pkg> [env]` (bench run, old pcs files removed first), `bpk.sh <gen> <pkg>`
+  (pregen dir + package), `ha9.sh` / `chk9.sh` (aarch64 / x86 harness from `/root/src-vgk9`, so a running Switch build
+  of `/root/src-vgpu` is not disturbed), `aq.sh <base> <new>` (aarch64 qemu dump comparison), `hst.sh` / `hstg.sh`
+  (step-stat harness, step totals per generated set), `tla2.py` (step profile x trace log), `pp.sh` / `fd.sh`
+  (bench-run profiles), `ut/` (UNPACK unit test), `slow.sh` (slow-path reasons). `bp9.sh` / `gen2.sh` as before.
+  Note: TaskStop does not kill Git-Bash children; a stopped queue script kept running.
+
 ## Handoff (2026-10-24 night 12, sw-k8 stopped here: ext agent/sw-vu1gpu dfadf1a + gen4 blocks, main 66c1233 + docs, package `update_s4`)
 - **Deterministic benchmark** (docs/benchmark.md; main 66c1233): `GOW_BENCH=1` forces the game's frame step to the
   target step from the first frame (0x17D778 override), resets the rand seed at the gameplay start and counts the pad
