@@ -368,6 +368,43 @@ Gains per lever above are estimates from the Gemini review (gemini-work/results/
   | **`k9g1` / `k9g2`** | **update_k9g (+ g9 blocks: all heads, 96 pairs; chainStep leaf incl. commit / entry memo)** | **38.3 / 38.9** | **49.1 / 49.7** | **50.9 / 51.7** | 4765 / 4755 |
   VU1 busy stays ~4.75 s per 5 s: the thread is still the limit, it just gets more frames out of it.
 
+## VU1 thread throughput, part 2: fast traces, loaded values, VIF prefetch (2026-10-24, sw-k10)
+- Profile of k9g (bench `k10p` = update_k9g + `GOW_PC_SAMPLE=1000`, heavy scene 75-85 s wall, VU1 thread): generated
+  blocks 25.9 %, chainStepOut 7.0 (13.9 before sw-k9), kCullClip 6.1, idle 5.3, kUnlitSt 4.8, processVIF1Data 3.7,
+  hleChain 3.3, kSkinLitSt 3.25, memmove 2.9 (+ `ps2_gs_stage::push` 0.6), kLitSt 2.7, runNative 2.5, chainStepSlow +
+  SlowTail 3.0, kCull 1.9, unpack ~7.4 (unpackFast<3,2,0> 2.0, <1,1,0> 1.9, <2,2,0> 1.3, <3,1,1> 1.1, <3,1,0> 1.0,
+  unpackLinear 0.8), VU1Interpreter::run 1.6, codeChanged 1.4, execEfu + queueP 1.4, setupTrace 0.8, slotFor 0.8,
+  hleMatch 0.7, finishXgkick 0.7, syncInflight 0.6, flushPipelines 0.6, exportFlags 0.5. Hottest generated functions:
+  t0ec8 (a matrix compose) 2.3 %, b1748 1.5 %, then < 1 % each.
+- Generated code (main tools/vu1/vu1n_gen.py, docs/vu1-hle.md "Fast traces and loaded values"): traces get fast
+  variants and JR trace share 0.3 (default since sw-k10), loaded values as range-analysis origins (`--mem-origins`, off:
+  its one console run `k10d` went black after ~2.5 min, see below). Bit-exact; qemu a57_cost -3.1 % of the VU1 work
+  (-4.5 % with `--mem-origins`).
+- **VIF prefetch** (ext 0927485, `GOW_VIF_PREFETCH`): the samples in the unpack loops sat on the source loads (V4-8:
+  903 of 2141 samples on the `ld1`, 783 on the store waiting for it; processVIF1Data on its command-word loads): the
+  DMA chain the EE thread has just copied on core 1 is not in the VU1 core's L1. The command loop and the unpack loops
+  now prefetch 512 bytes ahead.
+- Not done, with the reason: the GS stage copy (memmove 2.9 %) is the one copy of each XGKICK packet out of VU memory,
+  which the next UNPACKs overwrite while the stage runs up to 4 MB behind, so it cannot be consumed in place; kCullClip is
+  latency-bound on its loop-carried ACC/vf29 chain (the hottest samples: B2's first FMUL waiting for vf29, and the
+  data-dependent path A/B branch at `vi14`); the per-run overhead (~5 %) is spread over a dozen functions with no hot
+  spot; blocks with EFU ops (11.5 % of the chain steps on fight.rec, "headno:local") cannot join traces because
+  efuOp's commit and the P reads depend on the scalar pipeline state the chain step updates between blocks.
+- Console bench (GPU max; heavy 10-20 / mid 30-60 / late 90-150 game s; seed state A / B, docs/benchmark.md):
+  | run | package | heavy | mid | late | VU1 busy heavy | state |
+  |---|---|---|---|---|---|---|
+  | `k9g1` / `k9g2` | update_k9g (sw-k9) | 38.3 / 38.9 | 49.1 / 49.7 | 50.9 / 51.7 | 4765 / 4755 | B / B |
+  | `k10p` | k9g + sampler | 38.1 | 48.4 | 51.1 | 4708 | B |
+  | `k10a1` / `k10a2` | fast traces (t1 blocks) | 39.3 / 39.0 | 50.1 / 49.8 | 51.9 / 52.2 | 4769 / 4764 | A / B |
+  | `k10b1` | + VIF prefetch | 39.2 | 50.0 | 52.9 | 4753 | A |
+  | `k10c1` / `k10c2` | + JR trace share 0.3 (t2) = **the sw-k10 default** | 39.3 / 39.2 | 50.1 / 50.2 | 52.6 / 52.6 | 4763 / 4739 | A / B |
+  | `k10d1` | + loaded values (t3, `--mem-origins`) | - | - | - | - | - |
+  `k10d1`: fighting normally at 11:21:17 (screenshot g5), black from 11:21:48 on, then no MTP and no bot (port 6000
+  times out, ping answers); no log. `k10d2` and the k10e runs did not start. Bench signatures of every completed run
+  match the reference of their state (k10a1 vs k9s: all 345 equal; B runs vs k9g2: equal up to the usual 64 s).
+  So sw-k10 got heavy +0.5-0.9 fps, mid +0.6-1.0, late +0.9-1.7 over k9g (same states), VU1 still ~4.75 s busy per 5 s:
+  still the limit everywhere; no scene became limited by another thread.
+
 ## Menu clock: the Load Game menu ran 8 % fast (2026-10-13, ext branches agent/menuclock, agent/menuclock2)
 - Measured (port/menuclock, `GOW_DELTA_DIAG`, `GOW_VBLANK_DIAG`, `GOW_IOP_DRIFT`, `GOW_AUDIO_STATS`): title screen,
   main menu, pause menu and gameplay run at game speed 1.000, VBlank 59.99-60.00 Hz, IOP clock 1.000 +- 0.0004 of wall

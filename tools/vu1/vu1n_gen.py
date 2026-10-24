@@ -11,7 +11,7 @@ heads.txt (optional): extra entry pcs (hex, one per line), e.g. misses logged by
 that branches back to its own start repeats inside its function (VU1NativeAccess::chainTo); needs a runtime with chainTo
 (ext branch agent/sw-vu1 and later). Without it the blocks read and write the VU1State directly (same output as before).
 --no-fast: no fast variants (range analysis, see Bounds; on by default with --locals); --no-fast-traces: none for
-traces (FAST_TRACES); --no-mem-origins: loaded values stay unknown to the analysis (MEM_ORIGINS); --jr-trace-share X:
+traces (FAST_TRACES); --mem-origins: loaded values as analysis origins (MEM_ORIGINS, off by default); --jr-trace-share X:
 see JR_TRACE_SHARE (0.3 since sw-k10).
 --no-cycles: no two-block cycles (gen_cycle) and no loop regions; --regions: loops of more blocks in one function
 (gen_region; off by default, measured slower, see REGIONS).
@@ -409,8 +409,10 @@ FAST = True
 # time is in traces, which had none (their MADDs all went through maddc's test)
 FAST_TRACES = True
 # loaded values as range-analysis origins in one-pass fast variants (Bounds.load; --no-mem-origins: off, sw-k10): the
-# entry check reads the quadword an LQ will read (a VI register at its entry value + offset, no store before it)
-MEM_ORIGINS = True
+# entry check reads the quadword an LQ will read (a VI register at its entry value + offset, no store before it).
+# OFF by default (--mem-origins: on): bit-exact in the replays, but the one console bench run of it (k10d, 2026-10-24)
+# went black ~2.5 min in and left the console unreachable; not re-run yet (docs/vu1-hle.md)
+MEM_ORIGINS = False
 # plain MADD decided on all four lanes, as maddc tests them (VU1N_FAST_DEST=1: on the DEST lanes only, as the exact engine
 # does; 282 of the 1832 PC zone-walk records then differ from the native blocks: a huge or NaN lane outside DEST sends
 # maddc to the wide path, whose single rounding gives other DEST values than the two-step fast path)

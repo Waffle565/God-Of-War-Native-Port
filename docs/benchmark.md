@@ -82,4 +82,12 @@ Later runs report heavy / mid / late only (`--scenes 10-20,30-60,90-150`); sw-k9
 | `k9c1` | update_k9c (+ chainStep leaf, first form) | 36.8 | 47.3 | 49.9 | A |
 | `k9e1` / `k9e2` | update_k9e (+ kernels, NEON helpers, hleMatch, unpack) | 37.9 / 37.9 | 48.4 / 48.2 | 50.9 / 50.2 | A / B |
 | **`k9g1` / `k9g2`** | **update_k9g (sw-k9 final: g9 blocks + runtime)** | **38.3 / 38.9** | **49.1 / 49.7** | **50.9 / 51.7** | B / B |
+sw-k10 (docs/performance.md "VU1 thread throughput, part 2"):
+| run | package | heavy 10-20 | mid 30-60 | late 90-150 | seed at frame 60 |
+|---|---|---|---|---|---|
+| `k10p` | update_k9g + `GOW_PC_SAMPLE=1000` (GSWorker) | 38.1 | 48.4 | 51.1 | B |
+| `k10a1` / `k10a2` | update_k10a (fast traces) | 39.3 / 39.0 | 50.1 / 49.8 | 51.9 / 52.2 | A / B |
+| `k10b1` | update_k10b (+ VIF prefetch) | 39.2 | 50.0 | 52.9 | A |
+| **`k10c1` / `k10c2`** | **update_k10c (+ JR trace share 0.3; sw-k10 default)** | **39.3 / 39.2** | **50.1 / 50.2** | **52.6 / 52.6** | A / B |
+| `k10d1` | update_k10d (+ `--mem-origins`) | black screen ~2.5 min in, console unreachable, no log | | | |
 Other runs (IOP thread, streaming variants): docs/iop-thread.md, docs/performance.md "VIF1 chain streaming".
