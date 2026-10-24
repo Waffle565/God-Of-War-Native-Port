@@ -663,7 +663,8 @@ merge, kicks).
   family `misc`), after an MSVC build of this branch.
 
 ### Progress: the second microprogram + b12c8560 (2026-10-24 night, nat-vu1f, ext branch agent/natvu1f, worktree ext/PS2Recomp-kl-natvu1f)
-Branch agent/natvu1f = agent/natvu1e c611ec4 + 2 commits (07edeef, e6eec1e); agent/natvu1 (1139670) is already in it.
+Branch agent/natvu1f = agent/natvu1e c611ec4 + 2 commits (d29ab63, 5645b55) + a merge of agent/natvu1 8d6d5e4 (head
+ffb4f4c; natcheck results below re-verified after the merge).
 New file `ps2_vu1_nat_part.inl` (namespace `vu1nat::npart`); hooks: one include + one line in runNativeBody
 (ps2_vu1_nat_run.inl), the family line of `VU1NatAccess::tryRun` (ps2_vu1_nat.inl: the program counts as family `misc`),
 one entry + one loop hash in ps2_vu1_nat_misc.inl, the harness (check / natcheck) in ps2_vu1_nat.inl.
