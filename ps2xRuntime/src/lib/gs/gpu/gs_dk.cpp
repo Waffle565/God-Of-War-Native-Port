@@ -255,6 +255,7 @@ namespace
         uint32_t tsNext = 0, tsRead = 0, tsCat = kCatEnd;
         std::vector<uint32_t> tsCatOf = std::vector<uint32_t>(kTsSlots);
         std::unordered_map<uint32_t, uint64_t> gpuNanos; // kind -> ns this window
+        std::unordered_map<uint32_t, uint64_t> gpuFrags; // kind -> fragment shader invocations this window
         uint64_t gpuBusyNanos = 0, tsDropped = 0;
     };
 
@@ -293,7 +294,8 @@ namespace
             return;
         }
         const uint32_t i = s->tsNext % kTsSlots;
-        dkCmdBufReportCounter(s->cmd, DkCounter_Timestamp, s->tsGpu + i * 16u);
+        dkCmdBufReportCounter(s->cmd, DkCounter_Timestamp, s->tsGpu + i * 32u);
+        dkCmdBufReportCounter(s->cmd, DkCounter_FragmentShaderInvocations, s->tsGpu + i * 32u + 16u);
         s->tsCatOf[i] = kind;
         ++s->tsNext;
         s->tsCat = kind;
@@ -306,7 +308,10 @@ namespace
             const uint32_t i = s->tsRead % kTsSlots, j = (s->tsRead + 1u) % kTsSlots;
             if (s->tsCatOf[i] == kCatEnd)
                 continue;
-            const uint64_t a = s->tsCpu[i * 2u + 1u], b = s->tsCpu[j * 2u + 1u];
+            const uint64_t a = s->tsCpu[i * 4u + 1u], b = s->tsCpu[j * 4u + 1u];
+            const uint64_t fa = s->tsCpu[i * 4u + 2u], fb = s->tsCpu[j * 4u + 2u];
+            if (fb >= fa)
+                s->gpuFrags[s->tsCatOf[i]] += fb - fa;
             if (b <= a)
                 continue;
             const uint64_t ns = dkTimestampToNs(b - a);
@@ -918,11 +923,12 @@ namespace
             {
                 const Program &p = s->programs[progs[k].second];
                 const uint64_t h = p.stages.empty() ? 0u : p.stages.back()->hash;
-                n += std::snprintf(buf + n, sizeof buf - n, " p%u:%s:%08llx=%.1f", progs[k].second, p.family ? p.family->name : "?",
-                                   (unsigned long long)(h & 0xFFFFFFFFu), progs[k].first * 1e-6);
+                n += std::snprintf(buf + n, sizeof buf - n, " p%u:%s:%08llx=%.1f/%.2fM", progs[k].second, p.family ? p.family->name : "?",
+                                   (unsigned long long)(h & 0xFFFFFFFFu), progs[k].first * 1e-6, s->gpuFrags[progs[k].second] * 1e-6);
             }
             std::fprintf(stderr, "%s\n", buf);
             s->gpuNanos.clear();
+            s->gpuFrags.clear();
             s->gpuBusyNanos = s->tsDropped = 0;
         }
         s->vtxBinds = s->vtxBufferBinds = s->rtBinds = s->barrierCount = s->drawNanos = 0;
@@ -1946,7 +1952,7 @@ namespace
         step("command memory");
         if (const char *v = std::getenv("GOW_DK_GPU_TIME"); v && *v && *v != '0')
         {
-            s->tsMem = makeMem(kTsSlots * 16u, DkMemBlockFlags_CpuUncached | DkMemBlockFlags_GpuCached);
+            s->tsMem = makeMem(kTsSlots * 32u, DkMemBlockFlags_CpuUncached | DkMemBlockFlags_GpuCached);
             if (s->tsMem)
             {
                 s->tsCpu = static_cast<const volatile uint64_t *>(dkMemBlockGetCpuAddr(s->tsMem));
