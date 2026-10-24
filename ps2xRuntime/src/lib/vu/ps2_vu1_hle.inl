@@ -693,16 +693,14 @@ inline uint32_t kCullClip(Ctx &c, uint32_t entry)
     const int32_t vi4 = s.vi[4];
     uint32_t clip = *c.workingClip;
     uint64_t cyc = c.cycle;
-    // the newest MAC / clip writers (issue cycle, flags), the newest five pushed to the rings at the exit
-    // (MAC writers keep their raw result: the ring computes the flags when something reads them); rings of 8 indexed with
-    // & 7 (a % 5 per writer was ~1/4 of this kernel's samples on the console)
-    uint64_t macAt[8], clipAt[8];
-    __m128 macR[8];
-    uint32_t macM[8], clipV[8], macN = 0u, clipN = 0u;
-    const auto mac = [&](uint64_t at, __m128 raw, uint32_t mask) {
-        const uint32_t k = macN & 7u;
-        macAt[k] = at, macR[k] = raw, macM[k] = mask, ++macN;
-    };
+    // the newest clip writers (issue cycle, flags), the newest five pushed to the ring at the exit; rings of 8 indexed
+    // with & 7 (a % 5 per writer was ~1/4 of this kernel's samples on the console). MAC: the kernel always leaves from B1,
+    // whose five FMACs are the newest five writers then, so only the last B1's are kept (raw: the ring computes the flags
+    // when something reads them); the other blocks' MAC writers never reach the ring
+    uint64_t clipAt[8];
+    uint32_t clipV[8], clipN = 0u;
+    __m128 b1r[5];
+    uint64_t b1at = 0u;
     const auto clp = [&](uint64_t at, uint32_t v) { clipAt[clipN & 7u] = at, clipV[clipN & 7u] = v, ++clipN, clip = v; };
     const auto qd = [&](int32_t qw) { return d + ((static_cast<uint32_t>(qw) * 16u) & 0x3FFFu); };
     // the generated blocks' fast variants (plain SSE, no operand normalisation / clamp) where their entry checks pass
@@ -753,7 +751,7 @@ inline uint32_t kCullClip(Ctx &c, uint32_t entry)
         // B1
         const __m128 n19 = vu1n::nrm(f19), n29e = vu1n::nrm(f29);
         r = _mm_add_ps(vu1n::nrm(f16), bc<0>(f0));
-        mac(cyc, r, 15u);
+        b1r[0] = r;
         f17 = vu1n::clampv(r);
         {
             uint32_t w;
@@ -761,22 +759,23 @@ inline uint32_t kCullClip(Ctx &c, uint32_t entry)
             vi1 = static_cast<int16_t>(w & 0xFFFFu);
         }
         r = _mm_add_ps(vu1n::nrm(f15), bc<0>(f0));
-        mac(cyc + 1u, r, 15u);
+        b1r[1] = r;
         f16 = vu1n::clampv(r);
         vi2 = vu1n::sx16(vi2 + vi4);
         r = _mm_sub_ps(f0, f0);
-        mac(cyc + 2u, r, 3u);
+        b1r[2] = r;
         acc = _mm_blend_ps(acc, vu1n::clampv(r), 3);
         f31 = _mm_blend_ps(f31, _mm_loadu_ps(reinterpret_cast<const float *>(qd(vi2 - 1))), 7);
         const bool done = static_cast<int16_t>(vi5) == 0;
         r = _mm_add_ps(f0, bc<3>(n22));
-        mac(cyc + 3u, r, 4u);
+        b1r[3] = r;
         acc = _mm_blend_ps(acc, vu1n::clampv(r), 4);
         r = _mm_add_ps(n19, bc<2>(n29e));
         m15w = vu1n::macValRt(r, 8u);
-        mac(cyc + 4u, r, 8u);
+        b1r[4] = r;
         f15 = _mm_blend_ps(f15, vu1n::clampv(r), 8);
         vi8 = vi10 & vi11;
+        b1at = cyc;
         cyc += 5u;
         if (done)
         {
@@ -795,7 +794,6 @@ inline uint32_t kCullClip(Ctx &c, uint32_t entry)
                 q = r = _mm_add_ps(acc, _mm_mul_ps(f29, r22));
             else
                 r = vu1n::maddc<false>(acc, n29, n22, q);
-            mac(cyc + 2u, q, 7u);
             f30 = _mm_blend_ps(f30, r, 7);
             vi9 = vi10 | vi11;
             f31 = _mm_blend_ps(f31, vu1n::itofv<4>(f31), 7);
@@ -804,20 +802,17 @@ inline uint32_t kCullClip(Ctx &c, uint32_t entry)
                 q = r = _mm_add_ps(acc, _mm_mul_ps(f29, r23));
             else
                 r = vu1n::maddc<false>(acc, n29, n23, q);
-            mac(cyc + 4u, q, 7u);
             f15 = _mm_blend_ps(f15, r, 7);
             if (fast)
                 q = r = _mm_sub_ps(acc, _mm_mul_ps(f29, r22));
             else
                 r = vu1n::maddc<true>(acc, n29, n22, q);
-            mac(cyc + 5u, q, 3u);
             f18 = _mm_blend_ps(f18, r, 3);
             vi14 = static_cast<int32_t>(m15w & 16u);
             if (fast)
                 q = r = _mm_sub_ps(acc, _mm_mul_ps(f29, r23));
             else
                 r = vu1n::maddc<true>(acc, n29, n23, q);
-            mac(cyc + 6u, q, 3u);
             f19 = _mm_blend_ps(f19, r, 3);
             vi5 = vu1n::sx16(vi5 - 1);
             const uint32_t c5 = fast ? clipf(f30, f15, clip) : vu1n::clipValv(vu1n::nrm(f30), vu1n::nrm(f15), clip);
@@ -834,25 +829,21 @@ inline uint32_t kCullClip(Ctx &c, uint32_t entry)
             const bool fast = pathOk;
             __m128 q;
             r = _mm_add_ps(fast ? r27 : n27, bc<0>(f0));
-            mac(cyc + 1u, r, 7u);
             acc = _mm_blend_ps(acc, fast ? r : vu1n::clampv(r), 7);
             vi10 = vu1n::laneBits16<0>(f19);
             if (fast)
                 q = r = _mm_add_ps(acc, _mm_mul_ps(r24, bc<0>(f31)));
             else
                 r = vu1n::maddc<false>(acc, n24, bc<0>(n31), q);
-            mac(cyc + 5u, q, 7u);
             acc = _mm_blend_ps(acc, r, 7);
             if (fast)
                 q = r = _mm_add_ps(acc, _mm_mul_ps(r25, bc<1>(f31)));
             else
                 r = vu1n::maddc<false>(acc, n25, bc<1>(n31), q);
-            mac(cyc + 9u, q, 7u);
             acc = _mm_blend_ps(acc, r, 7);
             vi10 = static_cast<int32_t>(clip & 0x0FFFu);
             cyc += 9u;
             r = vu1n::maddc<false>(acc, n26, bc<2>(n31), q);
-            mac(cyc, q, 7u);
             f29 = _mm_blend_ps(f29, r, 7);
             vi8 = vi8 & vi10;
             cyc += 2u;
@@ -869,28 +860,24 @@ inline uint32_t kCullClip(Ctx &c, uint32_t entry)
             clp(cyc + 1u, c1);
             vi14 = 3055;
             r = _mm_add_ps(fast ? r27 : n27, bc<0>(f0));
-            mac(cyc + 4u, r, 7u);
             acc = _mm_blend_ps(acc, fast ? r : vu1n::clampv(r), 7);
             vi10 = vu1n::laneBits16<0>(f29);
             if (fast)
                 q = r = _mm_add_ps(acc, _mm_mul_ps(r24, bc<0>(f31)));
             else
                 r = vu1n::maddc<false>(acc, n24, bc<0>(n31), q);
-            mac(cyc + 8u, q, 7u);
             acc = _mm_blend_ps(acc, r, 7);
             vi10 = static_cast<int32_t>(c1 & 0x0FFFu);
             if (fast)
                 q = r = _mm_add_ps(acc, _mm_mul_ps(r25, bc<1>(f31)));
             else
                 r = vu1n::maddc<false>(acc, n25, bc<1>(n31), q);
-            mac(cyc + 12u, q, 7u);
             acc = _mm_blend_ps(acc, r, 7);
             vi10 = vu1n::sx16(vi14 - vi10);
             if (fast)
                 q = r = _mm_add_ps(acc, _mm_mul_ps(r26, bc<2>(f31)));
             else
                 r = vu1n::maddc<false>(acc, n26, bc<2>(n31), q);
-            mac(cyc + 16u, q, 7u);
             f29 = _mm_blend_ps(f29, r, 7);
             vi8 = vi8 & vi10;
             cyc += 18u;
@@ -929,12 +916,13 @@ inline uint32_t kCullClip(Ctx &c, uint32_t entry)
         stW(929, 2, vi8);
         cyc += 8u;
     }
-    for (uint32_t k = macN > 5u ? macN - 5u : 0u; k < macN; ++k)
+    static constexpr uint32_t kB1Mask[5] = {15u, 15u, 3u, 4u, 8u};
+    for (uint32_t k = 0; k < 5u; ++k)
     {
         VU1FlagRing &rg = *c.macRing;
-        rg.issue[rg.next] = macAt[k & 7u];
-        rg.raw[rg.next] = macR[k & 7u];
-        rg.mask[rg.next] = macM[k & 7u];
+        rg.issue[rg.next] = b1at + k;
+        rg.raw[rg.next] = b1r[k];
+        rg.mask[rg.next] = kB1Mask[k];
         rg.tail[rg.next] = nullptr;
         rg.next = (rg.next + 1u) & VU1FlagRing::kWrap;
     }
