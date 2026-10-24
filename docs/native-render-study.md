@@ -661,3 +661,100 @@ merge, kicks).
   clipper (4-6 runs per recording), the 0x1278 multi-tag path of 3d0d / 7ab (menu 28 runs), 60641204 / 541e797b;
   (4) a recording of another level; (5) a runtime bench run with `GOW_VU1_NATIVE_RUN=1` (pixels, fps, `[vu1nat-run]`
   family `misc`), after an MSVC build of this branch.
+
+### Progress: the second microprogram + b12c8560 (2026-10-24 night, nat-vu1f, ext branch agent/natvu1f, worktree ext/PS2Recomp-kl-natvu1f)
+Branch agent/natvu1f = agent/natvu1e c611ec4 + 2 commits (07edeef, e6eec1e); agent/natvu1 (1139670) is already in it.
+New file `ps2_vu1_nat_part.inl` (namespace `vu1nat::npart`); hooks: one include + one line in runNativeBody
+(ps2_vu1_nat_run.inl), the family line of `VU1NatAccess::tryRun` (ps2_vu1_nat.inl: the program counts as family `misc`),
+one entry + one loop hash in ps2_vu1_nat_misc.inl, the harness (check / natcheck) in ps2_vu1_nat.inl.
+
+**The reference first** (pcwalk: oracle end state != next recorded start in 8 runs (vf4), decoder image != recording in 12
+runs near qw 569). Cause: the program copies integer words with `max.x vf4, vf17, vf17` / `max.y vf4, vf18, vf18`
+(vf17.x / vf18.y = 0x400, a denormal as a float; 0x1688 / 0x1690 of the rotated-sprite builder) and stores vf4.xy into the
+packet (qw 569 / 799 = `sq.xy vf4, 5(vi11)`). Both harness engines give 0: the exact engine compares normalised operands
+(denormal -> 0), the native blocks' `_mm_max_ps` runs under DAZ (`maxps(0x400, 0x400)` = 0 with DAZ, 0x400 without:
+checked on this CPU). The game keeps 0x400, as the hardware does (MAX / MINI are an integer compare of the raw words:
+PCSX2 mVU MIN_MAX_PS); most likely the MSVC build folds `max(a, a)` to `a` in the native block. Not a seeding, VIF or
+recording problem. Fix of the reference: `g_vuHwMinMax` (ps2_vu1_upper.cpp, harness only, the runtime never sets it):
+the exact engine returns the raw register for MAX / MINI of a register with itself. `check <rec> exact hwminmax`:
+pcwalk end state != next start in 2 runs (the known CLIP seeding artifact of runs 825 / 860), decoder 0 differences;
+pcfight 0 / 0. Only the same-register form is changed: it is the case observed, and there the hardware and the game
+agree; for MAX / MINI of two different registers the game runs the native blocks' float compare, which the main
+program's runs match. natcheck's reference for the second program is therefore
+the exact engine + hwminmax; the native blocks differ from it in 12 pcwalk runs (counted, `second-program runs where
+the native blocks differ`). The main program's reference stays the native blocks (pcmenu's exact engine differs from
+the recording in 535 runs; fast in 0).
+
+**The program** (MPG'd between main-program runs; start pc 0x00, or 0x18 to keep the packet double buffer of the run
+before; gate: FNV of 0x0000-0x0770 + 0x0db0-0x0e48 + 0x10b8-0x1ed0 = 860b4468fbef0880, the same in pcfight and pcwalk;
+their code differs only beyond 0x2c00). Data driven from the batch at XTOP:
+- 20 random seed (vf30), 21.xy element range (+ XTOP), 21.zw / 31 the age terms, 22.w element stride, 22.y the builder's
+  set-up (`jalr vi15`; it returns the builder's element routine in vi14, stored to 22.x), 22.z the builder's constants
+  (GIF tag + 2-4 qw), 0-6 matrix / projection / size, an A+D packet at XTOP + 8 (kicked first).
+- Per element: key words 23-30 are lists of 16-bit fields, one per lane (a negative field shifts the lane by 16 bits
+  with itof12 / ftoi4 twice, 0 ends the list). 23 / 24 copy element qwords (xyzw / w) to XTOP + key; 25 / 26 the same
+  with a random value per key (0x04c8: vf1 = a + b * rnd, vf30 = the next seed: a float LCG with the 128 / 2^16
+  rounding constants); age vf31 = (t, t^2 / 2, ...) from 31(XTOP) and 21.zw, P = EEXP; w < 0 skips the element;
+  29 / 30 pick a per-track snippet (`jalr vi15, vi1`: 0x0530 constant, 0x05a0 linear a + b t, 0x0600 the same clamped
+  to 0-255, 0x0668 quadratic a + b t + c t^2/2, 0x06e8 clamped) on the data at XTOP + key 30, results to qw 265+;
+  27 / 28 scatter them to the builder's inputs (absolute qw 546-549).
+- Builders (set-up -> element routine; GIF PRIM of their tag): 0x10b8 -> 0x1128 two-vertex streak (sprite 0x156),
+  0x13d0 -> 0x1488 rotated sprite (sin / cos polynomial 0x1540-0x1620 with range reduction; tri strip 0x154),
+  0x16d8 -> 0x1748 velocity-aligned view quad (cross product of position and direction, ERLENG; 0x154), 0x19f8 -> 0x1a68
+  quad from two axes (0x154), 0x1d08 -> 0x1db0 strip of vf17.z quads (untextured Gouraud fan 0x14d). CLIP of the
+  corners against the guard band: culled -> 0x0db0 (no kick, vi6 -= 1); else EOP on the last tag (vi7), XGKICK,
+  vi13 = 1356 - vi13 (563 <-> 793). E at 0x04b8 (end pc 0x04c8).
+- Which effect (inferred from the packets, not from pixels): all textured, alpha-blended, UV-addressed particles
+  (TEX0 per run in the A+D packet). The view quad builder dominates both recordings (fight 1000 elements in 10 runs,
+  ~100 per frame; walk 2113): velocity-aligned streaks on the rainy ship deck, most likely the **rain**; rotated sprites
+  (walk 548, splashes / sparks / smoke), two-axis quads, and the untextured fan strips (walk 6 runs, fight 1, when
+  attacking: most likely the **Blades of Chaos swing trail**).
+
+**Native** (`npart::run`): the element loop, the key lists, the LCG, the snippets, the age / EEXP, the five builders,
+cull, EOP and kicks as sequential C++ with the vu1n float semantics (as the rest of ps2_vu1_nat_*), MAX of a register
+with itself as a raw copy, EEXP / ERLENG with the exact engine's formulas (in SSE scalar ops). The pipeline effects the
+program relies on are all "value ready" ones (WAITQ / WAITP, DIV 7 pairs before its MULQ, CLIP / MAC flags at least 4
+pairs before FCAND / FMAND), so only the same-pair reads (a lower op reading a register its upper op writes: the old
+value, e.g. EEXP of vf31.z beside `madd vf31`, `sqi vf5` beside `sub.w vf5`) are written out. Memory is snapshot first
+(declines anywhere restore it); declines: other snippet / builder addresses, a strip of 0 segments.
+
+**b12c8560** (fight 5.1 %): the B entry (module + 0xe8, lit prologue, vi8 = 1) of the 93febeec-like modules; its runs
+take nat-vu1e's clip path (nmisc::clipPath) and the callbacks into the module's A loop, which is the lit_st loop
+(`nlit::litLoop`, code hash 7c187fbcd9b8ba29 over 192 bytes): one `nmisc::kEntries` line + one `nmisc::loop` case.
+
+**Result** (natcheck, every covered run byte-exact: GIF packets, 16 KB VU memory, registers; no declined run left memory
+changed):
+
+| recording | native share of VU pairs | was (nat-vu1e) | declines left |
+|---|---|---|---|
+| pcfight | **99.2 %** (2996 / 3000 runs) | 85.8 % | 4 at 0x0940 (the triangle clipper) |
+| pcmenu | **99.1 %** (2963 / 2991 covered) | 98.4 % | 28 at 0x1278 (3d0d / 7ab multi-tag); 9 runs of 60641204 / other entries |
+| pcwalk | **98.9 %** (2992 / 2998) | 74.2 % | 6 at 0x0940; 541e797b (2 runs) |
+
+Native time on these runs (x86 harness, cold caches per run): fight 33 ms vs 121 ms for the oracle (native blocks).
+
+**Another level** `pcathn02.vifrec` (natvu1 PC exe, new game, `GOW_WARP=ATHN02A` 0.5 s after gameplay start (arrived
+11.8 s later, "The Gates of Athens"), `GOW_VIF1_REC_AT=110`, pad script zone.py; Kratos did not move after the warp
+(`[bench] pos` constant), so it is the level start; 3000 runs; archive `D:\Claude Archive\GoW-Archive
+atvu1-2026-10-24\pcathn02.vifrec`,
+WSL `/root/nrs/`). Mix: 3d0d1206 32.1 % of the pairs, skinned 12.1 %, the second program 10.5 % (29 runs: 1271 two-vertex
+streak elements of builder 0x10b8, 4 strip and 2 sprite runs), lit 6.4 %, c79fec55 2.1 %. Reference: decoder 0
+differences; the exact engine + hwminmax ends != the next start in 8 runs (2004-2019: MAC / CLIP only, which natcheck
+does not compare except CLIP), the native blocks in 2. natcheck: **94.9 % of the VU pairs native** (2975 of 2999 covered
+runs), every covered run byte-exact except run 2019's CLIP (native 820000 = the recorded next start, the exact
+engine 000000: the oracle's CLIP seeding artifact again); declines: **15 runs at 0x0940** (the triangle clipper, ~3 %
+here) and 9 at 0x1278 (the 3d0d / 7ab multi-tag path); 541e797b 1 run.
+
+**Tools**: `check <rec> exact hwminmax` (reference with the hardware's same-register MAX / MINI), `GOW_VU1NAT_DIFF=1`
+(check prints the differing qwords: decoded / recorded / oracle end / previous start, and the differing registers),
+`GOW_VU1NAT_COV=1` (coverage of the runs without a module entry, i.e. the second program), natcheck prints the second
+program's code hash (`[vu1nat-part]`). Scratch: `partsum.py <vifrec>` (per run: builder, elements, GIF PRIM, the A+D
+packet), `fdis.py` (disassembly with nops and branch targets), `vrx.py` (one run's code / data / state), `zone.py` +
+`zrun.sh` (new game, GOW_WARP, walk, recording), archived in `D:\Claude Archive\GoW-Archive\natvu1-2026-10-24\nat-vu1f\`.
+Not built on MSVC this round (the harness g++ build compiles the same TU).
+
+**Next**: (1) the 0x0940 triangle clipper (4-6 runs per ship recording, 15 in Athens: the largest share left;
+0x0940-0x0b30 + 0x1700-0x2380); (2) the 0x1278 multi-tag path of 3d0d / 7ab (menu 28 runs, Athens 9: nat-vu1c's code in ps2_vu1_nat_run.inl;
+runLit's tag merge 0x1278 / 0x0e30 is the model); (3) 60641204 / 541e797b (lit prologue, vi8 1, own loops at entry + 0x18 not written yet: registering them alone
+declines at the 0x1228 loop call); (4) an MSVC build and a runtime bench with
+`GOW_VU1_NATIVE_RUN=1` (pixels: the rain / trails of the second program, fps, `[vu1nat-run]` family misc).
