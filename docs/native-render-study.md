@@ -458,3 +458,46 @@ Recorded with the PC build of ext 42f2f0a (out/build-pc of the worktree; `GOW_VI
   57882ece8537340c, fight and menu), the entry code hash, for 7ab32108 also the 3d0d1206 code 0xd8 before it. Any
   other branch returns false with the pc (the caller works on copies and falls back to the recompiled VU1).
 - Results: see the handoff at the top (byte-exact on every covered run, 21.2 % / 11.0 % of the VU pairs).
+
+### Progress: lit and skinned entries (2026-10-24 night, nat-vu1d, ext branch agent/natvu1d, worktree ext/PS2Recomp-kl-natvu1d)
+Branch agent/natvu1d = agent/natvu1 (c606296, nat-vu1c's runtime hookup) + 3 commits (head 6f9c60a). Own file
+`ps2_vu1_nat_lit.inl`, included by ps2_vu1_nat_run.inl after the nrun helpers; runNativeBody hands every entry it does
+not cover itself to `vu1nat::runLit` (one line), the natcheck gate asks `vu1nat::nlit::covers` (one line).
+- **Entries**: **93febeec** (lit_st), **39f38df4** (skin_lit_st), **6df5c750** (skin_lit28, the menu Kratos). All three
+  prologues are `iaddiu vi14, vi0, 28; jalr vi15, vi14; iaddiu vi8, vi0, 1`: the batch switch is entered at
+  **0x00e0**, one pair after `iaddiu vi7, vi0, 1`, so vi7 stays 0 (set at 0x0070) and 0x0388 always goes to the colour /
+  lighting set-up at 0x03a0, whatever the header sign.
+- **Fixed code** as a pc state machine (blocks 0x03a0-0x0850, 0x0e30-0x1118, 0x11d0-0x1350, 0x13f8-0x14e8, the clip
+  pass 0x16a8-0x1800 / 0x1bb0 / 0x1570 / 0x2310): colour set-up with the light matrix (0x0500-0x0698: lights vf16-18,
+  the second set vf24-26 for skinning; scale from P = 1/|row 0| or from ERSQRT / RSQRT of the light vectors), the second
+  matrix vf12-15 (0x0428 / 0x07e8), the same set-up again for every further GIF tag of a batch (0x0e30, entered from the
+  tag merge 0x1278 / 0x1468: the next tag's NLOOP is added to the first tag, its .w names the matrix), the
+  doubled-stride loop calls 0x13f8 (skin modules), the kicks 0x12b0-0x1348. Version gate: FNV of those ranges
+  (`nlit::kFixedValue` 356ebd77e6dbab0c: the fight's and the menu's fixed code are identical there; they differ only in
+  0x24d8-0x2820).
+- **Menu clip pass** (6df5c750, header bits 13 + 14; 0x0358 -> 0x0388 when bit 14 is set): after the ITOP kick
+  (0x12e0) the output strip is tested again per vertex (0x1728 loop): the position against two scaled frusta (vf22 /
+  vf23 from qw 64-66(ITOP)), CLIP of both into the clip flags, FCGET; the triangle of the last three vertices outside one
+  plane of the first test gets its ADC bit (`sq.w vf1` with 0x8000, 0x1bc8); a triangle partly outside goes to the
+  clipper at 0x1808 (never seen: declines). The FMAND at 0x1770 reads the MAC flags of 0x1750 (addz.w, sign of w);
+  the zero case (0x17a0) never occurs and declines. Then `jr` to the return address in qw 928.x (1049 = 0x20c8, left by
+  the loop's exit delay slot), `bal` 0x2310 -> 0x1570: two passes of the fixed-code loop 0x2320 (perspective divide, Q
+  of the previous pass), xitop, the final kick at 0x1338.
+- **Loops**: own exact versions (`nlit::litLoop`, `skinLoop`, `skin28Loop`, `unlit11Loop`: operands normalised,
+  results clamped, DIV as vu1n::divv), same pass structure as vu1hle::kLitSt / kSkinLitSt. The HLE kernels are plain
+  float and differ where the prime pass reads stale input (huge / denormal words): its scratch output qw 931+ is read by
+  later runs.
+- **FTZ + DAZ**: the native blocks run with flush-to-zero and denormals-are-zero (`vu_fpmode::kFlushZero`) besides
+  round toward zero, and a native run must too (a denormal vertex word times a negative matrix lane gave -0 instead of
+  +0, so Q = -FLT_MAX instead of +FLT_MAX in a prime pass). natcheck and the runtime hookup (`VU1Interpreter::runNative`
+  in ps2_vu1_nat.inl) now set it.
+- **Undo** (nat-vu1c's nrun::Undo): the batch code's stores are logged; before the first loop call memory is snapshot
+  unless no decline can follow (one tag with EOP, NLOOP > 0, no clip pass).
+- **Result** (natcheck after the rebase, every covered run byte-exact: GIF packets, 16 KB VU memory, all registers;
+  hlecmp of the mixed dumps vs `pc*_ref.dump`: 0 data words differ, every GIF word exact; no declined run left memory
+  changed): **fight 73.4 % of the VU pairs native** (2621 / 2625 covered-entry runs: 93febeec 692 / 692, 39f38df4
+  308 / 308, plus 3d0d / 7ab with nat-vu1c's clip path; 4 declines at 0x0940), **menu 94.3 %** (2644 / 2672: 6df5c750
+  1251 / 1251; 28 declines at 0x1278 in 3d0d / 7ab runs). Before this round: 21.2 % / 11.0 %.
+- **Left** (by share of VU pairs): fight: other programs (startPC not 0 / 0x18 / 0x30) 8.3 %, b12c8560 5.1 %,
+  b66a3e7a 3.7 %, e4f3b5c3 3.1 %, ea6b4a01 3.1 %, c79fec55 1.5 %, three small ones 0.9 %; menu: b45e3bab 2.3 %,
+  9ffe612e 0.9 %, b12c8560 0.8 %, 29a9fc10 0.5 %, the multi-tag path 0x1278 of 3d0d / 7ab (28 runs).
