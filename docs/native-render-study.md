@@ -1,5 +1,11 @@
 # Native rendering instead of the recreated VU1: study and migration plan (2026-10-24)
 
+## Handoff (2026-10-24 evening, nat-vu1a stopped here: ext agent/natvu1, worktree ext/PS2Recomp-kl-natvu1)
+Steps 0 and 1 of the plan below, PC / WSL only (no console). Everything new is off by default (env switches).
+Details in "Progress" (end of this file). Next agent: read "Progress", then start step 2 (`unlit_st`).
+
+<!-- HANDOFF-RESULTS -->
+
 The question (user, 2026-10-24): replace the recreated VU1 path (VIF1 UNPACK into VU memory, the translated
 microprograms with exact VU state, flags and cycle model, XGKICK'd GIF packets re-parsed by the GS stage) with
 hand-written native code that does what each VU1 program does (transform, skinning, lighting, culling, packet
@@ -234,3 +240,59 @@ worker notes), docs/benchmark.md, docs/switch-deko3d.md, ext `ps2xRuntime/src/li
 lines 956-967), `ps2xRuntime/src/lib/gs/gpu/gs_hw_backend.cpp`, `ps2xRuntime/src/lib/ps2_memory.cpp`
 (needsGsWorkerSync / waitGsWorkerIdle), `port/output-usa` (EE code grep), `port/vu1_micro`, the bench log
 port/switch/logs/bench_k10e1.
+
+## Progress
+
+### Step 0 / step 1 tooling (2026-10-24, ext agent/natvu1 85a77ca+)
+All off by default. Runtime (ext `ps2xRuntime`):
+- **`GOW_EE_VUACC=1`** (ps2_runtime.cpp `eeVuAccess`): every EE load / store that reaches VU0 / VU1 micro or data
+  memory (0x11000000-0x1100FFFF), the VIF0 / VIF1 registers (0x10003800-0x10003FFF) or the VIF FIFOs, through any
+  computed address, counted by (op, physical address, pc, ra) and printed every 5 s (`[ee-vuacc]`, cumulative). VU0
+  micro and VU1 data memory are not special addresses for the recompiled code's memory macros (their fast path aliases
+  them into RAM at 0x1000000+); with the switch on, `PS2Runtime::isSpecialAddress` also routes the whole
+  0x110xxxxx window to the runtime, so those accesses are counted too (and then reach the real VU memory, as on the
+  hardware).
+- **`GOW_VIF1_REC=<file>`** (`GOW_VIF1_REC_AT=<s>` wall seconds after the first VU1 run, `GOW_VIF1_REC_SKIP=<runs>`,
+  `GOW_VIF1_REC_N=<runs>`, default 3000; ps2_vif1_interpreter.cpp `vif1RecRun`): the VIF1 command stream exactly as
+  processVIF1Data consumed it, cut at each MSCAL / MSCNT, and for each run the VU1 state it starts with (execute()'s
+  setup applied), the VIF registers, micro and data memory. Recorded on the VIF thread after `vu1AsyncWait`, so the
+  memories are exactly what the run starts with. Format in the source comment. ~33 KB per run.
+- **`vu1nat`** (ps2_vu1_nat.h / ps2_vu1_nat.inl, included by ps2_vu1_core.cpp): `VifDecoder` (the native VIF1
+  decoder: STCYCL / OFFSET / BASE / ITOP / STMOD / STMASK / STROW / STCOL / MPG / DIRECT(HL) / MSCAL / MSCNT / every
+  UNPACK format with masks, STMOD and fill / skip cycles, into its own 16 KB input image and micro image; DIRECT
+  payloads listed in stream order), `classifyRun` (per run: module entry from the batch header, module slot hash,
+  fixed-code hash, known loops), `families()` (loop-code table of section 1, none native yet).
+- Harness (main repo **tools/vu1_nat**: `build.sh <name> <ext worktree> <vu1n_generado>` -> `/root/vu1h/<name>`):
+  - `check <vifrec> [exact|fast] [dump <file>]`: per run, the decoder's image / micro image / VIF state against the
+    recording (decoder state chained from the oracle's output of the run before + the stream in between); the native
+    dispatch against the oracle's `jr` into the module; batch-switch calls and XGKICKs per run; oracle end state
+    against the next run's recorded start state (registers persist); loops / module coverage. `dump` writes the
+    oracle's per-run results in the `GOW_VU1N_REPLAY_DUMP` format, so `tools/vu1_hle/hlecmp.py ref test` compares a
+    native path with the oracle per GIF write (ST/Q, RGBA, XY, Z, ADC tolerances).
+  - `liveout <vifrec> [n]`: for each run, which registers (field poisoning) and which memory qwords written by the
+    previous run and not rewritten by the VIF (qword poisoning) change its result: the state a native run must leave
+    for a fallback run.
+  - `torec <vifrec> <out.rec>`: runs as `GOW_VU1N_REPLAY` records for the older tools (blockprof, icount).
+  - `rec2vifrec.py <rec> <out>`: an older `GOW_VU1N_RECORD` file (fight.rec, menu.rec: every 7th run, no stream) as a
+    runs-only vifrec for the dispatch / classification part.
+
+### Results on fight.rec / menu.rec (runs only, 2000 each)
+- **Dispatch**: every main-program run dispatches exactly once, at its start (`xitop vi12; ilw.y vi4, 69(vi12);
+  jr vi4`). The native entry (header word read from the input image) equals the oracle's jump into the module in
+  **1973 / 1973** fight runs and **2000 / 2000** menu runs. The other 27 fight runs are not main-program entries
+  (startPC outside 0 / 0x18 / 0x30, or a different microprogram: 4 runs dispatch through `jalr vi15, vi14` with
+  vi12 = XTOP) and fall back. The dispatch site is found per fixed-code version (scan for the first JR after the
+  entries, then the ILW that loads its register).
+- **One module per run**: in the fight all 2000 runs return from the batch switch only into the entry's module slot;
+  in the menu 102 of 2000 runs also jump into a second module slot. So the run is the unit of dispatch, but the
+  per-run key must be the set of modules the run's batches use (the batch switch re-reads the header), not only the
+  entry. Batch-switch calls per run are odd (1, 3, 5, ... up to 59): most runs 1-5.
+- **Loop table is not a family table**: the 28-pair block 5181a0b08a6d0989 (`skin_lit28`) occurs in modules that also
+  hold `skin_lit_st`, `cull`, `5bb209bd` and `476fc4cf` loops. Coverage by loops found per module: fight runs
+  unlit_st 55.9 %, skin_lit_st(+5181) 17.8 %, lit_st 15.2 %, others < 2.3 % each, none 2.0 % (but 20 % of the VU
+  pairs: the non-main programs are long); menu unlit_st 44 %, skin_lit_st(+5181) 45.8 % (82.5 % of pairs). Native code
+  will register per module hash (58 distinct modules in fight.rec, 6 in menu.rec) with a family behind it.
+- **Oracle**: in this harness the exact interpreter and the native blocks (the PC pregen of 0927485) do not give the
+  same packets on fight.rec (4881 of ~106 k XYZ writes beyond tolerance). Which one is right is decided on a
+  consecutive recording (end state of run k == recorded start state of run k+1; the decoder's data check covers the
+  memory): see below.
