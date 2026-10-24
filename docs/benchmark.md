@@ -109,3 +109,15 @@ sw-k11 (docs/performance.md "The GPU at the default clocks"); `k10d2` lost its l
 | `g3` | update_k11a + GPU timer + `GOW_SCALER=bilinear`, default clocks | 30.1 | 37.7 | 40.3 | A |
 | `x1` / `x2` | k11b / k11c (palette expansion), default clocks | system error ~10 s into the fight | | | B / B |
 Other runs (IOP thread, streaming variants): docs/iop-thread.md, docs/performance.md "VIF1 chain streaming".
+nat-vu1g (native VU1 runs, docs/native-render-study.md; `GOW_PERF_DIAG=1`; vu1 = VU1 thread busy ms per 5 s, 90-150):
+| run | package / env / clocks | heavy 10-20 | mid 30-60 | late 90-150 | vu1 | seed at frame 60 |
+|---|---|---|---|---|---|---|
+| `nv1on1` / `nv1on2` | update_nv1, `GOW_VU1_NATIVE_RUN=1`, default | 25.8 / 25.8 | 35.7 / 35.6 | 37.2 / 37.2 | 3847 / 3902 | B / B |
+| `nv1m1` / `nv1m2` | update_nv1, `=m` (all recompiled), default | 28.5 / 28.5 | 35.1 / 35.2 | 37.3 / 37.5 | 3341 / 3372 | A / A |
+| `nv1xon` / `nv1xm` | update_nv1 `=1` / `=m`, GPU + EMC max | 33.0 / 39.8 | 44.9 / 51.1 | 46.1 / 53.6 | 4778 / 4732 | A / B |
+| `nv2ap` | update_nv2a `=1` + `GOW_PC_SAMPLE` (profile, 330 s) | (0-30: 34.6) | 35.0 | (90-150: ~37.1) | ~3700 | 4b2b0cc2 (new) |
+| `nv2d1` / `nv2m1` | update_nv2 (Switch default: 3d0d + 7ab native) / same `=m`, default | 29.0 / 28.6 | 35.3 / 34.9 | 37.6 / 37.3 | 3249 / 3317 | A / B |
+| **`nv2xd` / `nv2xm`** | **update_nv2 default / `=m`, GPU + EMC max** | **41.1 / 39.9** | **52.5 / 51.2** | **55.0 / 53.2** | 4700 / 4719 | A / A |
+nv2 per run (A57): 3d0d1206 3.6 vs 4.2 us, 7ab32108 4.5 vs 6.0-6.1 us native vs recompiled. The nv2 builds' signatures
+already part at frame 120 between two runs of the same package and env (`nv2d1` vs `nv2xd`; rand seed, positions still
+equal), so the 63 s identity no longer holds there; `nv2ap` had a third frame-60 seed (4b2b0cc2). Not investigated.

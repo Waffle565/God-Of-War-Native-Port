@@ -1,5 +1,38 @@
 # Native rendering instead of the recreated VU1: study and migration plan (2026-10-24)
 
+## Handoff (2026-10-25 night, nat-vu1g stopped here: ext agent/natvu1 head 86235f2, packages update_nv2a / update_nv2)
+Details in "Progress: console bench + faster lit loops (nat-vu1g)" (end of this file).
+- **Console verdict: native wins only for 3d0d1206 / 7ab32108**, so the Switch default (86235f2, package
+  `update_nv2`) runs exactly those two natively (`GOW_VU1_NATIVE_FAMS` mask 0x3, liveFamilyName order; env
+  `GOW_VU1_NATIVE_RUN=1` = every family, `=m` measure, `=0` off; PC default unchanged: off). Per run on the A57 (bench, default clocks, recompiled = `m`):
+  3d0d1206 3.1-3.5 vs 4.8-5.2 us and 7ab32108 3.9-4.3 vs 9.5-9.8 us (**native wins**); 93febeec 14.0 (nv1) -> **9.6**
+  (nv2a) vs 8.5 us, 39f38df4 30.7 -> **20.0** vs 13.7 us, 6df5c750 43.5 -> 39.1 vs 28.4 us (**native loses**); misc +
+  second program (nv2a only) 55 us vs ~35 us for the same runs recompiled (loses). VU1 thread busy per 5 s: nv1 on
+  ~3800 ms vs m ~3300 ms; nv2a on ~3700 ms. At GPU / EMC max (VU1 the limit) nv1 on heavy 33.0 fps (A) vs m 39.8 (B).
+- **update_nv2 bench** (default mask vs `=m`, same package): GPU / EMC max, same start state A: heavy **41.1 vs 39.9**,
+  mid **52.5 vs 51.2**, late **55.0 vs 53.2** fps; default clocks (GPU-bound): 29.0 / 35.3 / 37.6 vs 28.6 / 34.9 / 37.3
+  (states A / B), VU1 thread 3249 vs 3317 ms per 5 s. Bench signatures of nv2 builds part at frame 120 even between two
+  runs of the same env (open, docs/benchmark.md), so "identical 63 s" could not be shown on the console this round;
+  natcheck byte-exactness is the proof.
+- **ext branch** agent/natvu1 = nat-vu1c 1139670 + 8d6d5e4 / 88dc2d5 / bc71863 / 4a7faf8 (loop and set-up speed-ups,
+  below) + merge of agent/natvu1f ffb4f4c (09871d6: second program, b12c8560, nat-vu1e's misc entries) + eafa552.
+  natcheck byte-exact on pcfight 99.2 % / pcmenu 99.1 % / pcwalk 98.9 % / pcathn02 94.9 % (only the known CLIP seeding
+  artifacts). nat-vu1f's same-register MAX note: npart copies the raw word (0x400 survives); the Switch's recompiled
+  blocks keep it too (sse2neon `SSE2NEON_PRECISE_MINMAX=1`: `_mm_max_ps(a, a)` = `vbslq(vcgtq(a, a), a, a)` = raw a).
+- **Package** `port/switch/nsp/out/update_nv2a` (ext eafa552, t4 blocks, build `/root/gow-switch-nv2`, ELF
+  `/root/elf_nv2a.elf`): native off unless env.txt sets `GOW_VU1_NATIVE_RUN=1`.
+- **Profile** (bench `nv2ap`, `GOW_PC_SAMPLE=1000` on GSWorker, `tools/switch_pcprof.py`): skinLoop 5.2 %, litLoop
+  4.9 %, npart (go / element / random / quadCorners / snippet) 16.5 %, memmove 4.4 % (npart's 16 KB snapshot, the packet
+  vector), kCullClip 3.8 %, runLit 5.0 %, tryRun 2.8 %, windLoop 5.5 %, Op::scaleRow / lightRow 3.2 %.
+- **Next** (all for the A57, measure with the console bench, not the x86 harness: x86 says native is 3-15x faster
+  than the oracle, the console says the opposite for lit / skin / misc): (1) npart (the largest native cost): no 16 KB
+  snapshot (log ranges like the lit loops), fewer state round-trips through VU1State; (2) lit / skin per-vertex cost vs
+  vu1hle::kLitSt / kSkinLitSt (~150 A57 instructions per vertex vs ~200 now): the exact semantics are only needed where
+  the prime pass reads stale input, so a plain-float pass with a cheap exactness guard (as FastOps does for overflow)
+  on the remaining blends / converts; (3) the set-up through `Op` (every op loads, normalises and stores VU1State):
+  keep the set-up registers in locals; (4) a kick sink into the GIF stage (tryRun copies every packet); (5) add a family to the Switch
+  mask once its console time beats the recompiled one (`[vu1nat-run]` nat vs rec us per run, an `=m` bench as baseline).
+
 ## Handoff (2026-10-24 night, nat-vu1c stopped here: ext agent/natvu1 head 1139670, package update_nv1)
 The native runs are wired into the game (off by default) and the clip path of 7ab32108 is native. Details in
 "Progress: runtime hookup + clip path" (end of this file).
@@ -907,3 +940,23 @@ transliterated range, a new entry or loop, a new branch direction.
 signatures, pixels, `[vu1nat-run]`), then console (nat-vu1g owns it); (2) the census of step 2 above on a PC
 play-through; (3) the e4f3 / ea6b clipped path (Athens 1656 / 1657), 60641204 / 541e797b loops; (4) step 3 / 4 of the
 removal plan; (5) step 7.
+
+### Progress: console bench + faster lit loops (2026-10-25 night, nat-vu1g, ext branch agent/natvu1)
+- **Loops** (ps2_vu1_nat_lit.inl, same bits, natcheck): `litLoop` / `skinLoop` without per-operand normalisation
+  (loop-invariant rows and the ADDA-with-vf0 results hoisted; registers read in the first pass before the loop rewrites
+  them normalised once at entry; registers whose other lanes are never read run with full writes and get the kept
+  lanes blended back at exit). Each pass loads first (all loads of a pass precede its stores), runs with `FastOps`
+  (plain mul / add, the largest magnitude of every product and result kept) and tests once whether anything reached
+  FLT_MAX's bits; such a pass (stale input of a prime pass) is redone from saved registers with the exact
+  `maddN / mulN / addN`. Checked with the redo forced on every pass too.
+- **Set-up**: `nlit::Op` computes MAC flags only when read (`macNow`, `setMac` for a loop's flags: nmisc's windLoop).
+- **Undo**: where a decline can follow the loops, the entry's own loop logs its store block (`Undo::logRange`, ~vi5 *
+  vi4 qwords from vi3) instead of the 16 KB snapshot (skin runs: 72 % snapshotted before). Checked by forcing a decline
+  after every lit-path run with logging forced: memory restored in all runs of the four recordings.
+- **Harness**: natcheck `GOW_VU1NAT_REPS=n` (warm per-entry times, hashes cached by a code generation as in the
+  runtime), `GOW_VU1NAT_REPS_ONLY=<entry hi32>` (for `perf`), snapshot runs per entry. Warm x86 per run (pcfight):
+  39f38df4 3.8-4.4 -> ~3.4 us, 93febeec 1.5 -> 1.1-1.3 us. The x86 numbers do not predict the A57 (see the handoff).
+- **Console** (runs `bench_nv1on1/2`, `nv1m1/2`, `nv1xon/xm`, `nv2ap`; `[vu1nat-run]` totals per 5 s): see the handoff
+  and docs/benchmark.md "nat-vu1g". Start states: on1 / on2 B, m1 / m2 A, xon A, xm B, so fps compare only within a
+  state; on1 = on2 to frame 3840 (the usual 64 s divergence). Shots (rain, HUD, enemies) look normal in all runs.
+- **Switch default** (86235f2): `liveFamilies()` mask, default 0x3 on `__SWITCH__` (3d0d1206 + 7ab32108 native).
