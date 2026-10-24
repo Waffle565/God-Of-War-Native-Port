@@ -38,6 +38,7 @@ void gowDumpBranchRing(const char *why);
 #include <array>
 #include <chrono>
 #include <fstream>
+#include <iterator>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -52,6 +53,15 @@ namespace
     // a button profile beginning with 0xff to identify a DualShock 2.
     struct GowPadSocket { bool open = false; uint32_t port = 0; };
     std::array<GowPadSocket, 2> g_padSockets{};
+
+    // GOW-Port: GOW_BENCH=1 (with GOW_PAD_TEST=1): deterministic benchmark (docs/benchmark.md). From the gameplay
+    // start on, every frame-clock read (0x17D778) reports exactly the target frame step (one field at 60 fps) instead
+    // of the measured one, the rand seed is reset once at the start, and the pad script's "g<s>" times count game
+    // frames / 60 instead of wall seconds: the game then computes the same frames on every run whatever the fps.
+    // `[bench]` lines (every GOW_BENCH_EVERY frames, default 60) give the wall time per frame index.
+    const bool g_bench = [] { const char *v = std::getenv("GOW_BENCH"); return v && std::strcmp(v, "1") == 0; }();
+    bool g_benchStarted = false;
+    uint64_t g_benchFrames = 0;
 
     void padReturn(R5900Context *ctx, uint32_t result)
     {
@@ -338,6 +348,15 @@ namespace
             {
                 gameplayStart = seconds;
                 std::fprintf(stderr, "[gow-pad2:test] gameplay start at %.2f s\n", seconds);
+                if (g_bench)
+                {
+                    // same rand sequence from here on (newlib seed at _impure_ptr+0x58)
+                    const uint32_t reent = readGuest32(rdram, 0x002A4294u);
+                    writeGuest32(rdram, reent + 0x58u, 0x2545F491u);
+                    g_benchStarted = true;
+                    g_benchFrames = 0;
+                    std::fprintf(stderr, "[bench] start wall=%.3f\n", seconds);
+                }
             }
             auto parseTime = [](const std::string &text) {
                 return !text.empty() && text[0] == 'g' ? kGameplayTime + std::strtod(text.c_str() + 1, nullptr)
@@ -346,6 +365,8 @@ namespace
             auto reached = [&](double when) {
                 if (when < kGameplayTime)
                     return seconds >= when;
+                if (g_bench)
+                    return g_benchStarted && static_cast<double>(g_benchFrames) / 60.0 >= when - kGameplayTime - 1e-9;
                 return gameplayStart >= 0.0 && seconds - gameplayStart >= when - kGameplayTime;
             };
             // GOW-Port: GOW_RAM_DUMP=<time>:<file> writes the 32 MB EE RAM once (time as in GOW_PAD_CAPTURAS,
@@ -449,9 +470,22 @@ namespace
             struct ScriptedPress { double seconds; uint8_t byte; uint8_t mask; double hold = 0.7; bool axis = false; };
             static const std::vector<ScriptedPress> script = [&] {
                 std::vector<ScriptedPress> presses;
-                const char *text = std::getenv("GOW_PAD_GUION");
-                if (!text)
+                // GOW-Port: GOW_PAD_GUION_FILE=<path>: the script read from a file (entries separated by commas or
+                // line breaks), for scripts longer than an env.txt line (512 bytes on the Switch); after GOW_PAD_GUION.
+                std::string all = std::getenv("GOW_PAD_GUION") ? std::getenv("GOW_PAD_GUION") : "";
+                if (const char *path = std::getenv("GOW_PAD_GUION_FILE"))
+                {
+                    std::ifstream in(path, std::ios::binary);
+                    std::string body((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+                    for (char &c : body)
+                        if (c == '\n' || c == '\r' || c == ' ')
+                            c = ',';
+                    std::fprintf(stderr, "[gow-pad2:test] script file %s: %zu bytes\n", path, body.size());
+                    all += "," + body;
+                }
+                if (all.empty())
                     return presses;
+                const char *text = all.c_str();
                 static const std::pair<const char *, std::pair<uint8_t, uint8_t>> buttons[] = {
                     {"select", {2, 0x01}}, {"start", {2, 0x08}}, {"arriba", {2, 0x10}}, {"derecha", {2, 0x20}},
                     {"abajo", {2, 0x40}}, {"izquierda", {2, 0x80}}, {"l2", {3, 0x01}}, {"r2", {3, 0x02}},
@@ -1790,6 +1824,50 @@ namespace
                      runtime->memory().eeTimerLoad(0x10000000u), GPR_U32(ctx, 31));
         sub_0017D778_0x17d778(rdram, ctx, runtime);
     }
+    // GOW_BENCH: the frame clock read with the step forced to the target step (0x29C654 = fields per frame at the
+    // target rate, 60 / target fps) once gameplay has started; same float operations as 0x17D8E8..0x17D944.
+    void gowBenchFrameClock(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        sub_0017D778_0x17d778(rdram, ctx, runtime);
+        // from the first frame on (menus and loading too): with the step forced only from the gameplay start, two
+        // runs already differed by an ulp in Kratos's position at frame 60 (state carried over from the load frames)
+        const int32_t minFields = static_cast<int32_t>(readGuest32(rdram, 0x29C654u));
+        const float fields = static_cast<float>(minFields > 0 ? minFields : 1);
+        const float step = fields / 60.0f;
+        float a = 0, b = 0;
+        const uint32_t ua = readGuest32(rdram, 0x29C644u), ub = readGuest32(rdram, 0x29C648u);
+        std::memcpy(&a, &ua, 4);
+        std::memcpy(&b, &ub, 4);
+        const float scaled = step * a * b;
+        uint32_t bits;
+        std::memcpy(&bits, &step, 4);
+        writeGuest32(rdram, 0x29C64Cu, bits);
+        std::memcpy(&bits, &scaled, 4);
+        writeGuest32(rdram, 0x29C658u, bits);
+        if (!g_benchStarted)
+            return;
+        ++g_benchFrames;
+        static const uint64_t every = [] {
+            const char *v = std::getenv("GOW_BENCH_EVERY");
+            const unsigned long long n = v ? std::strtoull(v, nullptr, 10) : 0;
+            return n ? static_cast<uint64_t>(n) : uint64_t{60};
+        }();
+        static const auto start = std::chrono::steady_clock::now();
+        if (g_benchFrames % every == 0)
+        {
+            const uint32_t creature = readGuest32(rdram, 0x29D2B4u) & 0x01FFFFFFu;
+            uint32_t hp = 0;
+            if (creature >= 0x100000u)
+                hp = readGuest32(rdram, creature + 0x198u);
+            const uint32_t reent = readGuest32(rdram, 0x002A4294u);
+            // pos / hp / rand seed as bits: equal lines in two runs = the same game state at that frame
+            std::fprintf(stderr, "[bench] f=%llu wall=%.3f pos=%08x,%08x,%08x hp=%08x seed=%08x\n",
+                         static_cast<unsigned long long>(g_benchFrames),
+                         std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count(),
+                         readGuest32(rdram, 0x2C7790u), readGuest32(rdram, 0x2C7794u), readGuest32(rdram, 0x2C7798u),
+                         hp, readGuest32(rdram, reent + 0x58u));
+        }
+    }
     void gowTraceDmaWait(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
         std::fprintf(stderr, "[fclk] gswait vs=%llu t0=%u ra=%x\n",
@@ -2718,6 +2796,8 @@ namespace
             runtime.replaceFunction(0x0017D778u, gowTraceFrameClock);
             runtime.replaceFunction(0x0017A2A0u, gowTraceDmaWait);
         }
+        else if (g_bench)
+            runtime.replaceFunction(0x0017D778u, gowBenchFrameClock);
         if (std::getenv("GOW_RENDER_DIAG"))
             for (const uint32_t address : {0x001262C8u, 0x00126310u, 0x0012633Cu, 0x00126368u,
                                            0x00126428u, 0x00126478u, 0x00126528u})
