@@ -112,6 +112,20 @@ namespace
         return v;
     }
 
+    // The UNPACK source (the DMA chain the EE thread has just copied on another core) misses the cache: the console's
+    // samples sat on the source loads (unpack loops and processVIF1Data's command reads). A software prefetch
+    // GOW_VIF_PREFETCH bytes ahead (default 512; 0 = off: it prefetches the line being read; read at the first UNPACK)
+    // hides it; a prefetch never faults, so reading past the packet's end is harmless.
+    inline uint32_t vifPrefetchDistance()
+    {
+        static const uint32_t d = [] {
+            const char *e = std::getenv("GOW_VIF_PREFETCH");
+            return e ? static_cast<uint32_t>(std::strtoul(e, nullptr, 10)) : 512u;
+        }();
+        return d;
+    }
+#define vifPrefetch(p) __builtin_prefetch((p) + pfd)
+
     // One source vector as the four words written to VU memory (`dest`: its current contents, for V3's W). The SSE
     // intrinsics map to NEON through sse2neon on ARM. Reads exactly the vector's bytes (the packet may end right after).
     template <unsigned VN, unsigned VL, bool ZX>
@@ -166,9 +180,11 @@ namespace
         constexpr bool useRow = !v45 && MODE != 0u;
         constexpr uint32_t bytesPerVector = v45 ? 2u : (VN + 1u) * (VL == 0u ? 4u : VL == 1u ? 2u : 1u);
         __m128i r = useRow ? _mm_loadu_si128(reinterpret_cast<const __m128i *>(row)) : _mm_setzero_si128();
+        const uint32_t pfd = vifPrefetchDistance();
         uint32_t block = 0u, cyclePos = 0u;
         for (uint32_t i = 0; i < count; ++i, src += bytesPerVector)
         {
+            vifPrefetch(src);
             uint8_t *dest = vuData + ((vuAddr + block * cl + cyclePos) & 0x3FFu) * 16u;
             if (++cyclePos == wl)
             {
@@ -208,6 +224,7 @@ namespace
                 r = v;
             _mm_storeu_si128(reinterpret_cast<__m128i *>(dest), v);
         };
+        const uint32_t pfd = vifPrefetchDistance();
         uint32_t a = vuAddr & 0x3FFu, i = 0u;
         while (i < count)
         {
@@ -217,6 +234,9 @@ namespace
             a = (a + run) & 0x3FFu;
             for (; run >= 4u; run -= 4u, dest += 64u, src += 4u * bpv)
             {
+                vifPrefetch(src);
+                if constexpr (4u * bpv > 64u)
+                    vifPrefetch(src + 64u);
                 one(dest, src);
                 one(dest + 16u, src + bpv);
                 one(dest + 32u, src + 2u * bpv);
@@ -529,6 +549,10 @@ void PS2Memory::processVIF1Data(const uint8_t *data, uint32_t sizeBytes)
         // Antes se tomaban como pixeles los codigos VIF que siguen al DIRECT y el flujo se desincronizaba.
 
         uint32_t cmd;
+        {
+            const uint32_t pfd = vifPrefetchDistance(); // the command stream ahead (see vifPrefetch)
+            vifPrefetch(data + pos);
+        }
         memcpy(&cmd, data + pos, 4);
         // GOW-Port: chain streaming (runChainStream): a command not yet complete in this piece is left for the next
         // call, untouched (it ends the call at its header, m_vif1LastPos). Only a DIRECT or a command within the
