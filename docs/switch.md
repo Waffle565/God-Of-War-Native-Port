@@ -186,6 +186,35 @@ The PAKs are 4 GB each: the SD card must be exFAT (FAT32 has a 4 GB file limit).
     PC's /24 and stores the address in port/switch/bot_ip.txt; `shot <jpg>` (pixelPeek), `click HOME A ...`, `title`.
   - DBI and the game cannot run together: copy files, close DBI, start the game (HOME, A on its tile), screenshot,
     then back to DBI for the log.
+- Remote testing over WLAN (2026-10-24): at max GPU/EMC clocks the console draws more than a PC USB port supplies
+  and ran flat during a bench, so it now stays on a wall charger and files go over the home Wi-Fi instead of USB.
+  - FTP server: **sys-ftpd 1.0.5** (cathery/sys-ftpd, formerly sys-ftpd-light; the release asset
+    `sys-ftpd-1.0.5.zip` from github.com/cathery/sys-ftpd/releases/tag/1.0.5, needs Atmosphère >= 1.8.0). A
+    background sysmodule: `sdmc:/atmosphere/contents/420000000000000E/` (`exefs.nsp`, `toolbox.json`,
+    `flags/boot2.flag` = started at boot), config `sdmc:/config/sys-ftpd/config.ini`: port 5000, user and password
+    set, anonymous off, pause key combo off (`[Pause] disabled:=1`, so no pad input can stop it), LED off. It serves
+    the SD card whatever runs in the foreground, the game included, so DBI is no longer needed for files.
+  - Login: `port/switch/ftp_cred.txt` (git-ignored, `host=`, `port=`, `user=`, `password=`; only on this PC). To make
+    a new one, change both that file and `config.ini` on the SD, then reboot the console.
+  - Files: `python -I tools/switch_ftp.py check|ls|get|put|rm <SD path>` (stdlib ftplib, 3 tries with a fresh
+    connection, size check after `put`, same commands as switch_mtp.py).
+  - Reboot without a hand on the console: hbmenu → Quick Reboot (`switch/Quick-Reboot.nro`, the 22nd entry: from the
+    first entry DDOWN x3, DRIGHT x3) → MINUS. hekate (`bootloader/hekate_ipl.ini` autoboot=1) brings Atmosphère back
+    in ~2 min; the bot and FTP answer again. The home menu's power icon only offers sleep.
+  - Console runs: `tools/switch_lib.sh` (sourced by `tools/switch_cycle.sh` and `tools/switch_bench.sh`) uses FTP
+    when `switch_ftp.py check` answers and MTP otherwise (`TRANSFER=ftp|mtp` forces one). Over FTP a run starts
+    from any state (a running app is closed; its tile then comes first, the game's second), pushes
+    `update_<pkg>/atmosphere/contents/0100D0D0600A0000/exefs/{main,main.npdm}` (the ExeFS override: no DBI install
+    of an NSP is needed for code updates), writes or deletes `switch/gow/env.txt`, launches the game from the home
+    menu, closes it after the run and pulls `log.txt` and `pcs_*.txt`; over MTP it starts and ends on DBI's MTP
+    screen as before.
+    `UPDATE=port/switch/nsp/out/update_<pkg> bash tools/switch_cycle.sh <name> [secs] [env file | -]` → log and
+    screenshots in `port/switch/logs/run_<name>/`, summary printed.
+  - A full NSP (RomFS, icon or metadata changes) still goes over USB (DBI's MTP "install" folder or DBI backend):
+    the SD card has only ~4 GB free (232 GB card), less than the 8.5 GB NSP, so "copy to SD, install from SD card"
+    does not fit.
+  - State 2026-10-24: installed over MTP and the console rebooted (port 5000 answers); FTP login, the WLAN cycle
+    and the WLAN bench are not yet run on the console (battery flat, waiting for the wall charger).
 - RomFS is case-sensitive (Windows and the SD card's FAT are not), and the game opens e.g. `cdrom0:\IOP_MOD\sio2man.irx`
   while the disc file is `SIO2MAN.IRX`. `PS2Vfs::resolveHostPath` (ext ps2_vfs.cpp) therefore matches `cdrom` paths
   component by component without case when the exact path is missing (ISO9660 semantics); without it the NSP boots

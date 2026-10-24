@@ -33,3 +33,6 @@ dist/
 
 # disassembly of the disc modules (game code): local only
 gemini-work/requests/dis/
+
+# FTP login of the console (sys-ftpd), local only
+port/switch/ftp_cred.txt

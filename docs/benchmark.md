@@ -30,10 +30,13 @@ bot's pattern from gameplay start: square, square, triangle every 5.5 game secon
 
 ## Console run (tools/switch_bench.sh)
     UPDATE=port/switch/nsp/out/update_<pkg> bash tools/switch_bench.sh <name> [wall secs, 480] [extra env file]
-From DBI's MTP screen: pushes the package, the script (`switch/gow/bench.txt`) and env.txt (GPU max, audio stats,
-pad test without captures, bench, god mode, skip FMV + the extra file's lines, e.g. `GOW_IOP_THREAD=1`), runs the game
-(screenshot every 30 s into `port/switch/logs/bench_<name>/shots`), returns to DBI's MTP screen, pulls the log,
-deletes env.txt from the SD and prints the report.
+Over WLAN (sys-ftpd, `tools/switch_ftp.py`; docs/switch.md "Remote testing over WLAN") from any console state, else
+over USB MTP from DBI's MTP screen (`TRANSFER=ftp|mtp` forces one; steps in `tools/switch_lib.sh`): pushes the
+package, the script (`switch/gow/bench.txt`) and env.txt (GPU max, audio stats, pad test without captures, bench,
+god mode, skip FMV + the extra file's lines, e.g. `GOW_IOP_THREAD=1`), runs the game (screenshot every 30 s into
+`port/switch/logs/bench_<name>/shots`), closes it (MTP: back to DBI's MTP screen), pulls the log, deletes env.txt from
+the SD and prints the report. The console stays on a wall charger: at GPU max it drains more than a PC USB port
+charges (run `k10d1` ended with a flat battery).
 
 ## Report (tools/bench_report.py)
     python -I tools/bench_report.py port/switch/logs/bench_<name>/log.txt [--ref <other log>] [--scenes a-b,...] [--windows]
