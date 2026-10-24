@@ -1867,6 +1867,28 @@ namespace
                          readGuest32(rdram, 0x2C7790u), readGuest32(rdram, 0x2C7794u), readGuest32(rdram, 0x2C7798u),
                          hp, readGuest32(rdram, reent + 0x58u));
         }
+        // GOW_BENCH_SHOT=<n>: every n bench frames, the VIF1 / VU1 worker and the GS stage drained (everything the EE has
+        // kicked so far is drawn), the latched display frame to bench_shot_<frame>.ppm (pixel A/B of two runs at the same
+        // game frames: tools/vramdiff.py-style compare; docs/native-render-study.md)
+        static const uint64_t shotEvery = [] {
+            const char *v = std::getenv("GOW_BENCH_SHOT");
+            return v ? static_cast<uint64_t>(std::strtoull(v, nullptr, 10)) : uint64_t{0};
+        }();
+        if (shotEvery && g_benchFrames % shotEvery == 0)
+        {
+            runtime->memory().waitGsWorkerIdle("bench-shot", 0u);
+            std::vector<uint8_t> pixels;
+            uint32_t width = 0, height = 0;
+            if (runtime->gs().copyLatchedHostPresentationFrame(pixels, width, height, nullptr, nullptr, nullptr))
+            {
+                const std::string name = "bench_shot_" + std::to_string(g_benchFrames) + ".ppm";
+                std::ofstream file(name, std::ios::binary);
+                file << "P6\n" << width << ' ' << height << "\n255\n";
+                for (size_t i = 0; i + 3 < pixels.size(); i += 4)
+                    file.write(reinterpret_cast<const char *>(pixels.data() + i), 3);
+                std::fprintf(stderr, "[bench] shot %s %ux%u\n", name.c_str(), width, height);
+            }
+        }
     }
     void gowTraceDmaWait(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {

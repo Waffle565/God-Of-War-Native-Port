@@ -459,6 +459,54 @@ Recorded with the PC build of ext 42f2f0a (out/build-pc of the worktree; `GOW_VI
   other branch returns false with the pc (the caller works on copies and falls back to the recompiled VU1).
 - Results: see the handoff at the top (byte-exact on every covered run, 21.2 % / 11.0 % of the VU pairs).
 
+### Progress: runtime hookup + clip path (2026-10-24 night, nat-vu1c, ext agent/natvu1)
+**Runtime hookup** (`GOW_VU1_NATIVE_RUN=1`, off by default; ext ps2_vu1_core.cpp `VU1Interpreter::run`, ps2_vu1_nat.inl
+`VU1NatAccess::tryRun`):
+- Every run that comes from `execute()` (an MSCAL, marked by a thread_local in ps2_vu1_core.cpp; MSCNT resumes never)
+  is offered to `vu1nat::runNative` first, when the VU is idle (no pipeline / XGKICK / branch pending, start pc 0x00 /
+  0x18 / 0x30). It works on a copy of the VU1State and **in place on VU memory**; true: the state is taken, the kicked
+  packets go to the GIF (PATH1, `submitGifPacket`, one call per EOP-terminated packet, in kick order, after the run),
+  the program counts as ended (E bit) and `m_cycle` moves on by 256 so the native blocks' readiness / flag state of the
+  run before is in the past. false: the recompiled VU1 (native blocks / exact engine) runs the MSCAL as before.
+- **Declined runs leave memory unchanged** (`nrun::Undo`): the batch code's single stores (`Vu::isw` / `Vu::sq`) log
+  the old qword; the vertex loops' stores are not logged, so every decline after a loop is decided before the first
+  loop (the second loop's count, the EOP / multi-tag test 0x1278, header bit 13 at 0x12d8; vi9 / vi10 are not written
+  by the loops). The clip path, whose decline at 0x0930 depends on the cull loop's result, snapshots the 16 KB first
+  (only clip runs, ~7 %). natcheck checks it: a declined run's memory equals the input (0 bad on pcfight / pcmenu).
+- Float mode around the native run: round toward zero + FTZ / DAZ, as the native blocks (`kRoundZero | kFlushZero`;
+  natcheck the same).
+- Hashes cached per micro-memory generation (`PS2Memory::getVU1CodeGeneration`): the fixed-code gate (~1.5 KB of FNV)
+  and the entry kind per entry pc (~550 bytes), so a run costs no hashing unless the code changed.
+- Counters every 5 s on stderr: `[vu1nat-run] window native N runs ms (culled, kicks) | recompiled N runs ms + other
+  entries N runs ms | not offered N | decline attempts ms | <family> nat N x us, rec N x us [declined pc:runs];` per
+  family (3d0d1206, 7ab32108, 93febeec, 39f38df4, 6df5c750: the entry kind cached per generation). "rec": the
+  recompiled VU1's time for the family's runs (declined ones in mode 1); "other entries": entries without native code;
+  "not offered": MSCALs the hookup does not take (a pipeline still pending, ...). **`GOW_VU1_NATIVE_RUN=m`**: measure
+  only, every run recompiled and timed per family: the baseline for the native times on the same build.
+- `GOW_BENCH_SHOT=<n>` (gow_overrides.cpp, main repo port/overrides-usa): every n bench frames the VIF1 / VU1 worker and
+  the GS stage are drained and the latched frame is written to `bench_shot_<frame>.ppm` in the working directory.
+
+**Clip path** (entry 7ab32108, header bit 13 with a sphere straddling the second plane pair; 0x0358 -> 0x0858):
+- 0x0358: `vi1 = vi10 + vi10; ibltz vi1, 0x0388` (header bit 14: no clip test) else `b 0x0858`.
+- 0x0858-0x08e8: vi8-11 saved to 929.xyzw, tag scan (vi11 = sum of NLOOP into 69(ITOP).w, vi2 + 1 into 69(ITOP).z,
+  vi6 = tags - 1). Per tag 0x0c20-0x0cd0: stride vi4 = tag.y & 255, count vi5 = tag.x & 255, matrix vf24-27 at
+  16-19(ITOP + tag.w), vf20-23 = clip constants from 64-66(ITOP) (I = 2047.5 / 0x3a000800), first vertex in vf31 /
+  vf29; then the cull loop 0x0cd8-0x0e10 = `vu1hle::kCullClip` (entry 0: B1 first, so no flag ring is read; local
+  rings take its last writers; its clip flag becomes the state's CLIP), exit 0x0e18 (vi2 -= 2 x stride), 0x08f8 next
+  tag. The loop writes the ADC word 0x8001 into the w of vertices outside and sets 929.z bit 1 for a triangle partly
+  outside.
+- 0x0908: 929.z bit 1 -> 0x0940, the triangle clipper (0x0940-0x0b30 and the big paths 0x1700-0x2380 seen in run 81):
+  **declined** (4 of 1625 covered fight runs). Else 0x0b38: the batch switch's matrix set-up again (vf1 = tag, vf20-23
+  from 16-19(ITOP + tag.w), vf3 = row 0 squared), the module callbacks as at 0x02c8 (vi15 -> the 3d0d1206 entry's
+  unlit_st loop, vi8 = 3, vi10 bit 13 cleared), back to 0x0388 (header-negative matrix path or colour path).
+- Gate: its own FNV (0x0858-0x0940 + 0x0b38-0x0e30 = b0e2569eee8738b3), so a version differing only there still
+  runs the rest natively. 3d0d1206 runs never take the clip path in the recordings (declined if they do).
+- **natcheck** (pcfight / pcmenu, 3000 runs each): fight 1621 of 1625 covered runs native (declined: 4 at 0x0940),
+  **31.3 % of the VU pairs** (was 21.2 %); menu 1393 of 1421 (28 at 0x1278, the multi-tag batch), **13.8 %** (was 11.0
+  %); 0 packet / memory / register differences, 0 declined runs with memory changed; hlecmp.py of the mixed dumps vs
+  the reference dumps: 0 data words differ (602 883 / 525 067 GIF words exact). natcheck also prints the first three
+  runs per decline pc (`run <k> declined at <pc>`, GOW_VU1NAT_TRACEPC targets).
+
 ### Progress: lit and skinned entries (2026-10-24 night, nat-vu1d, ext branch agent/natvu1d, worktree ext/PS2Recomp-kl-natvu1d)
 Branch agent/natvu1d = agent/natvu1 (c606296, nat-vu1c's runtime hookup) + 3 commits (head 6f9c60a). Own file
 `ps2_vu1_nat_lit.inl`, included by ps2_vu1_nat_run.inl after the nrun helpers; runNativeBody hands every entry it does
