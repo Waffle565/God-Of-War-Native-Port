@@ -2206,6 +2206,12 @@ void PS2Memory::gsWorkerLoop()
             m_gsWorkerBusy = false;
             if (m_gsWorkerJobs.empty())
                 m_gsWorkerIdleCv.notify_all();
+            if (m_gsWorkerJobs.empty() && ps2_perf::enabled())
+            {
+                const uint64_t idleT0 = ps2_perf::nowNanos();
+                m_gsWorkerCv.wait(lock, [this] { return m_gsWorkerStop || !m_gsWorkerJobs.empty(); });
+                ps2_perf::gsw::addIdle(ps2_perf::nowNanos() - idleT0);
+            }
             m_gsWorkerCv.wait(lock, [this] { return m_gsWorkerStop || !m_gsWorkerJobs.empty(); });
             if (m_gsWorkerJobs.empty())
                 return; // stop requested and nothing left

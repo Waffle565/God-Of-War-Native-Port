@@ -164,6 +164,17 @@ namespace ps2_perf
         // EE side: DMA source chains walked and copied by PS2Memory::sendDmaChain before the worker job is queued (VU1
         // cannot start on a chain until this is done), printed as [gsw-chain]
         inline PaddedCounter chainNs{0}, chains{0}, chainBytes{0}, chainMaxNs{0};
+        // worker idle between jobs (GOW-Port 2026-10-24): waits, total, and by length (< 0.1 ms, < 1 ms, < 4 ms, more),
+        // printed as [gsw-idle]; a wait is from the moment the worker finds no job to the next job's start
+        inline PaddedCounter idleNs{0}, idleWaits{0}, idleBucket[4] = {{0}, {0}, {0}, {0}}, idleBucketNs[4] = {{0}, {0}, {0}, {0}};
+        inline void addIdle(uint64_t ns)
+        {
+            const int b = ns < 100000u ? 0 : ns < 1000000u ? 1 : ns < 4000000u ? 2 : 3;
+            idleNs.addOwned(ns);
+            idleWaits.addOwned(1);
+            idleBucket[b].addOwned(1);
+            idleBucketNs[b].addOwned(ns);
+        }
         inline void reportFromWorker()
         {
             static uint64_t last = nowNanos();
@@ -183,6 +194,16 @@ namespace ps2_perf
             for (int i = 0; i < 3; ++i) { c[i] = chainCur[i] - chainBefore[i]; chainBefore[i] = chainCur[i]; }
             std::fprintf(stderr, "[gsw-chain] window=%.2f chain_ms=%.1f chains=%llu chain_kb=%llu max_chain_ms=%.2f\n", (now - last) * 1e-9,
                          c[0] * 1e-6, (unsigned long long)c[1], (unsigned long long)(c[2] >> 10), chainMaxNs.exchange(0) * 1e-6);
+            static uint64_t idleBefore[10] = {};
+            const uint64_t idleCur[10] = {idleNs.load(), idleWaits.load(), idleBucket[0].load(), idleBucket[1].load(),
+                                          idleBucket[2].load(), idleBucket[3].load(), idleBucketNs[0].load(),
+                                          idleBucketNs[1].load(), idleBucketNs[2].load(), idleBucketNs[3].load()};
+            uint64_t q[10];
+            for (int i = 0; i < 10; ++i) { q[i] = idleCur[i] - idleBefore[i]; idleBefore[i] = idleCur[i]; }
+            std::fprintf(stderr, "[gsw-idle] window=%.2f idle_ms=%.1f waits=%llu | <0.1ms %llu/%.1fms <1ms %llu/%.1fms <4ms %llu/%.1fms >=4ms %llu/%.1fms\n",
+                         (now - last) * 1e-9, q[0] * 1e-6, (unsigned long long)q[1], (unsigned long long)q[2], q[6] * 1e-6,
+                         (unsigned long long)q[3], q[7] * 1e-6, (unsigned long long)q[4], q[8] * 1e-6,
+                         (unsigned long long)q[5], q[9] * 1e-6);
             last = now;
         }
     }
