@@ -62,3 +62,11 @@ the mean per 5 s window lying inside the scene (ms per 5 s): `ee` (EE game code)
 | late | 90-150 | the deck fight goes on (the script never walks, so the bot's "Kratos alone" 57 fps scene does not come) | 47.0-47.6 |
 Run-to-run spread: 0.0-0.2 fps in the identical part, up to ~0.8 fps after 64 s. Wall time per run ~7 min (330 s
 game + boot + menus + pull), `BENCH_GAME_S=150`.
+
+## Results log (console, handheld, GPU max; logs `port/switch/logs/bench_<run>`)
+| run | package / env | 0-10 | heavy 10-20 | 20-30 | mid 30-60 | 60-90 | 90-120 | 120-150 |
+|---|---|---|---|---|---|---|---|---|
+| `b2a` / `b2b` | update_b2 (bench from boot), `GOW_CHAIN_STREAM_KB=0` = before sw-k8 | 53.4 / 53.6 | 35.3 / 35.3 | 44.1 / 44.1 | 45.2 / 45.2 | 46.6 / 45.8 | 47.6 / 47.0 | 47.2 / 47.3 |
+| `s4a` | update_s4 (chain streaming, default) | 54.0 | **36.4** | 45.3 | **46.4** | 47.6 | 48.7 | **48.7** |
+| `e4p` | update_s4 + `GOW_EE_SAMPLE` | (0-30: 43.9) | | | 46.6 | 47.1 | 49.8 | 48.4 |
+Other runs (IOP thread, streaming variants): docs/iop-thread.md, docs/performance.md "VIF1 chain streaming".

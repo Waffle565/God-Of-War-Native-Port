@@ -279,6 +279,38 @@ Gains per lever above are estimates from the Gemini review (gemini-work/results/
   were killed from outside by another test's `taskkill /IM`): 60 fps everywhere, speed 1.00, no image warnings;
   savetest ok.
 
+## VIF1 chain streaming: the VU1 thread starts while the EE copies (2026-10-24, sw-k8, ext dfadf1a)
+- Why: the VU1 thread idled ~1.9 ms per frame in two waits, the EE's path from one job's end to the next kick; part of
+  it is `sendDmaChain` walking and copying the next chain (~430 KB, ~0.4 ms; `[gsw-chain]`) before the job is queued.
+- Now (`GOW_CHAIN_STREAM_KB`, Switch default 64, PC default 0 = off): once 64 KB of a VIF1 chain are copied (checked
+  at each tag's end) the job is queued with a `GsChainStream`; every further 64 KB is published (release store of
+  `published`, `base` re-read after each). `runChainStream` (worker) parses the published bytes with
+  `m_vif1Streaming` set: processVIF1Data then stops at a command that is not complete yet (a DIRECT whose payload is
+  not all there, or anything within 4100 bytes of the end whose size says it does not fit) without touching it
+  (`m_vif1LastPos`), and parses it again when more bytes arrive; once the EE is done the rest goes through the normal
+  call (a truncated last command behaves as before). Same bytes, same order, each command executed whole: the
+  results are those of one call over the whole chain. The EE reallocates its buffer only while the worker has
+  acknowledged every published byte (`consumed`); the buffer is reserved at 8 MB first.
+- Publish lag `GOW_CHAIN_STREAM_LAG_KB` (default 64): only bytes copied >= 64 KB ago are published. With no lag the
+  worker read lines still dirty in the EE core's L1 and the VU1 time per run rose 4 % (13.76 -> 14.31 us).
+- First version (EE-side command scan to find boundaries): the scan cost the EE ~170 ms per 5 s and, measured with
+  streaming disabled behind it (`GOW_CHAIN_STREAM_KB=100000`), took 1.4-1.7 fps by delaying every kick; it also gave
+  up at an UNPACK before the chain's first STCYCL, so only ~40 % of the chains streamed. The parser-side stop needs no scan:
+  `[chain-stream] ... partial=0` on the console (tag ends always fall between commands in this game).
+- Console bench (docs/benchmark.md; scenes heavy 10-20 / mid 30-60 / late 90-150 game s; per-run spread 0-0.2 fps in
+  the identical part):
+  | run | package / env | heavy | 20-30 | mid | 60-90 | 90-120 | 120-150 | chain_ms / 5 s | VU1 us/run |
+  |---|---|---|---|---|---|---|---|---|---|
+  | `b2a` / `b2b` | update_b2, stream off | 35.3 / 35.3 | 44.1 / 44.1 | 45.2 / 45.2 | 46.6 / 45.8 | 47.6 / 47.0 | 47.2 / 47.3 | 179-198 | 13.76 |
+  | `sc1` | scan only (never publishes) | 33.9 | 42.4 | 43.5 | 43.9 | 46.7 | 45.6 | 333-387 | - |
+  | `s2a` | first version (EE scan) | 36.1 | 45.2 | 46.4 | 46.8 | 48.0 | 48.2 | 368-461 | 13.92 |
+  | `s3a` | parser-side, no lag | 35.5 | 44.4 | 45.4 | 45.7 | 47.0 | 47.4 | 207-229 | 14.31 |
+  | **`s4a`** | **parser-side, lag 64 (default)** | **36.4** | **45.3** | **46.4** | **47.6** | **48.7** | **48.7** | 207-240 | 13.95 |
+  | `s4b` | lag 192 | 36.0 | 44.8 | 45.9 | 46.4 | 47.6 | 47.8 | ~230 | 14.04 |
+  VU1 thread idle 395-460 -> 220-290 ms per 5 s; the frames are the same (signatures identical to b2a for 63 s).
+- Exactness: x86 replay dumps fight.rec / menu.rec, HLE=1 / 0, byte-identical (harness `s4x`; the VU1 path is not
+  touched); the streamed parse is equivalent by construction (above) and the console bench's game state is identical.
+
 ## Menu clock: the Load Game menu ran 8 % fast (2026-10-13, ext branches agent/menuclock, agent/menuclock2)
 - Measured (port/menuclock, `GOW_DELTA_DIAG`, `GOW_VBLANK_DIAG`, `GOW_IOP_DRIFT`, `GOW_AUDIO_STATS`): title screen,
   main menu, pause menu and gameplay run at game speed 1.000, VBlank 59.99-60.00 Hz, IOP clock 1.000 +- 0.0004 of wall

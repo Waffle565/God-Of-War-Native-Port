@@ -5,6 +5,40 @@ look the same (pixel comparison against the CPU path, tolerances documented). Pl
 (2) a plain-float CPU reference (HLE) compared with the exact path on the recordings, which also says whether a fast
 CPU HLE alone reaches the target, (3) GPU path, (4) console fps / per-core busy / screenshots.
 
+## Handoff (2026-10-24 night 12, sw-k8 stopped here: ext agent/sw-vu1gpu dfadf1a + gen4 blocks, main 66c1233 + docs, package `update_s4`)
+- **Deterministic benchmark** (docs/benchmark.md; main 66c1233): `GOW_BENCH=1` forces the game's frame step to the
+  target step from the first frame (0x17D778 override), resets the rand seed at the gameplay start and counts the pad
+  script's `g` times in game frames; `tools/switch_bench.sh <name>` runs it on the console (new game, the bot's
+  square-square-triangle pattern, god mode, skip FMV; screenshots, log, env.txt removed) and `tools/bench_report.py`
+  prints per-scene fps + per-thread busy and compares `[bench]` signatures (`--ref`). Two runs of one package are
+  **bit-identical for 63 game seconds** (then a few units apart, seed equal: something the game reads at ~64 s
+  depends on time; with the IOP thread the seed differs from frame 60 since rand calls depend on IOP replies).
+  Scenes: heavy 10-20 s (the undead crowd, VU1 4.6 s / 5 s, ~= the bot's 125-150 s phase), mid 30-60, late 90-150.
+  Run-to-run 0-0.2 fps where identical, <= 0.8 after. The bot's 57 fps "Kratos alone" scene is not in it (the script
+  does not walk).
+- **Baseline** (`b2a`/`b2b`, stream off): heavy 35.3, mid 45.2, late 47.0-47.6 fps; core 1 3.1-4.5 s, VU1 thread
+  4.5-4.6 s busy per 5 s: VU1-bound throughout.
+- **Task 2, kick path: VIF1 chain streaming** (ext dfadf1a, docs/performance.md "VIF1 chain streaming"):
+  the job is queued after 64 KB of a chain are copied and the worker parses complete commands as they arrive
+  (processVIF1Data stops untouched at an incomplete one; publish lag 64 KB). **heavy 35.3 -> 36.4, mid 45.2 -> 46.4,
+  late 47.2 -> 48.7** (`s4a`); VU1 idle 400-460 -> 220-290 ms per 5 s; EE chain time 190 -> 210-240 ms. Exact
+  (x86 dumps identical `s4x`; bench signatures identical). An EE-side command scan (first version) cost the EE 170 ms
+  per 5 s; no lag cost the VU1 thread 4 % per run (cross-core L1 snoops).
+- **Task 3, core 1**: IOP thread on core 0 (`i0a`): iop_ms on core 1 800 -> 150-200 but fps unchanged (bench is
+  VU1-bound) and the deko3d thread's busy +0.9 s; core 3 below the stage breaks determinism and is slower
+  (docs/iop-thread.md). EE profile in the bench (`e4p`, `GOW_EE_SAMPLE`, s4): 0x17A32C (vid::WaitForDMAComplete)
+  ~28 % of the EE thread's samples (15.6 % waiting, 9.9 % inline IOP inside the wait), game code flat: 0x162F18 5.4,
+  0x27A210 4.7, 0x297470 3.5 (IOP bucket), 0x158020 1.7, 0x254310 1.5, the rest < 1.3 each. So in this bench core 1
+  has ~25 % slack; the core-1 work matters only once VU1 drops below it.
+- Not done: task 4 (VU1 throughput: blocks 23 %, chainStepOut 13 %, kernels ~13 %, unpack ~6 %, code-change ~5 %);
+  the 64 s divergence; a walking script to bring the late "Kratos alone" (core-1-bound) scene into the bench.
+- Packages (port/switch/nsp/out): `update_b1` (bench from gameplay start), `update_b2` (bench from boot), `update_s1` /
+  `update_s3` (streaming variants), **`update_s4`** (bench + streaming, installed on the console). Console left on
+  DBI's MTP screen, env.txt deleted.
+- Next: (1) VU1 thread throughput (task 4) measured on the bench's heavy scene; (2) a bench script that walks to the
+  late scene (find it with `GOW_PLAYER_TRACE`); (3) find the 64 s divergence (dump the frame clock / vblank count /
+  IOP-dependent reads around frame 3800).
+
 ## Handoff (2026-10-24 night 11, sw-k7 stopped here: ext agent/sw-vu1gpu 10b9644 + gen4 blocks (`/root/vu1pregen-gen4`), package `update_k7d`)
 - **What changed (ext)**: ef2abda GS stage queue lock-free (SPSC ring of packet pointers + producer-side LIFO free list,
   idle stage polls `GOW_GS_STAGE_SPIN_US`, Switch default 100 us; docs/performance.md "VU1 / GS frontend pipeline");

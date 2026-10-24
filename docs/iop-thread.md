@@ -134,3 +134,16 @@ IOP entry point), `ps2_iop_host.cpp` (deferred EE effects), `Kernel/EeScheduler.
   - So inline stays the default. Where core 1 does limit: `k7d`'s 57-58 fps scene (160-250 s) has ee_ms 4.0-4.1 s +
     iop_ms 0.8 s per 5 s = core 1 ~98 % busy; that is the scene to A/B a core-3 IOP against, if one can be reached on
     demand (the bot's fight cannot pick it).
+- Deterministic bench (sw-k8, 2026-10-24, docs/benchmark.md; update_b2, stream off unless noted; scenes heavy 10-20 /
+  mid 30-60 / 120-150 game s):
+  | run | IOP | heavy | mid | 120-150 | core 1 iop_ms | gs-gl busy | signature vs b2a |
+  |---|---|---|---|---|---|---|---|
+  | `b2a` / `b2b` | inline | 35.3 / 35.3 | 45.2 / 45.2 | 47.2 / 47.3 | ~800 | ~2750 | (ref) / 63 s equal |
+  | `i0a` | thread, core 0 (default, one step above deko3d), lead 4194304 | 35.0 | 45.0 | 47.2 | 150-200 | ~3650 | 63 s equal |
+  | `i3a` | thread, core 3 below the stage (`GOW_PRIO_IopRun=0`) | - | 44.7 | 46.3 | 250-300 | ~2670 | differs from frame 60 |
+  | `si0` | thread core 0 + first chain streaming | - | 46.1 | 48.4 | 160-235 | ~3700 | differs from frame 60 |
+  The bench's fight is VU1-bound (VU1 thread 4.5-4.7 s busy per 5 s), so freeing ~0.6 s of core 1 changes nothing
+  there (core 1 is 3.1-4.4 s busy); on core 0 the deko3d thread's busy time rises by ~0.9 s per 5 s (preempted).
+  On core 3 below the stage the IOP lags and the game's random sequence changes from the first second (the game
+  calls rand depending on IOP replies), so that variant also breaks the bench's determinism. Inline stays the
+  default; the core-0 thread is the candidate once a core-1-bound scene is in the bench.
