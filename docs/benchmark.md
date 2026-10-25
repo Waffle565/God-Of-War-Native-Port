@@ -251,3 +251,22 @@ Profiles (`GOW_PC_SAMPLE=1000`, `GOW_VU1_NATIVE_FAMS=8`: only skin native): `nv7
 15.77), `nv7es` (nv7e, 13.93). **Every family's native run beats the recompiled one from nv7f on** (lit -9 %, skin -9 %,
 skin28 -3 %, misc -22 %, 3d0d -28 %, 7ab -37 %); the ORACLE=OFF package has no skipped run (0 `[vu1nat-skip]`) and the
 same times. Rec times vary ~±2 % between packages (7.36-7.68 lit, 13.31-13.60 skin): nat vs rec always in one package.
+
+### sw-stall (2026-10-25 night): GPU frames in flight, GPU experiments
+Packages update_sws2 (spd5 code + GS-thread stall diagnostics + opt-in experiments, no language patch), update_sws4
+(= update_lang2 + ext agent/swstall: `GOW_DK_FRAMES` default 3). Fixed-step benches `BENCH_GAME_S=150`, env
+`GOW_PERF_DIAG=1 GOW_GS_HW_FAILGT=1` (envs/sws_b0.txt) + the switch named, scenes 0-30 / 30-60 / 60-90 / 90-120 /
+120-150, same session (the console benched ~3 fps lower that evening than at nat-spd's time):
+| run | switch | fps |
+|---|---|---|
+| `sws2b0` | none (no frame limit) | 47.5 / 47.3 / 46.4 / 47.7 / 47.8 |
+| `sws2bf2` | `GOW_DK_FRAMES=2` | 44.7 / 47.0 / 47.5 / 48.6 |
+| `sws2bf3` | `GOW_DK_FRAMES=3` | 44.8 / 46.8 / 47.5 / 48.5 |
+| `sws2b3lz` | FRAMES=3 + `GOW_DK_LAZYBARRIER=1` | 44.4 / 46.4 / 47.0 / 48.1 (barriers 21 k -> 35 k per 5 s: dropped) |
+| `sws2b3c1` | FRAMES=3 + `GOW_DK_COMPRESS=1` | 45.0 / 47.1 / 47.6 / 48.9 |
+| `sws2b3c2` | FRAMES=3 + `GOW_DK_COMPRESS=2` | 45.2 / 47.3 / 47.0 / 48.5 |
+| `sws2b3sf` | FRAMES=3 + `GOW_SCALER=fast` | 45.1 / 47.3 / 47.8 / 48.8 |
+Normal play (`NOBENCH=1`, envs/sws_play.txt / sws_frames2.txt / sws_frames3.txt, 300 s; tools/switch_play_report.py):
+`sws2play` 40-52 fps windows 232 at 46.8 fps, speed 0.999, long frames 71.5/min (max 219 fields); `sws2f3` 238 at
+47.7, speed 1.008, 5.4/min (max 8.1); `sws2f2` took another path (34 windows at 45.4, 3.4/min). Table and cause:
+docs/performance.md "The ship-fight stalls".
