@@ -25,7 +25,7 @@ toolchain (`deko3d` 0.5.0 with the `uam` shader compiler, `/opt/devkitpro/tools/
 - **Shaders are compiled ahead of time.** deko3d has no GLSL compiler at run time. `tools/dk_shaders.py` extracts the
   backend's GLSL (the raw strings of gs_hw_backend.cpp, and the draw-variant sources it builds), rewrites them for uam
   and compiles every one in WSL into `ps2xRuntime/src/lib/gs/gpu/gs_dk_shaders_gen.cpp` (git-ignored, ~300 KB):
-  - uam has no loose uniforms: each program family (draw, shuffle, present, clut, pack, scale) gets one std140 block
+  - uam has no loose uniforms: each program family (draw, shuffle, present, clut, pack, scale, svol: the stencil shadow volume helpers) gets one std140 block
     with all its uniforms in a fixed order, each `uniform T uX;` becomes `#define uX (gsu_uX)` (a specialised
     variant's own `#define uX 1` still wins through the backend's `#ifndef` guards), samplers get explicit bindings;
   - `glShaderSource` text is matched by its FNV-1a 64 hash; `glGetUniformLocation` returns the member index (or

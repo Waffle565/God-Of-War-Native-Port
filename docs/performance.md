@@ -471,6 +471,16 @@ the fail draw split into GEQUAL on unmarked and GREATER on marked pixels (7.8 k 
 9.3 k for `GOW_GS_HW_FAILGT=1`); it needs a depth-stencil format for every target. Console GPU time of all three:
 not measured yet. Details: docs/native-render-study.md "step 7 on the renderer side, part 2".
 
+## Shadow volumes counted in the stencil (2026-10-25, nat-vu1p, ext 76c64cd, experiment)
+`GOW_GS_HW_STENCILVOL=1`: the character shadow volume (one batch per frame, ~3.1 k triangles, +1 / -1 per triangle)
+counts in the stencil instead of the colour's G byte, and 15 stencil-tested constant draws over the volume's box (one
+per bit) hand the count back to G for the game's shuffle and darken pass; the volume target's depth becomes
+DEPTH32F_STENCIL8. Pixels and `[bench]` signatures equal the wrap groups on the PC bench. PC GPU time per 5 s: wrap
+groups 26-31 ms, stencil path 35-42 ms (the count alone costs the same as the wrap groups; the bit draws add ~9 ms), so
+it is off by default. Console: not measured; the 64-bit depth format already cost FAILSPLIT 2-4 fps there, so it can
+only pay if the stencil-only count saves more than that format costs (`GOW_GS_GPU_TIME`: `draw:...W` vs `draw:...S`).
+Details: docs/native-render-study.md "step 7 on the renderer side, part 3".
+
 ## Menu clock: the Load Game menu ran 8 % fast (2026-10-13, ext branches agent/menuclock, agent/menuclock2)
 - Measured (port/menuclock, `GOW_DELTA_DIAG`, `GOW_VBLANK_DIAG`, `GOW_IOP_DRIFT`, `GOW_AUDIO_STATS`): title screen,
   main menu, pause menu and gameplay run at game speed 1.000, VBlank 59.99-60.00 Hz, IOP clock 1.000 +- 0.0004 of wall

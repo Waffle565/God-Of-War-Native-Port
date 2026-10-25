@@ -1414,3 +1414,64 @@ colour value (or a darken pass that tests the stencil itself).
 **Tools** (scratch `nm/`, added): `cmp.py dirA dirB shot out.png` (two shots stacked, diff numbers), `where.py refA
 refB newA newB shot out.png` (red = differs outside the noise, bounding box), `sw/cc.sh <files>` (WSL: compiles
 worktree GS files with the Switch nv2 flags into /tmp/nvo, no link).
+
+### Progress: step 7 on the renderer side, part 3: stencil shadow volumes (2026-10-25, nat-vu1p, ext branch agent/natvu1m 76c64cd, worktree ext/PS2Recomp-kl-natvu1m)
+Item 4 of the plan, as an experiment: `GOW_GS_HW_STENCILVOL=1` (off by default; off = the colour-counting wrap groups
+as before). Ext `gs_hw_backend.cpp` (`drawStencilVolume`, `ensureStencilDepth`, two helper shaders), the deko3d
+table (`tools/dk_shaders.py`: a seventh family `svol`, `gs_dk_shaders_gen.cpp` regenerated: 79 shaders, 0 failed,
+draw variants unchanged; no new variant keys: the counting draws use the batch's own draw variant).
+
+**What the volume pass is** (docs/vu1-native-flags.md): G cleared to 127, Z inverted, the volume triangles add +1 or
+-1 (mod 256, COLCLAMP = 0) to G where the depth test passes, a CT16 channel shuffle (`flushShuffle`, native) copies G
+into the alpha byte, the darken pass tests it with DATE. In the bench fight: one counting batch per frame,
+~3.1 k triangles, two groups (+1 / -1), a box of ~280 k host pixels (scale 2).
+
+**The stencil path** (per grouped batch whose every triangle adds exactly +-1 to every written channel, alpha not
+written, no alpha-test fail pass; otherwise the wrap groups, counted as `kept_colour`):
+- the count: one draw per group, colour writes off, stencil ALWAYS with INCR_WRAP / DECR_WRAP on depth pass, the
+  batch's depth state; scissor = the batch's box inside its scissor;
+- the hand-over: the count `s` goes into the colour over the box by stencil-tested constant draws (`kPresentVs` +
+  `kStencilOneFs` = vec4(1), blend `CONSTANT_COLOR * Cs + Cd`), one per bit: s in 1..127 adds 2^i where bit i is
+  set (test `(s & (0x80 | 2^i)) == 2^i`, then the bit is zeroed through the write mask); s in 128..255 subtracts 2^i
+  where bit i is clear (then sets it), then 1 where bit 7 is set (s is 0xFF there, zeroed): -(127 - (s & 127)) - 1 =
+  s - 256. 15 draws, the stencil is 0 again afterwards. Adds only rise and subtractions only fall, so the colour is
+  the GS's modulo-256 sum whenever the final value is inside 0..255 (the wrap groups need every partial sum inside);
+  the shuffle and the darken pass stay as they are;
+- the target needs a stencil: the first volume batch moves that target's depth into a DEPTH32F_STENCIL8 texture
+  (`kZCopyFs`: `gl_FragDepth = texelFetch(depth)`, one full-target draw, once per target: 1 conversion per run in
+  the bench); other targets keep DEPTH_COMPONENT32F. With `GOW_GS_HW_FAILSPLIT=1` every depth already has a stencil;
+  its marks under the box are cleared first (0 is never a live mark).
+- stats (`GOW_GS_HW_STATS=1`): `[gs-hw-svol] batches tris count_draws bit_draws kept_colour depth_conversions`
+  (bench: 300 batches, 935 k triangles, 600 count draws, 4500 bit draws, 0 kept per 5 s). GPU kinds
+  (`GOW_GS_GPU_TIME=1`): `draw:...S` = a stencil volume batch, `draw:...W` = a wrap-group batch.
+  `GOW_GS_HW_SVOL_DEBUG=1|2` (timing only, wrong picture): no bit draws / only the 7 positive ones.
+
+**Checks (PC bench, `pcrun.sh` 230 s, shots every 300 frames)**: `[bench]` signatures identical (219 lines) in all
+runs (STENCILVOL 0 / 1, two each, plus nat-vu1o's sel3 / sel4). Pixels: STENCILVOL=1 (two runs) vs 0 (two runs) and
+sel3 / sel4, with a noise mask from all six runs (`nm/maskdiff4.py`): 33 px in 2 of 36 shots, scattered raindrop
+splashes; the same comparison with two-run masks gives 3552 px and old vs old 3143 px at the same shots (the rain).
+`GOW_GS_HW_VOLTRACE=400`: both paths leave the same G counts after the batch (e.g. G>127 1483 px, G<127 0). Switch:
+`gs_hw_backend.cpp` and `gs_dk_shaders_gen.cpp` compile with the nv2 flags (`nm/sw/cc.sh`).
+
+**GPU time, PC (RTX 3080 Ti, per 5 s, the last three reports)**: wrap groups 26-31 ms; stencil path 35-42 ms; counting
+only 25-30 ms (= the wrap groups: raster-bound here); counting + the 7 positive bit draws 32-38 ms. So on the PC the
+count costs the same and the 15 bit draws add ~9 ms per 5 s (~0.03 ms per frame): no gain, hence off by default. On
+the console the count drops the RGBA8 read-modify-write (stencil only), but the volume target's depth becomes 64-bit
+for every later draw on it (most likely the frame's main target), and nat-vu1n's console runs show that format's
+cost (FAILSPLIT, 64-bit depth everywhere, 2-4 fps behind FAILGT): only `GOW_DK_GPU_TIME` there can say which wins.
+If the count wins and the format loses: D24S8 for that target (24-bit Z exact, Z32 targets keep the colour path). Cheaper hand-over if the console likes the
+count: one draw that reads the stencil as a texture (GL `DEPTH_STENCIL_TEXTURE_MODE`; deko3d an image view with the
+stencil as source) instead of 15; not done.
+
+**Console test (owned by nat-vu1n)**: copy `gs_hw_backend.cpp` and the regenerated `gs_dk_shaders_gen.cpp` from the
+worktree into the Switch tree, build; env.txt with `GOW_DK_GPU_TIME=1` (or `GOW_GS_GPU_TIME=1`): default vs
+`GOW_GS_HW_STENCILVOL=1`, compare `draw:...W` with `draw:...S` and the total GPU ms; then `GOW_GS_HW_FAILSPLIT=1`
+alone vs `GOW_GS_HW_FAILSPLIT=1 GOW_GS_HW_STENCILVOL=1` (the depth format is then paid by FAILSPLIT either way).
+
+**nat-vu1k open items**: (1) the oracle's per-run budget in the harness was a fixed 65536 VU cycles
+(`VU1NatOracle::run`, `budgetEnd = m_cycle + 65536`): the likely reason for ATHN01F's early oracle stops on the long
+particle runs. Now `GOW_VU1NAT_ORACLE_CYCLES=<n>` (default 65536, unchanged results); harness `/root/vu1h/nvp`
+(`build.sh nvp /root/natvu1p /root/natvu1p/out/vu1pregen/vu1n_generado`, /root/natvu1p -> this worktree). Not
+re-checked: the 3000-run recordings of nat-vu1k (scratch r1/) are gone; /root/nrs/nk holds only the short dumps
+(ATHN01F: 3 runs, byte-exact either way). Next: re-record ATHN01F (`GOW_VIF1_REC_AT=45` after the warp) and run
+`GOW_VU1NAT_ORACLE_CYCLES=0x10000000 ./nvp natcheck <rec>`. (2) df8474b4 / 8449e8a0 and (3) ATHN03A's 1 ULP: not done.

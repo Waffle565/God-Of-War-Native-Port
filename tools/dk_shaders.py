@@ -201,7 +201,10 @@ def programs(ext, keys):
         ('clut', [('vert', k['kPresentVs']), ('frag', k['kClutFsHead'] + k['kReinterpretSource'] + k['kClutFsMain'])]),
         ('pack', [('comp', k['kPackCs'])]),
         ('scale', [('vert', SCALE_VS), ('frag', SCALE_FS)]),
-    ]
+    ] + ([
+        # stencil shadow volumes (GOW_GS_HW_STENCILVOL): constant bit draws, depth copy into a stencil format
+        ('svol', [('vert', k['kPresentVs']), ('frag', k['kStencilOneFs']), ('frag', k['kZCopyFs'])]),
+    ] if 'kStencilOneFs' in k else [])
 
 
 def wsl_path(path):
