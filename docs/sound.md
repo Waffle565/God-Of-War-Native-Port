@@ -4,7 +4,28 @@ The game's sound engine is its own IOP code: 989snd (`989NOMID.IRX`, sequencer, 
 SMPD streamer plugin, compiled ahead of time like every IRX (docs/native-port.md). Below it there is no sound hardware
 model: the SPU2 register-level model and the IOP's SPU DMA channels were removed on 2026-10-11.
 
-## Handoff (nat-iop4, 2026-10-25) - latest
+## Handoff (nat-iop5, 2026-10-25) - latest
+- ext `agent/natiop2` **0a2f982** (on 14d5fd7): SMPD fn 0b native for the paths that set nothing in 989snd, cmd 0x68
+  wrapper native when it reaches them (see "SMPD fn 0b and cmd 0x68"). Build out/build-pc current. The generated
+  iopn_989nomid_irx_25e00.cpp is git-ignored in ext: regenerate it in any other worktree (`python -I tools/iop/iopn_gen.py
+  port/iop_mods <tmp>`, copy only that file; now 6 stub entries incl. 0x1410). register_functions.cpp there: never commit.
+- Verified (PC, port/natiop5, gate script port/natiop5_gate.sh): shadow gate slots 0-4 ok (slot 2 one 49.5 fps window
+  while another agent's runner loaded the PC), fn 0b **0 mismatches** (196k calls slot 0), cmd 0x68 0 mismatches (195k
+  slot 0), all other shadowed commands 0; native gate **5/5 ok, 60 fps, game speed 1.00**; sound native vs shadow
+  slots 1-4: RMS correlation 0.9993-1.0000, mean relative difference 0.002-0.008, identical first 1.41 s.
+- Native share of fn 0b: slot 0 (fight) ~86 % of calls, slots 1-4 ~45-55 % (the rest: SMPD stream objects, class
+  method 0x13c0 -> 0x2448, and calls with setter flags).
+- Next: (1) the 989snd setters, which every remaining fn 0b path needs (0x359c, 0x6f20 and the stream path 0x2448 ->
+  0x1784 all call them): #41 (0x2b48, pan ramp: lock 0x105cc / 0x10750, automation records 0xf770 / 0xf7a4 / 0xf7dc /
+  0xf824, #32), #32 (0xcef8 -> 0x650c type 5 / 0x18e6c type 4: voice volumes, 0x1bf48 volume math, 0x19a64 voice lock,
+  LIBSD SetParam under CpuSuspendIntr), #117 (0xd4fc -> 0x46cc), #36 (0xd330 -> 0x6928 -> 0x6a20), #38 (0xd394 -> 0x69a4,
+  0x19500), #122 (0x1784); call tree: `tools/iop/irxblocks.py` per function (blocks with instruction counts and
+  the calls in each block); the shadow then also has to compare the LIBSD calls made (record them
+  in `iopNativeLibsdImport` while a call is checked); (2) then the stream method 0x2448 (accumulates N parameter sets
+  at +0x164..+0x178, then 0x1784); (3) loaders fn 0d / 0f / 06 and bank load #129; (4) the RPC server and the tick.
+- Switch: no console run; IOP-side C++ only.
+
+## Handoff (nat-iop4, 2026-10-25)
 - ext `agent/natiop2` (worktree ext/PS2Recomp-kl-natiop2): 1217389 (SMPD fn 02 / 1a native) + 41012d8 (989snd cmds
   41 / 42 / 4a / 4b native, shadow; SMPD shadow counts interrupted calls; GOW_WINDOW_BACKGROUND) + **14d5fd7** (cmd 4c
   native for native SMPD functions; window mode 2). Build out/build-pc current. Generated iopn_989nomid_irx_25e00.cpp
@@ -156,6 +177,32 @@ Per frame the game sends one batch (cmd 0x4D) of: 4c SMPD fn 1a (x2), 42, 4c SMP
   of +4 over the used entries (+8 != 0) of the 129-entry table at 0x24e14 (stride 0x18), under 989snd's lock
   (0xfbb0 / 0xfc0c): the sound-RAM allocations (total and largest).
 - Listing: `tools/iop/irxlist.py <IRX>` prints a whole IRX with import names (lib:ordinal) and resolved lui pairs.
+  `tools/iop/irxblocks.py <listing> <function offset>` prints a function's basic blocks with their instruction counts
+  and calls (the cycle accounting of native overrides).
+
+## SMPD fn 0b and cmd 0x68 (native paths, nat-iop5, iop_native_smpd.cpp / iop_native_snd989.cpp)
+- SMPD **fn 0b** (0x364c, `fn(size, args)`: +0 handle, +8 / +0xc / +0x10 / +0x12 s16 values, +0x14 flag word). An SMPD
+  handle (pool `(h >> 28) & 7` in the table .data 0x82d4: base, stride; pool 0 searched linearly over 32 objects, the
+  others indexed by `h & 0xff`; an object holds its handle at +4) goes to the object's virtual method (vtable at +8,
+  slot +8: s16 this-delta, +0xc function); any other handle goes through 989snd **#25** (0xcdd4 -> 0xec34: type
+  `(h >> 24) & 0x1f` 5 = the 64 block sounds at 0x1fc14 (0x124 bytes), 4 = [0x1ef40] entries at [0x1ef3c] (0x78 bytes),
+  live when the entry's word 0 is the handle; returns the handle or 0) and 0x359c, which applies the fields chosen by
+  the flag word: 0xf000 #117(&args[1]), 0x10 #36, 0x8 #38, 0x800 #41(+0xc, 0, 0x1e, 4) + #32(+8, -2).
+- Native (`computeFn0b`, a prediction without side effects + its writes): handle -1; 989snd handles with no live sound
+  or a flag word without 0xf818 (the common case: flag word 0, ~90 % of the calls in a fight); the methods 0x4938 (base
+  class, returns 0), 0x2928 (table 0x93ec[handle & 0xff] +4 = s16 +8, returns the handle) and 0x6f20 (a 989snd sound
+  in an SMPD object: +0xc = #25(+0xc); gone -> +4 = 0, returns 0) without setter flags. Declined (the IRX runs): setter
+  flags, the stream class method 0x13c0 (-> 0x2448: accumulates the parameters and applies them through 0x1784, i.e.
+  the setters), 0x3d5c, handle 0, pools >= 4, #25's error paths (bad slot: printf).
+- IOP clock: the instructions of SMPD's and 989snd's code per basic block (tools/iop/irxblocks.py prints them), the
+  import stub of #25 one cycle: e.g. a live 989snd sound with flag word 0 and no pool-0 match = 391.
+- Cmd **0x68** (wrapper 0x1410 -> 0x250 -> plugin fn[w1](w2, &w3), lookup 0x148) is native when the target is fn 0b
+  and fn 0b serves the call: the C++ applies fn 0b's writes and stores the result in the reply. Cycles 62 + 8 per
+  plugin before the match + fn 0b's. Not reproduced: 0x250's dead store of the 5th argument slot below $sp.
+- Shadow (`GOW_NATIVE_SMPD=0 GOW_SMPD_SHADOW=1`): every fn 0b entry is predicted and its return checked (v0, the words
+  written, cycles); every 4000 checked calls a `[smpd-shadow] fn0b` line with the count per path and the declined
+  methods (`m13c0:n`). `GOW_SND989_SHADOW=1` checks cmd 0x68 (reply, plugin writes, cycles) as the other commands.
+- Verification: see the nat-iop5 handoff (0 mismatches, 5/5 at 60 fps, sound equal).
 
 ## SMPD front end (native, nat-iop3, ps2xIOP/src/native/iop_native_smpd.cpp)
 - SMPD plugin fn 02 (status block) and fn 1a (echo) are served by native C++ (`iopNativeSmpdOverrides`, registered
@@ -183,7 +230,8 @@ Per frame the game sends one batch (cmd 0x4D) of: 4c SMPD fn 1a (x2), 42, 4c SMP
   function natively (`iopNativeSmpdRun`, its own writes and SIF transfer) and stores its result. Any other target
   (the loads' fn 13 / 06 / 07 / 0c, unknown plugin, bad index) or `GOW_NATIVE_SMPD=0` declines. Cycles 69 + 8 per
   plugin before the match + the SMPD function's. Not reproduced: the wrapper's dead stack stores below $sp.
-  Cmd 0x68 (plugin call with an argument block: the per-frame fn 0b) stays IRX code until fn 0b is native.
+  Cmd 0x68 (plugin call with an argument block: the per-frame fn 0b) is native when fn 0b's native code serves the call
+  (see "SMPD fn 0b and cmd 0x68").
 - 0x4a / 0x4b run under 989snd's recursive lock (0xfbb0 / 0xfc0c: semaphore [0x1ee5c], owner thread [0x1ee60],
   depth [0x1ee64]). The native call serves the two cases without a wait and without a net change: lock free (depth 0,
   owner not the caller, semaphore count > 0: owner ends -1) or held by the calling thread (depth > 0). Otherwise it

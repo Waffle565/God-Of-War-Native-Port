@@ -32,3 +32,4 @@ libsd_irx 1560 bus_setup
 989nomid_irx 1370 snd_cmd4a_sound_ram_used
 989nomid_irx 1398 snd_cmd4b_largest_allocation
 989nomid_irx 13c0 snd_cmd4c_plugin_call
+989nomid_irx 1410 snd_cmd68_plugin_call_args
