@@ -183,3 +183,7 @@ nat-vu1m / nat-vu1o) and update_nv4 at max clocks (43.1 / 56.2 / 57.8 vs 41.2 / 
 nat-vu1n's install condition was a `PS2X_VU1_ORACLE=OFF` package, which needs every family to win; k11d's exefs pushed
 back. `GOW_VU1NAT_MERGE_KICKS=1` twice (`nv5kk1` / `kk2`): no late-scene drop this time (43.6 / 43.6 vs `nv5j1` 43.6),
 per run 0.1-1.1 us less than `nv5j1` (`=1` without it): nv4b1's drop was not the merged submit.
+| `nv5l1` | update_nv5l (nv5k + natvu1m 76c64cd) `=1` + `GOW_GS_GPU_TIME=1`, default | 33.2 | 42.4 | 43.6 | | 4933 | |
+| `nv5lv` | update_nv5l `=1` + `GOW_GS_HW_STENCILVOL=1` | 33.2 | 42.3 | 43.5 | | 4935 | |
+| `nv5lg` | update_nv5l `=1` + `GOW_GS_HW_FAILGT=1` | 35.7 | 47.6 | 47.2 | | 4903 | |
+| `nv5lgv` | update_nv5l `=1` + `FAILGT=1` + `STENCILVOL=1` | 35.4 | 47.4 | 47.0 | | 4899 | |

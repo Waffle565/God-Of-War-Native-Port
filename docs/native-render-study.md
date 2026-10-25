@@ -1,6 +1,6 @@
 # Native rendering instead of the recreated VU1: study and migration plan (2026-10-24)
 
-## Handoff (2026-10-25 night, nat-vu1n stopped here: ext agent/natvu1 head 1ea385f, packages update_nv5b / nv5f / nv5j / nv5k)
+## Handoff (2026-10-25 night, nat-vu1n stopped here: ext agent/natvu1 head f11b370 (VU 1ea385f + natvu1m 76c64cd), packages update_nv5b / nv5f / nv5j / nv5k / nv5l)
 Details in "Progress: typed register-file accesses, cheaper set-up, the GPU merges (nat-vu1n)" (end of this file);
 bench rows in docs/benchmark.md "nat-vu1n".
 - **Console, per run, whole bench, default clocks, nat (`nv5f1`, `=1`) vs rec (`nv5fm`, same package `=m`; from nv5f on
@@ -21,7 +21,8 @@ bench rows in docs/benchmark.md "nat-vu1n".
   litLoop / skinLoop spend 25-30 % in the scalar DIV + qfinish of `rcpw`.
 - **GPU (nat-vu1m / nat-vu1o asks)**: d32e48d default 32.8 / 42.6 / 43.6 fps vs `ASEL=0` 30.1 / 39.5 / 41.8, `FAILGT=1`
   **35.5 / 47.8 / 46.6**, `FAILSPLIT=1` 33.7 / 43.9 / 44.6 (fail draw c2f413ed 549 / 707 / 235 / 427 ms per 5 s); table in
-  the nat-vu1n section.
+  the nat-vu1n section. 76c64cd (update_nv5l, `GOW_GS_GPU_TIME=1` too): `GOW_GS_HW_STENCILVOL=1` changes nothing
+  measurable: default 33.2 / 42.4 / 43.6 vs 33.2 / 42.3 / 43.5 fps, FAILGT 35.7 / 47.6 / 47.2 vs 35.4 / 47.4 / 47.0.
 - **update_nv5k** (ext 1ea385f + d32e48d, default mask 0x23) at default clocks `nv5kd`: 33.4 / 42.1 / 43.7 fps (k11d
   29.3 / 35.1 / 37.7; the gain is the GS alpha-test work, the GPU is the limit), VU1 busy 3524 ms per 5 s (all native
   3622, all recompiled 3849); GPU + EMC max `nv5kx` 43.1 / 56.2 / 57.8 (update_nv4 41.2 / 52.7 / 54.7). Not installed
@@ -1521,6 +1522,20 @@ harness (below) gives summaries identical to bb234d3's aarch64 harness; `GOW_VU1
   draw's fragments go). FAILSPLIT cuts the fail draw's fragments as much as FAILGT (27 vs 29 Mfrag) but keeps most of
   its time (427 vs 235 ms: the third draw's raster work and the 64-bit depth / stencil format): FAILGT is the faster
   experiment by 2-4 fps. Picture checks of FAILGT / FAILSPLIT on the console were not part of this round.
+
+- **Console runs for nat-vu1p** (update_nv5l = ext f11b370: 76c64cd's gs_hw_backend.cpp + its gs_dk_shaders_gen.cpp;
+  default clocks, `=1`, `GOW_DK_GPU_TIME=1 GOW_GS_GPU_TIME=1`):
+
+  | run | env | fps | GPU busy / draw / svol ms | shadow program e95e045a ms | `draw:W` / `draw:S` per 5 s |
+  |---|---|---|---|---|---|
+  | `nv5l1` | default | 33.2 / 42.4 / 43.6 | 4933 / 3748 / - | 133.5 | W 205 draws / 16.6 Mpx |
+  | `nv5lv` | `GOW_GS_HW_STENCILVOL=1` | 33.2 / 42.3 / 43.5 | 4935 / 3731 / 12.5 | 113.9 | S 205 / 16.5 Mpx |
+  | `nv5lg` | `GOW_GS_HW_FAILGT=1` | 35.7 / 47.6 / 47.2 | 4903 / 3626 / - | 150.7 | W 220 / 17.6 Mpx |
+  | `nv5lgv` | `FAILGT=1` + `STENCILVOL=1` | 35.4 / 47.4 / 47.0 | 4899 / 3598 / 13.6 | 137.7 | S 218 / 17.5 Mpx |
+
+  On deko3d `GOW_GS_GPU_TIME`'s per-kind ms stay 0 (`[gs-gpu] gpu_ms=0.0`: its GL query has no deko3d side); the
+  counts and pixels are there, the times come from `[gs-dk-gpu]`. STENCILVOL takes ~20 ms off the shadow program and
+  adds the `svol` family's 12-14 ms: net 17-28 ms of draw per 5 s, within the noise in fps.
 
 ### Progress: step 7 on the renderer side, part 3: stencil shadow volumes (2026-10-25, nat-vu1p, ext branch agent/natvu1m 76c64cd, worktree ext/PS2Recomp-kl-natvu1m)
 Item 4 of the plan, as an experiment: `GOW_GS_HW_STENCILVOL=1` (off by default; off = the colour-counting wrap groups
