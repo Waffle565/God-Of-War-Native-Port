@@ -237,6 +237,31 @@ Gains per lever above are estimates from the Gemini review (gemini-work/results/
   frame's T0 before the catch-up, fields added, the VBlank count, and that frame's perf buckets (ms; ee, vu, gs, iop,
   guest wait, gsq wait; buckets need `GOW_PERF_DIAG=1`) and EE idle waits by wake-up cause.
 
+### The ship-fight stalls: 170 frames queued on the GPU (2026-10-25, sw-stall, ext agent/swstall)
+- Measured with the new GS-thread block diagnostics (docs/switch-deko3d.md "Stall diagnostics"; run `sws2play`,
+  update_sws2 = spd5 code + diagnostics, normal play, default clocks): every long frame of the fight is the GS thread
+  blocked inside `dkQueuePresentImage` (603 of 626 `[gs-dk-long]` blocks, 50-175 ms each, ~3 per second; the rest are
+  waits for the 16 MB command ring), and at that moment **~170 presented frames are still unfinished on the GPU**
+  (`submits_in_flight=170`, steady through the whole fight).
+- Cause: nothing limited how far the GS thread runs ahead of the GPU. The swapchain image is acquired with a fence the
+  GPU waits on (not the CPU), so the only back-pressure was deko3d's own 64 KB queue command memory (16 fence slices
+  of 4 KB, deko3d `dk_queue.cpp` `flushRing` / `waitFenceRing`) and the 16 MB command ring. With ~380 bytes of queue
+  commands per frame that is ~170 frames (~3.5 s at 47 fps): the GPU worked through a backlog seconds old (input lag
+  of seconds), and whenever the ring filled, the flush in `dkQueuePresentImage` waited for the oldest 4 KB slice,
+  i.e. ~10 frames of GPU work at once: 70-230 ms in which the GS frontend's 8-chunk queue filled and the EE waited
+  (the `[gow-fclk-long]` stalls every ~18 VBlanks).
+- Fix: `GOW_DK_FRAMES=n` (gs_dk.cpp `present`): after each present the GS thread waits until the frame n presents
+  back has finished on the GPU, so the wait is spread over every frame and the GPU is at most n frames behind.
+  Normal play `sws2f2` (n = 2): long frames 71.5 -> 3.4 per minute of play (mean 6.7 -> 5.0 wall fields, max 219 ->
+  7.3), no present block over 25 ms (was 603), the per-frame wait (`frames`) at most ~21 ms. The pad script is
+  wall-timed, and with seconds of input lag gone the run took another path through the fight (screenshots differ),
+  so fps comes from the fixed-step bench (below).
+  n = 3 (`sws2f3`, the fight as long as in the baseline): 238 windows at 47.7 fps (baseline `sws2play` 232 at 46.8),
+  speed 1.008, long frames 5.4 per minute (max 8.1 fields), the per-second fps a steady 47-51 instead of 41-57.
+  Fixed-step bench (`BENCH_GAME_S=150`, same session): `sws2b0` (no limit) 47.5 / 47.3 / 46.4 / 47.7 / 47.8,
+  `sws2bf2` 44.7 / 47.0 / 47.5 / 48.6, `sws2bf3` 44.8 / 46.8 / 47.5 / 48.5 (the bench's 0-30 scene loses ~3 fps with a
+  limit, the fight scenes gain up to 1).
+
 ## Presentation without readback (zero-copy, branch agent/present in ext/PS2Recomp-kl-present)
 - **Before**: GSHwBackend::Present composed the CRTC circuits into presentTex, then glReadPixels into
   PresentationFrame::pixels; the host uploaded them again (UpdateTextureRec) and ran the bicubic scaler. The host
