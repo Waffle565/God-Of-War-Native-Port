@@ -23,6 +23,11 @@ model: the SPU2 register-level model and the IOP's SPU DMA channels were removed
   the calls in each block); the shadow then also has to compare the LIBSD calls made (record them
   in `iopNativeLibsdImport` while a call is checked); (2) then the stream method 0x2448 (accumulates N parameter sets
   at +0x164..+0x178, then 0x1784); (3) loaders fn 0d / 0f / 06 and bank load #129; (4) the RPC server and the tick.
+- Leads for (1): the fn 0b flag words in the slot 0-4 traces are only 0, 0x801 / 0xc01 / 0xc04 / 0xc05 (0x800: #41 + #32)
+  and 0x8000 / 0x8801 / 0x8c05 (+ #117); 0x10 (#36) and 0x8 (#38) never occur, so #41 + #32 first. #41's ramp records
+  (checked): 0xf7dc allocates from the pool at 0x24514 (64 x 0x24 bytes, word 0 bit 0 = in use; sets word 0 = 1,
+  +0xc = 0); stagista leads (verify): 0xf7a4(list, mask) = first node of the list at list+8 with `node[0] & mask`,
+  0xf770(list, mask) = find + unlink (0xf86c, under CpuSuspendIntr), 0xf824(list, node) = append.
 - Switch: no console run; IOP-side C++ only.
 
 ## Handoff (nat-iop4, 2026-10-25)
