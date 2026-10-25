@@ -107,15 +107,65 @@ Per frame the game sends one batch (cmd 0x4D) of: 4c SMPD fn 1a (x2), 42, 4c SMP
 0d / 0f / 0a, 4e, 0e / 0f; once at boot 00, 64, 0b, 68 SMPD fn 01. So the busiest path is SMPD's plugin functions
 (1a, 02, 0b) and 989snd's per-frame status commands 41/42/4a/4b: the natural first native piece.
 
-### Handoff (nat-iop2, 2026-10-25)
-- ext `agent/natiop2` (worktree ext/PS2Recomp-kl-natiop2, from agent/natiop 7953c07): 569d093 LIBSD native import
-  library + heap-layout fix + sound trace. Build `out/build-pc` (RelWithDebInfo, logs off). Only ps2xIOP changed.
-- Not started: native 989snd / SMPD code. Next, in order: decode the per-frame commands (41/42/4a/4b and SMPD fn
-  1a/02/0b: wrappers in `tools/iop/snd989_rpcmap.py`, SMPD's plugin table is built at run time, read it from IOP RAM),
-  then the SMPD front end natively with each RPC's reply and DMA checked against the oracle trace in the same run
-  (shadow mode: run the IRX path, compare the native result), then bank loading (#129).
+## Per-frame commands decoded (nat-iop3, 2026-10-25)
+- 989snd's two plugin paths: cmd **0x4c** (0x13c0 -> 0x18c) = `plugin(id)->fn[w1](w2, w3, w4, w5, w6)` with the
+  result in the reply (the per-frame SMPD fn 1a / 02 calls); cmd **0x68** (0x1410 -> 0x250) = `fn[w1](w2 = size,
+  &w3)` (the argument block in the RPC buffer). The plugin is found by id (0x148, 'SMPD' = 0x534D5044); a function
+  index >= descriptor+4 -> 989snd error 4.
+- SMPD's descriptor is static data (.data **0x8208**, relocated at load, not built at run time): 'SMPD', 0x1d, two
+  words, then the table at +0x10 (module offsets): 00 2de4, 01 3250 (init: checks the status block size 0x280,
+  stores the EE addresses 0x81f4 / 0x81f8), 02 0018, 03 7094, 04 7180, 05 67ec, 06 6900, 07 6994, 08 69cc, 09 69fc,
+  0a 30a8, 0b 364c, 0c 3510, 0d 4260, 0e 4404, 0f 6890, 10 66f4 (pause / continue groups), 11 0000 (returns 0),
+  12 0008 (returns 0), 13 2a74, 14 0f34, 15 0f44, 16 2fe8, 17 43fc, 18 36e0, 19 449c, 1a 3778, 1b 675c, 1c 6a60.
+  (The older note "descriptor at 0x8748" was a .bss address; 989snd keeps the pointer it was given by #93.)
+- SMPD **fn 1a** (0x3778): returns its argument (the game's per-frame round-trip check, sent twice per batch).
+- SMPD **fn 02** (0x18): stores its argument at 0x80e0, then 0x2c88(1) builds the 0x280-byte status block at 0x91a0
+  and sends it to the EE (EE address from 0x81f4, the 0x455640 block of game-internals.md) with one SIF DMA, waiting
+  for it: six stream entries of 0x30 bytes at +0x12c from the stream objects (`[0x82e0] + i * [0x82e4]`: +0 = s+0x84,
+  +4 = s+0x18c, +8 = s+0x108, +0xc = s+0x104, +0x10 = s+4, +0x14 = s+0x30, +0x18 = (s16) s+0x130, +0x1c = s+0x184,
+  +0x20 = strcpy of the name at s+0x114), word 0 and +0x27c = the sequence (incremented), +0x26c = [0x82b4], +0x270 /
+  +0x274 = sysmem free sizes. The sound-entry slots (+4..+0x12c, written by fn 0x13 and the loaders) are sent as
+  they are. 0x2c88 is also called from nine other SMPD functions (after opens, loads...).
+- SMPD **fn 0b** (0x364c, many per frame in fights): `args[0]` = handle; an SMPD stream handle (0x4720 searches the
+  stream pools) goes to the stream object's virtual method, else 989snd #25 resolves the sound handle and 0x359c
+  applies the fields selected by the flag word args[5]: 0xf000 -> #117(&args[1]), 0x10 -> #36(s16 args+0x12), 0x8 ->
+  #38(s16 args+0x10), 0x800 -> #41(s16 args+0xc, 0, 0x1e, 4) then #32(s16 args+8, -2).
+- 989snd **41** (#70, 0x10cac) = the word at 0x1ee68; **42** (#69) = bit mask of the 24 voices of core `w0` whose
+  voice record (0x26004 + v * 56) has a non-zero +8 (in use); **4a** (0x103d8) / **4b** (0x10444) = sum / maximum
+  of +4 over the used entries (+8 != 0) of the 129-entry table at 0x24e14 (stride 0x18), under 989snd's lock
+  (0xfbb0 / 0xfc0c): the sound-RAM allocations (total and largest).
+- Listing: `tools/iop/irxlist.py <IRX>` prints a whole IRX with import names (lib:ordinal) and resolved lui pairs.
+
+## SMPD front end (native, nat-iop3, ps2xIOP/src/native/iop_native_smpd.cpp)
+- SMPD plugin fn 02 (status block) and fn 1a (echo) are served by native C++ (`iopNativeSmpdOverrides`, registered
+  when SMPD_IOP is attached). 989snd calls them with jalr from its own code, so they always enter through the IOP
+  dispatcher and the compiled SMPD code needs no stub (not in tools/iop/native_overrides.txt). The native fn 02
+  writes the same bytes into SMPD's own block in IOP RAM (state for the IRX code that still runs) and sends it with
+  `IopNativeServices::sifSendToEe` (= sceSifSetDma with one descriptor: copy, `dma` sound-trace line, DMA id).
+- IOP clock: a native call charges the instructions SMPD's code runs (`IopNativeCall::cycles`, new): fn 02 364,
+  fn 1a 2.
+- `GOW_NATIVE_SMPD=0` runs SMPD's code (the oracle). With `GOW_SMPD_SHADOW=1` as well, every fn 02 / fn 1a call is
+  predicted natively at its entry and checked at its return (same run): result, the status block in IOP RAM (and the
+  0x40 bytes after it), the copy in EE RAM, the stored argument and the IOP cycles. `[smpd-shadow]` lines on stderr:
+  a total every 2000 calls, the first 20 mismatches.
+
+### Handoff (nat-iop3, 2026-10-25, paused by the user's 2-agent limit)
+- ext `agent/natiop2` (worktree ext/PS2Recomp-kl-natiop2): 569d093 (nat-iop2: LIBSD native) + **d0f65aa** (WIP, SMPD
+  front end: fn 02 / fn 1a native, shadow check, `IopNativeCall::cycles`, `sifSendToEe`). Build `out/build-pc`
+  (RelWithDebInfo, logs off) is current. Only ps2xIOP changed.
+- Verified so far: shadow run slot 1 (oracle path, `GOW_NATIVE_SMPD=0 GOW_SMPD_SHADOW=1`): 6667 fn 02 and 13333 fn 1a
+  calls, 0 data / result mismatches; cycles 364 per fn 02 call except one call that took 387 (an interrupt during
+  the call: expected, the check counts it as a mismatch). Native gate (port/natiop3/gate-native/20261025_020215):
+  slots 0, 1, 2 ok at 60 fps, stopped at slot 3 by the pause.
+- To do next: (1) re-run `port/natiop3_gate.sh` (native gate 0-4 with `GOW_SND_LIBSDLOG={zone}/snd.trace
+  GOW_AUDIO_RAW={zone}/mix.raw`, then the shadow gate 0-4); give zones.py an **absolute** `--out` (a relative one
+  makes the per-run card copy path relative to the runner's folder: every load-game slot then fails "never reached
+  gameplay"); (2) `tools/audio_cmp.py` native vs shadow (oracle) mix.raw for slots 1-4, `tools/sndtrace_cmp.py`
+  on the traces; (3) maybe count an interrupted call separately in the shadow stats; (4) next SMPD functions: fn 0b
+  (decoded above; needs 989snd #25 / #117 / #36 / #38 / #41 / #32, i.e. 989snd itself or calls into its code), the
+  loaders fn 0d / 0f / 06 and 0x2c88's other callers, then bank loading #129.
 - Determinism: compare within one run (shadow) rather than two runs; two runs part after a few thousand trace lines.
-- Switch: no console run; the change is IOP-side C++ only (no new platform code).
+- Switch: no console run; IOP-side C++ only (no new platform code).
 
 ## SoundEngine (`ps2xIOP/src/emulator/core/sound_engine.{h,cpp}`)
 - Typed state: per voice volume L/R, pitch, ADSR1/2, start/loop/next addresses, envelope; per core VMIX/NON/PMON masks,

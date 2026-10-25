@@ -66,7 +66,7 @@ Game continues only if load ≥ 0 and (result & ~3) == 0; otherwise spins at 0x1
     callbacks run from 0x26C4B0 when the pending pointer 0x2A30C8 (set at 0x26C808, cleared in 0x26C730) completes.
     Completion = sentinels −1 in result words 0 and count+1.
   - cmd 0x68 = plugin call: payload `'SMPD'(0x534D5044), fn, size, args…`.
-- SMPD (game IRX "smpd file streamer", plugin of 989snd; descriptor iop module offset 0x8748: 'SMPD', 0x1E functions):
+- SMPD (game IRX "smpd file streamer", plugin of 989snd; descriptor .data 0x8208: 'SMPD', 0x1d, table at +0x10, decoded in docs/sound.md):
   - fn 1 init (reads PVD, root dir, GODOFWAR.TOC; builds per-extension tables at iop 0x82A40 WAD, 0x85B68 VAG, …:
     8-char name, size, location; extensions VAG VPK WAD M2V PSS M2W PSW PAK at iop 0x5BB50),
   - fn 0xF open resource (name + flags) → handle, fn 6 fill 128 KB EE buffer (0x532840/0x542840/0x552840/0x562840,
