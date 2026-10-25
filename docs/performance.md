@@ -181,6 +181,13 @@ Gains per lever above are estimates from the Gemini review (gemini-work/results/
   (cycle deadline and host deadline in lockstep, like VBlank itself). The guest clock can no longer run ahead of the
   wall clock by more than 1/16 field inside a frame; real work runs at about wall rate already, so only spins are held.
   `[gow-speed-hist]` (same switch) prints the per-frame tick histogram in tenths of a field.
+- Switch check (2026-10-25, nat-vu1s; console default update_nv5k + FAILGT, normal play = `tools/switch_bench.sh`
+  with `NOBENCH=1`, no `GOW_BENCH`, bench `nv5kplay`): speed 1.011 mean over 209 s of gameplay (windows 0.80-1.11),
+  57 guest flips per wall second, `[vblank-diag]` 60.0 Hz. The guest clock runs at wall rate on the console too (T0 from
+  EE cycles held on the VBlank host grid by the pacing deadlines; the step from 0x17D778, fields clamped to [1, 4]).
+  Benches (`GOW_BENCH=1`) force one field per frame on purpose (deterministic frames): at ~43 fps their game time runs
+  at ~0.72 of real time, so a console watched during a bench shows slow animations; the default env.txt
+  (`tools/switch/default_env.txt`) has no `GOW_BENCH`.
 - Note: runs that never log `[memory card]` (stale git-ignored iopn_*/gow_overrides.cpp in a worktree) stay in the
   menu at 60 fps, speed 1.00; their numbers say nothing about gameplay.
 

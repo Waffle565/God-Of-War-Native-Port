@@ -7,6 +7,8 @@
 #   UPDATE=port/switch/nsp/out/update_<pkg>   package to run (exefs pushed)
 #   SHOTS=<dir>                               screenshot folder (default port/switch/logs/bench_<name>/shots)
 #   TRANSFER=ftp|mtp                          force a transfer
+#   NOBENCH=1                                 no GOW_BENCH (normal play: real frame steps; the pad script
+#                                             times are wall seconds then)
 #   BENCH_GPU=max (or MHz)                    GPU clock (GOW_GPU_MHZ); unset = the system's default clocks (handheld
 #                                             GPU 307.2 / EMC 1331.2, the target since 2026-10-24); BENCH_EMC likewise
 set -u
@@ -26,11 +28,11 @@ F put "$D/bench.txt" switch/gow || exit 1
 mkdir -p "$D/envdir"
 { [ -n "${BENCH_GPU:-}" ] && echo "GOW_GPU_MHZ=$BENCH_GPU"
   [ -n "${BENCH_EMC:-}" ] && echo "GOW_EMC_MHZ=$BENCH_EMC"
+  [ -z "${NOBENCH:-}" ] && echo GOW_BENCH=1
   cat <<'EOF'
 GOW_AUDIO_STATS=1
 GOW_PAD_TEST=1
 GOW_PAD_TEST_NO_CAPTURE=1
-GOW_BENCH=1
 GOW_GOD_MODE=1
 GOW_SKIP_FMV=1
 GOW_PAD_GUION_FILE=sdmc:/switch/gow/bench.txt
