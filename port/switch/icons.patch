@@ -1,0 +1,74 @@
+--- ps2_switch_runtime.cpp.pre_icons	2026-10-25 19:09:16.522071682 +0100
++++ ps2_switch_runtime.cpp	2026-10-26 00:07:44.555604803 +0100
+@@ -619,21 +619,28 @@
+             text = system;
+         if (!voice || !voice[0])
+             voice = text;
+-        char layout[64];
+-        std::snprintf(layout, sizeof(layout), "lang/%s_%s.layout", text, voice);
++        // Nintendo button icons (tools/gow_pad_icons.py: lang/<t>_<v>_nx.layout) unless env.txt GOW_PAD_ICONS=ps;
++        // Switch only: the PC build never looks for the _nx overlays (docs/settings.md "Button icons")
++        const char *icons = std::getenv("GOW_PAD_ICONS");
++        const bool ps = icons && (icons[0] == 'p' || icons[0] == 'P');
+         // next to the disc main.cpp boots (the RomFS one when the title carries it, else the SD card's), else in
+         // sdmc:/switch/gow/lang/ (copied there when the installed NSP predates the language packs)
+         const char *disc = access("romfs:/disc-usa/SCUS_973.99", F_OK) == 0 ? "romfs:/disc-usa/" : "sdmc:/switch/gow/disc-usa/";
+-        char path[160];
+-        std::snprintf(path, sizeof(path), "%s%s", disc, layout);
++        static char layout[64];
++        static char path[160];
+         const char *chosen = nullptr;
+-        if (access(path, F_OK) == 0)
+-            chosen = layout; // relative to the disc folder
+-        else
++        for (int pass = ps ? 1 : 0; pass < 2 && !chosen; ++pass)
+         {
+-            std::snprintf(path, sizeof(path), "sdmc:/switch/gow/%s", layout);
++            std::snprintf(layout, sizeof(layout), "lang/%s_%s%s.layout", text, voice, pass == 0 ? "_nx" : "");
++            std::snprintf(path, sizeof(path), "%s%s", disc, layout);
+             if (access(path, F_OK) == 0)
+-                chosen = path; // a device path: disc_source takes it as absolute
++                chosen = layout; // relative to the disc folder
++            else
++            {
++                std::snprintf(path, sizeof(path), "sdmc:/switch/gow/%s", layout);
++                if (access(path, F_OK) == 0)
++                    chosen = path; // a device path: disc_source takes it as absolute
++            }
+         }
+         if (chosen)
+         {
+--- gs/gpu/gs_dk.cpp.pre_icons	2026-10-25 19:04:55.499453935 +0100
++++ gs/gpu/gs_dk.cpp	2026-10-26 00:08:14.354843726 +0100
+@@ -262,6 +262,7 @@
+         std::unordered_map<uint32_t, uint64_t> gpuNanos; // kind -> ns this window
+         std::unordered_map<uint32_t, uint64_t> gpuFrags; // kind -> fragment shader invocations this window
+         uint64_t gpuBusyNanos = 0, tsDropped = 0;
++        std::deque<uint64_t> presentSerials; // GOW_DK_FRAMES: the lists that ended the frames still on the GPU
+     };
+ 
+     State *s = nullptr;
+@@ -1867,8 +1868,22 @@
+         }
+         dkCmdBufBarrier(s->cmd, DkBarrier_Fragments, 0);
+         const auto submitStart = std::chrono::steady_clock::now();
+-        submit();
++        const uint64_t presentSerial = submit();
+         dkQueuePresentImage(s->queue, s->swapchain, slot);
++        // GOW_DK_FRAMES=n (default 3, 0 = no limit): at most n presented frames queued on the GPU. Without a limit this
++        // thread ran ~170 frames (seconds) ahead of the GPU until deko3d's 64 KB queue command memory filled, and each
++        // flush then waited for its oldest 4 KB slice, ~10 frames of GPU work: 70-230 ms in which the GS frontend and
++        // the EE behind it stalled (docs/performance.md "The ship-fight stalls"; sw-stall, ext 7519883).
++        static const uint32_t maxFrames = [] { const char *v = std::getenv("GOW_DK_FRAMES"); return v ? static_cast<uint32_t>(std::atoi(v)) : 3u; }();
++        if (maxFrames)
++        {
++            s->presentSerials.push_back(presentSerial);
++            while (s->presentSerials.size() > maxFrames)
++            {
++                waitSerial(s->presentSerials.front());
++                s->presentSerials.pop_front();
++            }
++        }
+         s->presentSubmitNanos += static_cast<uint64_t>(
+             std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - submitStart).count());
+         s->rtDirty = s->stateDirty = s->viewportDirty = s->programDirty = true;

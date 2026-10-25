@@ -1025,3 +1025,10 @@ Run: `python -I tools/zones.py --slots 1,2,3,4` (scale: `PS2X_GS_HW_SCALE`); sav
   **Switch head ext agent/swstall 7519883** (on agent/natspd f012118), package update_sws5 (= swfix3 sources + it):
   play long frames 71.5 -> 5.2/min, fight 47.8 fps speed 1.009; bench 0-30 scene -2.7 fps, fight scenes +0.3-1.5.
   Not installed; console default stays update_swfix3 + FAILGT. Handoff: top of docs/performance.md.
+
+- 2026-10-26 (sw-icons2, on the console): **Nintendo button icons on the Switch: not installed, en works, it hangs**.
+  Package update_icons1 (/root/src-icons + port/switch/icons.patch: `_nx` overlay first unless `GOW_PAD_ICONS=ps`,
+  plus sw-stall's `GOW_DK_FRAMES`=3 in gs_dk.cpp, only that change). en_en_nx: title at 59-60 fps, no hang (the
+  FRAMES change runs normally there). it_it_nx (the user's language): hang on the legal screen, null JALR at 0x23a9ac
+  after text_it_nx.bin (docs/settings.md "Button icons"). Default restored: update_swfix3 + FAILGT, exefs md5
+  2927479c checked. lang_pack.py `_nx` only with `--nx` (PC output unchanged, PC keeps PlayStation icons).

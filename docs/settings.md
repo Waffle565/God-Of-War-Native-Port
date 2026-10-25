@@ -171,6 +171,18 @@ env.txt sets `GOW_PAD_ICONS=ps` (private tree /root/src-icons = copy of /root/sr
 make_update_to.sh; (2) put the _nx files on the console (sdmc:/switch/gow/lang or a romfs rebuild, LANG_SRC); (3) ask
 main for console time, screenshot a menu + a QTE prompt, bench the ship fight (baseline update_swfix3 ~43.5 fps),
 install as default only if fps is not lower; (4) refresh dist/data/lang with make_pc_folder.ps1.
+**Switch only** (user 2026-10-26): the PC build keeps the PlayStation icons. tools/lang_pack.py writes the `_nx`
+files only with `--nx` (the PC folder run has no `--nx`, its output is unchanged and the PC runtime never looks for
+`_nx`). Switch side (sw-icons2, 2026-10-26): `port/switch/icons.patch` on /root/src-icons (build /root/gow-switch-icons,
+package `update_icons1`, ELF /root/elf_icons1.elf): pickLanguage() tries `lang/<t>_<v>_nx.layout` first unless
+env.txt `GOW_PAD_ICONS=ps`; the same package carries sw-stall's `GOW_DK_FRAMES` (default 3) from gs_dk.cpp. The 60
+`_nx` files (`lang_pack.py disc-usa disc --nx --out port/switch/nsp/out/lang_nx`) are on sdmc:/switch/gow/lang.
+Console result: **en_en_nx runs** (title reached, 59-60 fps on the title), **it_it_nx hangs on the legal screen**:
+right after `text_it_nx.bin` is read, `[guest-branch:missing-target] JALR target=0 source=0x23a9ac` (log
+port/switch/logs/run_icons1/log.txt). So the European R_PERM with icons breaks the game; the USA one does not. Seen
+difference: gow_pad_icons finds two more symbols in the Italian HUD (meshrefs 139 Y, 140 A, by colour only) and the
+quad part is 142 (en 93). Default stays update_swfix3. Next: reproduce on PC with it_it_nx, bisect the symbols
+(colour-only ones first), then retry the console.
 
 ## In-game settings panel
 

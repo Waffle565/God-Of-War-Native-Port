@@ -19,8 +19,9 @@ Output in <usa disc>/lang/:
   voice_<code>/<NAME>   the dubbed files of <code> under the USA names (not for en)
   <text>_<voice>.toc    GODOFWAR.TOC with those files at their new places
   text_<code>_nx.bin, shell_<code>_nx.bin, <text>_<voice>_nx.toc/.layout
-                        the same with the Nintendo Switch button icons (tools/gow_pad_icons.py; the Switch build
-                        picks the _nx layout unless env.txt sets GOW_PAD_ICONS=ps)
+                        only with --nx (Switch only, the PC folder never gets them): the same with the Nintendo
+                        Switch button icons (tools/gow_pad_icons.py; the Switch build picks the _nx layout unless
+                        env.txt sets GOW_PAD_ICONS=ps)
   <text>_<voice>.layout the overlay: the patched TOC + each replacement file at its disc place. The game addresses
                         PART1/PART2.PAK with 32-bit byte offsets, so a file must start within 4 GiB of its PAK: the
                         replacements take the space of the English files they replace (both PAKs are nearly full;
@@ -32,7 +33,7 @@ Output in <usa disc>/lang/:
   discs draw them with their own fonts (GOWJ_*/GOWK_*, HUDJ*/HUDK*) and text code the USA executable does not have.
 The USA executable keeps its file names (R_PERM.WAD, X.VAG); only the data behind them changes.
 
-usage: python -I tools/lang_pack.py <usa disc folder> [<eu disc folder>] [--ja <japanese disc folder>] [--out <dir>]
+usage: python -I tools/lang_pack.py <usa disc folder> [<eu disc folder>] [--ja <japanese disc folder>] [--out <dir>] [--nx]
        (--out: write the overlays there instead of <usa disc>/lang)
        (folders from tools/iso_extract.py --layout)
 """
@@ -237,7 +238,7 @@ def dub_movies(code, usa, entries, usa_names, eu, eu_entries, eu_names, store, a
     return total
 
 
-def main(usa, eu=None, jpn=None, out=None):
+def main(usa, eu=None, jpn=None, out=None, nx=False):
     files, sectors = read_layout(usa)
     meta = read_meta(usa)
     starts = [files['PART1.PAK'][0], files['PART2.PAK'][0]]
@@ -277,6 +278,8 @@ def main(usa, eu=None, jpn=None, out=None):
         perm, shell = gow_wording.apply(perm, code), gow_wording.apply(shell, code)
         store(f'text_{code}', 'R_PERM.WAD', perm, f'text_{code}.bin')
         store(f'shell_{code}', 'R_SHELL.WAD', shell, f'shell_{code}.bin')
+        if not nx:
+            continue
         store(f'text_{code}_nx', 'R_PERM.WAD', gow_pad_icons.apply(perm), f'text_{code}_nx.bin')
         store(f'shell_{code}_nx', 'R_SHELL.WAD', gow_pad_icons.apply(shell), f'shell_{code}_nx.bin')
     usa_names = {e[1] for e in entries}
@@ -308,7 +311,7 @@ def main(usa, eu=None, jpn=None, out=None):
                                 aliases.setdefault(f'voice_{code}', {}))
         print(f'voice {code}: {len(stored[f"voice_{code}"])} files, {total >> 20} MB')
 
-    for text, voice, icons in [(t, v, i) for t in langs for v in voices for i in ('', '_nx')]:
+    for text, voice, icons in [(t, v, i) for t in langs for v in voices for i in (('', '_nx') if nx else ('',))]:
         members = dict(stored[f'shell_{text}{icons}'])
         members.update(stored[f'text_{text}{icons}'])
         alias = {}
@@ -348,7 +351,8 @@ def main(usa, eu=None, jpn=None, out=None):
                 ' (tools/lang_pack.py)', f'sectors {end}',
                 f'file {toc_lsn} {len(patched)} {combo}.toc']
         open(os.path.join(out, combo + '.layout'), 'w', newline='\n').write('\n'.join(head + sorted(lines)) + '\n')
-    print(f'{out}: {len(langs) * len(voices)} overlays x 2 (PS2 / Switch button icons) (text {", ".join(langs)}; voices {", ".join(voices)})')
+    both = ' x 2 (PS2 / Switch button icons)' if nx else ''
+    print(f'{out}: {len(langs) * len(voices)} overlays{both} (text {", ".join(langs)}; voices {", ".join(voices)})')
 
 
 if __name__ == '__main__':
@@ -358,6 +362,8 @@ if __name__ == '__main__':
         i = args.index('--ja')
         japanese = args[i + 1]
         del args[i:i + 2]
+    nx = '--nx' in args
+    args = [a for a in args if a != '--nx']
     target = None
     if '--out' in args:
         i = args.index('--out')
@@ -365,4 +371,4 @@ if __name__ == '__main__':
         del args[i:i + 2]
     if len(args) not in (1, 2):
         sys.exit(__doc__)
-    main(*args, jpn=japanese, out=target)
+    main(*args, jpn=japanese, out=target, nx=nx)
