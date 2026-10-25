@@ -1,5 +1,6 @@
 // GOW-Port: enlaces manuales para God of War (SCUS-97399).
 #include "runtime/ee_scheduler.h"
+#include "runtime/ps2_perf.h" // GOW-Port (nat-spd): [gow-fclk-long] per-frame buckets
 #include "game_overrides.h"
 #include "ps2_runtime.h"
 #include "ps2_runtime_macros.h"
@@ -42,6 +43,8 @@ void gowDumpBranchRing(const char *why);
 #include <sstream>
 #include <string>
 #include <vector>
+
+extern std::atomic<uint64_t> g_gowWaitNs[8], g_gowWaitCnt[8]; // EeScheduler.cpp: EE idle waits by wake-up cause
 
 namespace
 {
@@ -1815,6 +1818,147 @@ namespace
     }
 
 
+    // GOW-Port (nat-spd): guest time up to the wall clock at every frame-clock read (0x17D778), before the game reads
+    // T0. Below 60 fps the EE runs behind the VBlank wall grid inside a frame (slow recompiled work, host waits on the
+    // GS / VU1 pipeline) and was caught up in bursts at its waits, so most frames read ~1 field and a few read 2-6 (the
+    // game clamps fields to [1, 4]): game time ran at 0.88-0.94 of real time at 46 fps on the Switch. With the catch-up
+    // each read sees the frame's wall time (within 1/8 field). Budget: the frame the game is about to measure (T0
+    // extended like 0x17D778 does, minus its frame start 0x29C674) is brought to at most GOW_FCLK_CAP hundredths of a
+    // field (default 375): the rest stays as lag for the next frames instead of being cut off by the game's 4-field
+    // clamp. GOW_FCLK_CATCHUP=0 turns it off. With GOW_DELTA_DIAG=1, [gow-fclk] once per wall second: reads, reads
+    // caught up, fields added (sum / max), T0 fields the game measured per wall field, frames below 1 / above 4 fields,
+    // and [gow-fclk-long] for a frame above 4 fields or 4 wall fields (at most 8 per second).
+    void gowFrameClockCatchUp(uint8_t *rdram, PS2Runtime *runtime, bool before)
+    {
+        static const bool on = [] {
+            const char *v = std::getenv("GOW_FCLK_CATCHUP");
+            return !(v && std::strcmp(v, "0") == 0);
+        }();
+        static const uint32_t capTicks = [] {
+            const char *v = std::getenv("GOW_FCLK_CAP");
+            const unsigned long n = v ? std::strtoul(v, nullptr, 10) : 375ul;
+            return static_cast<uint32_t>(std::min<unsigned long>(n ? n : 375ul, 600ul) * 9610ul / 100ul);
+        }();
+        static const bool diag = [] {
+            const char *v = std::getenv("GOW_DELTA_DIAG");
+            return v && std::strcmp(v, "1") == 0;
+        }();
+        constexpr double kCyclesPerField = EeScheduler::kEeClockHz / 60.0;
+        constexpr uint64_t kCyclesPerTick = 512u; // T0 = BUSCLK / 256 = EE clock / 512
+        static uint64_t reads = 0, caught = 0, under1 = 0, over4 = 0, longLines = 0;
+        static double addedFields = 0.0, maxFields = 0.0, t0Fields = 0.0, lastAdded = 0.0, lastPre = 0.0;
+        static auto windowStart = std::chrono::steady_clock::now();
+        static auto lastRead = windowStart;
+        if (before)
+        {
+            if (!on && !diag)
+                return;
+            // ticks of the frame so far, as 0x17D778 will compute them (low 32 bits of the extended T0)
+            const uint32_t t0 = runtime->memory().eeTimerLoad(0x10000000u) & 0xFFFFu;
+            const uint32_t ext = readGuest32(rdram, 0x303628u) + t0 + (t0 < readGuest32(rdram, 0x2C7908u) ? 0x10000u : 0u);
+            const uint32_t elapsed = ext - readGuest32(rdram, 0x29C674u);
+            const uint64_t budget = elapsed < capTicks ? (capTicks - elapsed) * kCyclesPerTick : 0u;
+            const uint64_t added = on && budget ? runtime->eeScheduler().catchUpToWall(budget) : 0u;
+            lastAdded = added / kCyclesPerField;
+            lastPre = elapsed / 9610.0;
+            if (diag && added)
+            {
+                ++caught;
+                addedFields += lastAdded;
+                maxFields = std::max(maxFields, lastAdded);
+            }
+            return;
+        }
+        if (!on && !diag)
+            return;
+        const int32_t ticks = static_cast<int32_t>(readGuest32(rdram, 0x29C670u));
+        const double fields = ticks / 9610.0;
+        const auto now = std::chrono::steady_clock::now();
+        const double wallFields = std::chrono::duration<double>(now - lastRead).count() * 60.0;
+        lastRead = now;
+        // Long frames (the GS / GL pipeline stalls 70-200 ms a few times per second in heavy scenes on the Switch): the
+        // game cuts a frame to 4 fields and a T0 gap above 65536 ticks (6.8 fields) even loses whole wraps of its
+        // 16-bit extension. The cut-off time becomes a debt, paid back as at most 1/2 field per following frame by
+        // moving the game's frame start (0x29C674, read only by 0x17D778) back; at most GOW_FCLK_DEBT hundredths of a
+        // field are kept (default 600, so a loading pause is not replayed as fast motion).
+        static const int64_t maxDebt = [] {
+            const char *v = std::getenv("GOW_FCLK_DEBT");
+            return static_cast<int64_t>(v ? std::strtoul(v, nullptr, 10) : 600ul) * 9610 / 100;
+        }();
+        static int64_t debt = 0;
+        double paidFields = 0.0;
+        if (on && maxDebt > 0)
+        {
+            int64_t trueTicks = ticks;
+            const double wallTicks = wallFields * 9600.0; // 576 kHz
+            if (wallTicks > 60000.0)
+            {
+                const int64_t wraps = std::llround((wallTicks - static_cast<double>(ticks)) / 65536.0);
+                if (wraps > 0)
+                    trueTicks += wraps * 65536;
+            }
+            if (trueTicks > 4 * 9610)
+                debt = std::min(maxDebt, debt + trueTicks - std::clamp<int64_t>(ticks, 9610, 4 * 9610));
+            const int64_t pay = std::min<int64_t>(debt, 9610 / 2);
+            if (pay > 0)
+            {
+                debt -= pay;
+                writeGuest32(rdram, 0x29C674u, readGuest32(rdram, 0x29C674u) - static_cast<uint32_t>(pay));
+                paidFields = pay / 9610.0;
+            }
+        }
+        if (!diag)
+            return;
+        static double paidSum = 0.0;
+        paidSum += paidFields;
+        ++reads;
+        t0Fields += fields;
+        under1 += fields < 1.0;
+        over4 += fields > 4.0;
+        // per-frame deltas: perf buckets (GOW_PERF_DIAG=1; ee vu gs iop guest_wait .. gsq_wait) and the EE idle waits by
+        // wake-up cause (1 vblank-start 2 vblank-end 3 dmac 4 external 5 alarm 6 deadline 7 pacing sleep)
+        static uint64_t prevBucket[ps2_perf::bucketCount] = {}, prevWait[8] = {};
+        unsigned long long bucketMs[ps2_perf::bucketCount], waitMs[8];
+        for (size_t i = 0; i < ps2_perf::bucketCount; ++i)
+        {
+            const uint64_t v = ps2_perf::nanos[i].load(std::memory_order_relaxed);
+            bucketMs[i] = (v - prevBucket[i]) / 1000000u;
+            prevBucket[i] = v;
+        }
+        for (size_t i = 0; i < 8u; ++i)
+        {
+            const uint64_t v = g_gowWaitNs[i].load(std::memory_order_relaxed);
+            waitMs[i] = (v - prevWait[i]) / 1000000u;
+            prevWait[i] = v;
+        }
+        if ((fields > 4.0 || wallFields > 4.0) && longLines < 8u)
+        {
+            ++longLines;
+            std::fprintf(stderr, "[gow-fclk-long] fields=%.2f wall_fields=%.2f pre=%.2f added=%.2f vs=%llu ms ee=%llu vu=%llu "
+                                 "gs=%llu iop=%llu gwait=%llu gsq=%llu | waits vbs=%llu vbe=%llu dmac=%llu ext=%llu alarm=%llu "
+                                 "dl=%llu pace=%llu\n",
+                         fields, wallFields, lastPre, lastAdded,
+                         static_cast<unsigned long long>(runtime->memory().gs().vsyncTick.load(std::memory_order_relaxed)),
+                         bucketMs[0], bucketMs[1], bucketMs[2], bucketMs[3], bucketMs[4], bucketMs[7], waitMs[1], waitMs[2],
+                         waitMs[3], waitMs[4], waitMs[5], waitMs[6], waitMs[7]);
+        }
+        const double wall = std::chrono::duration<double>(now - windowStart).count();
+        if (wall < 1.0)
+            return;
+        std::fprintf(stderr, "[gow-fclk] reads=%llu caught=%llu added=%.2f max=%.2f t0_rate=%.3f under1=%llu over4=%llu paid=%.2f debt=%.2f catchup=%d\n",
+                     static_cast<unsigned long long>(reads), static_cast<unsigned long long>(caught), addedFields,
+                     maxFields, t0Fields / (wall * 60.0), static_cast<unsigned long long>(under1),
+                     static_cast<unsigned long long>(over4), paidSum, debt / 9610.0, on ? 1 : 0);
+        windowStart = now; reads = caught = under1 = over4 = longLines = 0; addedFields = maxFields = t0Fields = 0.0;
+        paidSum = 0.0;
+    }
+    void gowFrameClock(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        gowFrameClockCatchUp(rdram, runtime, true);
+        sub_0017D778_0x17d778(rdram, ctx, runtime);
+        gowFrameClockCatchUp(rdram, runtime, false);
+    }
+
     // GOW_FRAMECLOCK_TRACE=1 (debug): VBlank count and T0 (576 kHz, 9600 ticks per field) at every frame-clock read
     // (0x17D778) and every vid::WaitForDMAComplete entry (0x17A2A0), to see where in the field the game reads its clock
     void gowTraceFrameClock(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
@@ -1822,7 +1966,7 @@ namespace
         std::fprintf(stderr, "[fclk] read vs=%llu t0=%u ra=%x\n",
                      static_cast<unsigned long long>(runtime->memory().gs().vsyncTick.load(std::memory_order_acquire)),
                      runtime->memory().eeTimerLoad(0x10000000u), GPR_U32(ctx, 31));
-        sub_0017D778_0x17d778(rdram, ctx, runtime);
+        gowFrameClock(rdram, ctx, runtime);
     }
     // GOW_BENCH: the frame clock read with the step forced to the target step (0x29C654 = fields per frame at the
     // target rate, 60 / target fps) once gameplay has started; same float operations as 0x17D8E8..0x17D944.
@@ -2820,6 +2964,8 @@ namespace
         }
         else if (g_bench)
             runtime.replaceFunction(0x0017D778u, gowBenchFrameClock);
+        else
+            runtime.replaceFunction(0x0017D778u, gowFrameClock); // guest time caught up to the wall clock first
         if (std::getenv("GOW_RENDER_DIAG"))
             for (const uint32_t address : {0x001262C8u, 0x00126310u, 0x0012633Cu, 0x00126368u,
                                            0x00126428u, 0x00126478u, 0x00126528u})

@@ -191,6 +191,52 @@ Gains per lever above are estimates from the Gemini review (gemini-work/results/
 - Note: runs that never log `[memory card]` (stale git-ignored iopn_*/gow_overrides.cpp in a worktree) stay in the
   menu at 60 fps, speed 1.00; their numbers say nothing about gameplay.
 
+### Below 60 fps: slow motion in the Switch ship fight (2026-10-25, nat-spd, ext agent/natspd f012118)
+- Symptom: console default update_nv7foff, normal play (`nv7foffplay`): speed 1.00 at 57-60 fps but 0.927 over the
+  169 windows at 40-52 fps (ship fight, 46.5 fps; single windows 0.75-1.08). The user saw slow animations.
+- Cause, measured with `[gow-fclk]` / `[gow-fclk-long]` (below; logs port/switch/logs/bench_spd1-4play):
+  1. Guest time lagged inside a frame. The VBlank rate stayed 60 Hz, but most frames read ~1 field
+     (`[gow-speed-hist]` bins 9-10) while the wall frame was ~1.3 fields: the EE ran behind the VBlank wall grid during
+     the frame and caught up in bursts at its waits, so a few frames read 2-6 fields.
+  2. The ship fight really has long frames: about 3 per second of 70-230 ms (4-14 fields). In those the EE does
+     ~13 ms of work and sleeps on the pacing grid, waiting for the GS (vid::WaitForDMAComplete) while the GS frontend
+     is blocked on the full GL/deko3d queue (`gsq` 60-210 ms in the same frame). That is the fps limit itself; the
+     average 46 fps is mostly 60 fps frames plus these stalls. The game cuts a frame to 4 fields (0x17D778 clamps
+     fields to [1, 4]). A T0 gap above 65536 ticks (6.8 fields) even loses a whole wrap of its 16-bit extension
+     (0x303628 / 0x2C7908), so a 7.5-field frame reads ~0.7 field.
+- Fix, in two layers:
+  - Runtime: `EeScheduler::catchUpToWall(maxCycles)` brings guest time up to the wall clock: the latest due point of
+    the VBlank grid (VBlankStart and the pacing points have cycle and host deadline in lockstep), extrapolated to now,
+    also past the pending VBlank; a lag below 1/8 field is left alone, so 60 fps frames keep reading exactly 1 field.
+    catchUpToHost (the movie player's catch-up) is unchanged.
+  - Game (gow_overrides `gowFrameClock`, replaces 0x17D778 unless `GOW_BENCH` / `GOW_FRAMECLOCK_TRACE`): before the
+    game reads T0, catchUpToWall with a budget that keeps the frame being measured at most 3.75 fields
+    (`GOW_FCLK_CAP`, hundredths of a field); after the read, the part of a long frame the game cut off (above 4
+    fields, plus lost T0 wraps, found from the wall time between reads) becomes a debt, paid back as at most 1/2
+    field per following frame by moving the game's frame start 0x29C674 back (read only by 0x17D778). The debt is
+    capped at 6 fields (`GOW_FCLK_DEBT`, hundredths; 0 = no debt), so a loading pause is not replayed as fast motion.
+    `GOW_FCLK_CATCHUP=0` turns both off. Benches (`GOW_BENCH=1`, fixed step) do not use it.
+- Result (console, same package type, default clocks; bench rows in docs/benchmark.md "nat-spd"):
+
+  | run | windows 40-52 fps: fps / speed | windows 52-57 fps | windows >= 57 fps |
+  |---|---|---|---|
+  | `nv7foffplay` (before) | 46.5 / **0.927** (169) | 54.1 / 1.010 | 59.9 / 1.015 |
+  | `spd1play` (catch-up only, no cap / debt) | 45.3 / 0.961 (66) | 55.0 / 1.007 | 59.0 / 1.021 |
+  | `spd4play` (catch-up + cap + debt) | 47.0 / **1.001** (237) | 53.7 / 1.031 | 59.9 / 1.015 |
+  | `spd5play` (= spd4, catchUpToWall split out) | 47.0 / **1.003** (37) | 55.0 / 1.019 | 58.8 / 1.025 |
+
+  The pad script is wall-timed, so how long a run stays in the heavy fight varies (window counts). Debt in spd4play:
+  2.7 fields paid per second, mean 0.33, max 5.5. Bench `spd5g` 47.0 / 47.0 / 46.2 / 47.4 / 47.4 fps = `nv7foffg`
+  (mean 47.0 vs 46.7). Console default from 2026-10-25 evening: update_spd5 (docs/status.md, nat-spd, also the PC
+  check).
+- What is left is the stalls themselves (smoothness, not speed): long GL/deko3d stretches every ~20 fields in the
+  ship fight; finding them is GPU/GS work (`[gow-fclk-long]` prints the per-frame buckets).
+- `[gow-fclk]` (with `GOW_DELTA_DIAG=1`, once per wall second): reads, reads caught up, fields added (sum / max),
+  `t0_rate` (T0 fields the game measured per wall field), frames below 1 / above 4 fields, debt paid / left.
+  `[gow-fclk-long]` (at most 8 per second): a frame above 4 fields or 4 wall fields: measured and wall fields, the
+  frame's T0 before the catch-up, fields added, the VBlank count, and that frame's perf buckets (ms; ee, vu, gs, iop,
+  guest wait, gsq wait; buckets need `GOW_PERF_DIAG=1`) and EE idle waits by wake-up cause.
+
 ## Presentation without readback (zero-copy, branch agent/present in ext/PS2Recomp-kl-present)
 - **Before**: GSHwBackend::Present composed the CRTC circuits into presentTex, then glReadPixels into
   PresentationFrame::pixels; the host uploaded them again (UpdateTextureRec) and ran the bicubic scaler. The host

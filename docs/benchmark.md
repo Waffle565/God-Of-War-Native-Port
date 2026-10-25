@@ -237,6 +237,16 @@ has the env switch, gs_hw_backend.cpp of /root/src-nv2). Bench `nv7foffg`, same 
 ship fight at 46-48 fps (nv5kplay shows the same 0.89-0.96 at 45-51 fps; its later windows are a lighter scene, the
 wall-timed pad script diverges, so the whole-run means 1.003 / 0.907 are not comparable).
 
+### nat-spd (2026-10-25): game speed below 60 fps (frame-clock catch-up + long-frame debt)
+Packages update_spd1-5 (the nv7foff sources + ext agent/natspd + gow_overrides gowFrameClock; ORACLE=OFF; spd5 is the
+final one). Bench `spd5g`, same settings as `nv7foffg`: 0-30 47.0, 30-60 47.0, 60-90 46.2, 90-120 47.4, 120-150 47.4 fps
+(mean 47.0; nv7foffg 46.7), vu1 3538-4509, gpu 4876-4899 (`spd4g`: 47.6 / 46.5 / 46.0 / 47.5 / 47.5). Benches do not run
+the catch-up (fixed step); their `[bench]` lines equal nv7foffo / nv7f1 for the first 151 points, while nv7foffg / nv5kdg take the
+other of two branches from f=3840 on: the bench is not bit-deterministic across runs at that point, independent of
+this change (spd4g = spd5g). Normal play (`NOBENCH=1`, envs/nobench.txt, 300 s), speed in the 40-52 fps windows:
+`nv7foffplay` 0.927 -> `spd4play` 1.001 (47.0 fps) / `spd5play` 1.003 (47.0 fps); 60 fps windows 1.007-1.025 as
+before (nv5kplay 1.019). Table and cause in docs/performance.md "Below 60 fps".
+
 Profiles (`GOW_PC_SAMPLE=1000`, `GOW_VU1_NATIVE_FAMS=8`: only skin native): `nv7as` (nv7a, skin 16.06), `nv7bs` (nv7b,
 15.77), `nv7es` (nv7e, 13.93). **Every family's native run beats the recompiled one from nv7f on** (lit -9 %, skin -9 %,
 skin28 -3 %, misc -22 %, 3d0d -28 %, 7ab -37 %); the ORACLE=OFF package has no skipped run (0 `[vu1nat-skip]`) and the

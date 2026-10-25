@@ -965,3 +965,18 @@ Run: `python -I tools/zones.py --slots 1,2,3,4` (scale: `PS2X_GS_HW_SCALE`); sav
   (same settings as nv5kdg) 47.7 / 46.4 / 45.9 / 46.4 / 47.2 fps = nv5kdg within noise, VU1 thread -5 %; title menu
   checked; normal play: 60 Hz VBlank, speed 1.00 at 57-60 fps, ~0.9 in the heavy ship fight at 46-48 fps (as nv5k).
   docs/benchmark.md "nat-vu1s".
+
+- 2026-10-25 evening (nat-spd): **slow motion below 60 fps fixed; console default is now update_spd5 + FAILGT** (was
+  update_nv7foff; `tools/switch_default.sh`). Cause: in the ship fight guest time lagged the VBlank wall grid inside a
+  frame (caught up in bursts) and ~3 real stalls per second of 70-230 ms (EE waiting for the GS while the GS frontend
+  is blocked on the full deko3d queue) were cut by the game's 4-field frame clamp or lost a 16-bit T0 wrap. Fix: ext
+  agent/natspd f012118 `EeScheduler::catchUpToWall` + gow_overrides `gowFrameClock` (catch-up before the frame-clock
+  read, cut-off time paid back as a debt of at most 1/2 field per frame; `GOW_FCLK_CATCHUP=0` off). Normal play speed
+  in the 40-52 fps windows 0.927 -> 1.003 (spd5play) / 1.001 (spd4play) at 47.0 fps (before 46.5); bench `spd5g`
+  47.0 fps mean (nv7foffg 46.7). The Switch build tree /root/src-nv2 carries the three changed files (originals as
+  *.pre_spd); its build folder is configured `PS2X_VU1_ORACLE=OFF`. PC: natvu1m's out/build-pc (Release, MSVC; ext
+  agent/natvu1 itself no longer builds with MSVC: GNU vector types in ps2_vu1_native.h since adcb308) with the change:
+  zones slot 0 ok (60 fps, speed 1.01); slots 1-4 never reach gameplay, but so does the untouched natvu1i exe and the
+  change turned off (`GOW_FCLK_CATCHUP=0`), so the gate environment fails for that build lineage now (not looked into;
+  port/zones_spd*). natvu1m's exe was left built with the change (sources restored). Details: docs/performance.md
+  "Below 60 fps", docs/benchmark.md "nat-spd". Left: the stalls themselves (smoothness).
