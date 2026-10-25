@@ -4,6 +4,27 @@ The game's sound engine is its own IOP code: 989snd (`989NOMID.IRX`, sequencer, 
 SMPD streamer plugin, compiled ahead of time like every IRX (docs/native-port.md). Below it there is no sound hardware
 model: the SPU2 register-level model and the IOP's SPU DMA channels were removed on 2026-10-11.
 
+## Handoff (nat-iop4, 2026-10-25) - latest
+- ext `agent/natiop2` (worktree ext/PS2Recomp-kl-natiop2): 1217389 (SMPD fn 02 / 1a native) + 41012d8 (989snd cmds
+  41 / 42 / 4a / 4b native, shadow; SMPD shadow counts interrupted calls; GOW_WINDOW_BACKGROUND) + **14d5fd7** (cmd 4c
+  native for native SMPD functions; window mode 2). Build out/build-pc current. Generated iopn_989nomid_irx_25e00.cpp
+  in that worktree was regenerated from port/iop_mods with the new stubs (tools/iop/native_overrides.txt, master): any
+  other worktree must regenerate it too (only 5 stub entries differ; without the C++ overrides they just interpret one
+  instruction). register_functions.cpp in that worktree is a locally regenerated (shorter) file: never commit it.
+- Verified: see "989snd status commands" (native gate 5/5 at 60 fps, shadow 0 mismatches, sound equal).
+- Native now on the per-frame sound path: LIBSD (all), SMPD fn 02 / 1a, 989snd cmds 41 / 42 / 4a / 4b / 4c. Still IRX
+  per frame: the RPC server / batch loop itself, cmd 0x68 -> SMPD **fn 0b** (many per frame in fights) and 989snd's
+  tick.
+- Next: (1) SMPD fn 0b (0x364c): needs 989snd #25 (0x848 -> 0xcdd4, handle -> sound), #117 (-> 0xd4fc), #36 (->
+  0xd330), #38 (-> 0xd394), #41 (-> 0x2b48), #32 (-> 0xcef8) natively, i.e. 989snd's per-sound parameter setters
+  (they reach LIBSD, already native); same pattern: wrapper stub + C++ + shadow; (2) cmd 0x68 wrapper (0x1410 -> 0x250)
+  once fn 0b is native; (3) the loaders fn 0d / 0f / 06 and bank loading #129; (4) eventually the RPC server and the
+  tick, then 989NOMID / SMPD_IOP need not be loaded.
+- Test runs: tools/zones.py starts the runner with GOW_WINDOW_BACKGROUND=1 (never takes the focus; user rule). A gate
+  run while the PC was busy had GL uploads of 1-4.6 s per 5 s and failed in both the native and the oracle run alike:
+  re-run before blaming a change. Give zones.py an absolute `--out`.
+- Switch: no console run; IOP-side C++ only.
+
 ## Boundary: the LIBSD API
 - 989snd reaches the sound unit **only** through LIBSD.IRX's exports (it never touches SPU2 registers; only LIBSD did).
 - Those exports are native C++ (`ps2xIOP/src/native/iop_native_overrides.cpp`, listed in tools/iop/native_overrides.txt):
@@ -176,26 +197,19 @@ Per frame the game sends one batch (cmd 0x4D) of: 4c SMPD fn 1a (x2), 42, 4c SMP
   lines: calls / mismatches / interrupted / declined per command every 4000 calls, the first 20 mismatches). While a
   call is checked the dispatcher interprets it (the wrapper returns inside 989snd, where compiled code would not come
   back to the dispatcher), so the return is seen.
-- First check (slot 1, 20261025_155119): 6400 calls of 0x41 / 0x4a / 0x4b and 12800 of 0x42, 0 mismatches (cycles
-  included), none interrupted or declined.
-
-### Handoff (nat-iop3, 2026-10-25, paused by the user's 2-agent limit)
-- ext `agent/natiop2` (worktree ext/PS2Recomp-kl-natiop2): 569d093 (nat-iop2: LIBSD native) + **d0f65aa** (WIP, SMPD
-  front end: fn 02 / fn 1a native, shadow check, `IopNativeCall::cycles`, `sifSendToEe`). Build `out/build-pc`
-  (RelWithDebInfo, logs off) is current. Only ps2xIOP changed.
-- Verified so far: shadow run slot 1 (oracle path, `GOW_NATIVE_SMPD=0 GOW_SMPD_SHADOW=1`): 6667 fn 02 and 13333 fn 1a
-  calls, 0 data / result mismatches; cycles 364 per fn 02 call except one call that took 387 (an interrupt during
-  the call: expected, the check counts it as a mismatch). Native gate (port/natiop3/gate-native/20261025_020215):
-  slots 0, 1, 2 ok at 60 fps, stopped at slot 3 by the pause.
-- To do next: (1) re-run `port/natiop3_gate.sh` (native gate 0-4 with `GOW_SND_LIBSDLOG={zone}/snd.trace
-  GOW_AUDIO_RAW={zone}/mix.raw`, then the shadow gate 0-4); give zones.py an **absolute** `--out` (a relative one
-  makes the per-run card copy path relative to the runner's folder: every load-game slot then fails "never reached
-  gameplay"); (2) `tools/audio_cmp.py` native vs shadow (oracle) mix.raw for slots 1-4, `tools/sndtrace_cmp.py`
-  on the traces; (3) maybe count an interrupted call separately in the shadow stats; (4) next SMPD functions: fn 0b
-  (decoded above; needs 989snd #25 / #117 / #36 / #38 / #41 / #32, i.e. 989snd itself or calls into its code), the
-  loaders fn 0d / 0f / 06 and 0x2c88's other callers, then bank loading #129.
-- Determinism: compare within one run (shadow) rather than two runs; two runs part after a few thousand trace lines.
-- Switch: no console run; IOP-side C++ only (no new platform code).
+- Verification (PC, ext agent/natiop2 14d5fd7, RelWithDebInfo; port/natiop4, runs in the background window):
+  - Native gate (gate2-native 20261025_164024, SMPD fn 02 / 1a + cmds 41 / 42 / 4a / 4b / 4c native, traced and
+    recorded): **slots 0-4 ok, 60 fps, game speed 1.00**.
+  - Shadow gate (gate2-shadow 20261025_165712, `GOW_NATIVE_SMPD=0 GOW_SMPD_SHADOW=1 GOW_NATIVE_SND989=0
+    GOW_SND989_SHADOW=1`): slots 0-4 ok at 60 fps; per slot 11.5k calls of 41 / 4a / 4b, 23k of 42, 34.5k of 4c and
+    11.3k SMPD fn 02 / 22.7k fn 1a: **0 mismatches** (result, reply, lock, status block, EE copy, cycles); 1 interrupted
+    call (slot 1); 4c declined 521-752 times per slot (the loads' SMPD functions, by design).
+  - Sound (tools/audio_cmp.py native vs shadow mix.raw, slots 1-4): RMS profile correlation 0.9993-0.9999, mean
+    relative difference 0.002-0.005, same length / silences / peaks, identical first 1.41 s (as for LIBSD).
+    tools/sndtrace_cmp.py slot 1: identical first 2687 lines, then the usual run-to-run timing parting (80 % of the
+    aligned RPC segments with equal LIBSD calls, differences in the polled GetAddr / GetParam calls).
+  - Captures: mean absolute pixel difference native vs oracle per capture is in the same range as two oracle runs of
+    different builds (run-to-run timing); sheets look normal.
 
 ## SoundEngine (`ps2xIOP/src/emulator/core/sound_engine.{h,cpp}`)
 - Typed state: per voice volume L/R, pitch, ADSR1/2, start/loop/next addresses, envelope; per core VMIX/NON/PMON masks,
