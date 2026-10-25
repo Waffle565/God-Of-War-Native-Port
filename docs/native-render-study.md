@@ -1153,3 +1153,82 @@ nv2a's runLit / litLoop / skinLoop / npart), all same bits (natcheck on the 8 re
   4b2b0cc2 = A + 8), and the A / B states predate the native runs (sw-k9's recompiled-only k9 runs). Some rand caller is not
   locked to the frame counter (an EE thread scheduled by timing), so any VU1 speed change moves those calls; the game
   state is the same until the known ~64 s divergence. Equal signatures need equal timing, not just equal VU1 output.
+
+### Progress: the census play-through, the build without the recompiled VU1 (2026-10-25, nat-vu1k, ext branch agent/natvu1k, worktree ext/PS2Recomp-kl-natvu1k)
+Branch agent/natvu1k = agent/natvu1i e023fd4 + the entry commits 03a8df4 .. b28b855 + the PS2X_VU1_ORACLE commit (below).
+All native code is in the existing files (`ps2_vu1_nat_wind.inl` holds the new loops, `ps2_vu1_nat_misc.inl` the
+kEntries rows / nmisc::loop dispatch, `ps2_vu1_nat_part.inl` the particle additions, `ps2_vu1_nat_clip.inl` /
+`ps2_vu1_nat_lit.inl` the clipper outputs).
+
+**Census play-through** (PC, MSVC Release, logs off, `GOW_VU1_NATIVE_RUN=1`, `GOW_VU1NAT_DUMP` per run; scratch
+`census.py <exe> <out> <parallel> <secs> job...`, jobs `warp:<ZONE>` = new game + `GOW_WARP=<ZONE>` 0.5 s after gameplay
+start, `slot:<n>` = load save slot n of ref/saves/Mcd002.ps2, `newgame`; per job a pad script walking four ways with
+attacks / jumps / magic, then the pause menu and the select screen; 3 in parallel): **every zone WAD of GODOFWAR.TOC**
+(106 warps: ARENA, ATHN01-08, ATRET, DEST, HDES, OLYMP, PAND, SEWR; 110 s each), the new game (240 s, the ship's intro),
+save slots 1-4 (240 s each: the load screens, Olympus, the desert, Pandora's temple PAND04C, the final battle). The
+dumps were re-checked with the harness after every fix (`recheck.sh <dir>`: natcheck of every dump, prints what is
+still not native or not exact) until none was left. Keys found (each closed, byte-exact on its dumps):
+- **texGen copy 0x0fe8-0x1028** (85b9642a / b66a3e7a, PAND04G, ARENA12, the ship ATHN01D, Olympus): the second colour
+  set-up's `ibgez vi1` fall-through at 0x0fd8 is a byte copy of 0x06d8-0x0718 (nmisc::texGen); was a decline.
+- **new entries** (kEntries rows; loops at entry + 0x18 in nmisc::loop by their code hash): 7137d413 (144 bytes, prime 2,
+  `loop7137`: position, divide, colour; ARENA08 / 14, ATHN03C, ATHN05B), f38d6d26 (160, prime 1, `loopF38d<false>`: two
+  matrices + w as 2565a5fa, no divide, colour = rgba + vf0; the ship's deck ATHN01D / E), 0d759bbc (160, prime 1,
+  `loopF38d<true>`: the same with the vf30 colour; ATHN03*), 66bfcb8d (192, prime 2, `loop66bf`: env ST + lit colour
+  from vf27-29, divide; ATHN06B), fb1e98cc (112, prime 2, `loopFb1e`: unlit, no divide; ATHN08B), 67347f0d (184, prime 2,
+  `loop6734`: two matrices, divide, ST * Q, colour; ATHN05A / B), df8474b4 (160, prime 2, `loopDf84`: 66bf without the
+  divide; OLYMP04), 0f4641dd (248, prime 1, `loop0f46`: 26 pairs, position and normal through two matrices; PAND02F),
+  8449e8a0 (152, prime 1, `loop8449`: env ST, colour, no divide; PAND03H).
+- **the entries' own no-divide loops** (the prime pass at 0x1228 calls the entry's loop at entry + 0x18; the line in
+  the plan above): b45e3bab (`ownLoopB45e`), c79fec55 (`ownLoopC79f`), b12c8560 (`ownLoopB12c`, lit, 19 pairs),
+  5e1e18b3 (`ownLoop5e1e`), b66a3e7a (`ownLoopB66a`).
+- **the clipper outputs of the other modules** (the plan's "other modules' output loops after the clipper"): polygon
+  output `jr 928.x + 2` = 0x1f80 (c79fec55: `loop1f90` = loop2190 without the prologue / z flip) and 0x1fe8 (5e1e18b3:
+  `loop1ff8`, colour + XYZ); strip output `jr 928.x` = 0x1f70 -> 0x21e8 (`loop21f8`) and 0x1fd8 -> 0x2240 (`loop2250`).
+  0x21e8-0x2240 / 0x2240-0x22a8 are in no hash: gated by their own FNV (nwind::kStub21e8 / kStub2240) at 0x1bb0.
+- **particle program**: snippets 0x0d10 (keyframe lookup: vf9 = frac(vf1 * t), vf17 = the key at vi2 + int(1 + vf1 *
+  frac.w).y, vf7 / vf18 its mr32 rotations; ARENA20) and 0x0d88 (vf8 = a - b * 21(XTOP).z; ATHN06A / 08B, ATRET), the
+  builder 0x0e40 -> point element 0x0ea0 (one clip-tested point from 547 / 546, the 0x0f28 set-up code; ATHN01F / 02C).
+  All outside nat-vu1f's codeHash ranges: each gated by its own hash (npart::d10Ok / d88Ok / e40Ok, per generation).
+- `not-offered` (start pc other than 0x00 / 0x18 / 0x30, pending pipeline) never came; MSCNT runs are now offered as
+  well (`resume` sets the same flag as `execute`), none came either.
+
+**Recordings** (3000 runs each, `GOW_VIF1_REC_AT=45` after a warp, scratch r1/): OLYMP04, ARENA08, ATHN01D, ATHN03A,
+ATHN04B, ATHN05A, ATHN06B, ATHN07, ATHN08B (+ ATHN01F / 06A / PAND04G): all runs native, packets / memory / registers
+byte-exact except the known CLIP seeding artifact and **one** scratch difference: ATHN03A run 1741 (0d759bbc), qw 933
+(the prime pass's output, y 1 ULP: c2392214 vs c2392213), `next run changed 0 of 1 tested`; open. The new loops ran
+there (e.g. 67347f0d 148 runs, 0d759bbc 72, c79fec55 30-104 per recording, b12c8560 / 66bfcb8d / fb1e98cc / 5e1e18b3);
+df8474b4's dump runs were all culled, so its loop is checked only by the OLYMP04 recording. The eight older recordings
+are unchanged (natcheck after every step).
+
+**Removal plan step 3 / 4: `PS2X_VU1_ORACLE`** (CMake option of ps2xRuntime, default ON; a COMPILE_DEFINITION of
+ps2_vu1_core.cpp only, which is out of the unity build, so switching it recompiles one file; the harness build.sh
+defines nothing = ON):
+- ON: as before (the recompiled VU1 is the fallback and the harness oracle).
+- OFF: no generated VU1 sources in the runner (vu1_generado / vu1n_generado are not added), `liveMode` = 1 and every
+  family native (GOW_VU1_NATIVE_RUN / GOW_VU1_NATIVE_FAMS are ignored), and `VU1Interpreter::run` hands a VU1 run tryRun
+  did not take to `VU1NatAccess::skipRun`: the program ends there (no XGKICK: the batch is missing for one frame), VU
+  memory as the run found it (tryRun's undo restore), registers untouched (tryRun works on a copy), one
+  `[vu1nat-skip]` line for each of the first 32 skips and then a count every 5 s, besides the census line. VU0 micro
+  programs still run on the step interpreter (it is shared with VU0, so ps2_vu1_lower / upper / step stay; only the
+  VU1 path is compiled out). The block cache / HLE kernels (ps2_vu1_native.inl) are still compiled in but unreachable
+  for VU1; removing their code is left for later.
+- The Switch build keeps ON for now (its default mask 0x3 runs the slower families recompiled; nat-vu1j's call).
+- **Zone gate with the oracle compiled out** (`tools/zones.py --slots 0,1,2,3,4 --silent` on the OFF build of e5caa85's
+  entries; the runner is 66.6 MB instead of 94.9 MB): **5 / 5 ok, 60.0 fps in all last windows, game speed
+  1.00-1.01**, the `PS2X_VU1_ORACLE=0` line in every log, **0 `[vu1nat-skip]`, 0 `[vu1nat-unknown]`**.
+- Build cost: before 4bf860c the OFF branch lacked the runner's `src/lib/vu` include folder, so a switch changed the
+  runner's command line and rebuilt all of it (~1 h); now both branches add it. A folder configured before that commit
+  rebuilds once more on its next switch.
+
+**Open** (in order): (1) ATHN01F recording runs 1134 / 1135 / 2401 / 2402 (particle program): packets differ because
+the *oracle* stops early (its end pc 0x3c8 / 0x15a8, the native run reaches the E at 0x04b8; the same with nat-vu1i's
+harness nvi4, so it predates this round): check the harness oracle's step / cycle limit on long particle runs before
+calling it a native bug. (2) df8474b4 and 8449e8a0 are checked only on runs that were culled before the loop (dumps)
+or on the OLYMP04 recording: a recording where their loops run. (3) the 1-ULP scratch difference of ATHN03A run 1741.
+(4) the PC bench and the console bench of the OFF build (the zone gate above passed); (5) the dead VU1 code
+under OFF (ps2_vu1_native.inl block cache, HLE kernels, compiled programs) behind `#if PS2X_VU1_ORACLE`.
+
+**Tools / data** (scratch, archived in `D:\Claude Archive\GoW-Archive\natvu1-2026-10-25\nat-vu1k\`): `census.py`,
+`recheck.sh`, `add_own.py`, `runx.py`, `fnv.py`, the census dumps (`dumps/<job>.vifrec`) and the twelve 3000-run
+recordings (`rec/<zone>.vifrec`); WSL harness `/root/vu1h/nvk` (build.sh nvk /root/natvu1k ...), dumps under
+`/root/nrs/nk/`.
