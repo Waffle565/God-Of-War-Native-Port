@@ -1,5 +1,39 @@
 # Native rendering instead of the recreated VU1: study and migration plan (2026-10-24)
 
+## Handoff (2026-10-25 night, nat-vu1l stopped here: ext agent/natvu1 head bb234d3, packages update_nv4 = nv4e, nv4a-d)
+Details in "Progress: undo without snapshots, cheaper FastOps (nat-vu1l)" (end of this file); bench rows in
+docs/benchmark.md "nat-vu1l".
+- **Console, per run, run-weighted over the whole bench (default clocks), all native (`nv4e1`, `=1`) vs recompiled
+  (`nv4em`, same package `=m`)**: 3d0d1206 3.50 vs 4.27 us, 7ab32108 4.60 vs 6.11, 93febeec **8.79** (nv3: 9.4-10.0) vs
+  7.25, 39f38df4 **18.65** (20.0-20.3) vs 13.42, 6df5c750 **32.3** (35.4-36.5) vs 28.1, misc **41.85** (42.0-42.7) vs 40.88.
+  Still only 3d0d / 7ab win: **Switch mask stays 0x3**; misc is within 2.4 %. (The handoff numbers before this one
+  were single 5 s windows; whole-bench averages from now on: `famavg.py`-style, see benchmark.md.)
+- **Changes (same bits; natcheck on the 8 recordings as nvi4, the 12 nat-vu1k recordings in /root/nrs/nk all byte-exact,
+  `GOW_VU1NAT_FORCE_DECLINE=1` restores memory in every run of all 20)**: the 16 KB snapshots mostly gone (0x2320 /
+  unlit loops log their store block, 512 undo entries, a full log snapshots itself, the clip pass and the polygon clipper
+  only log, kCullClip's stores through `vu1hle::Ctx::onStore`; snapshots per 3000 runs 384-1574 -> ~10-60); FastOps
+  tracks only FMAC results against 2^126 (the product test went, RZ argument in the code; pcmenu without any test: 366
+  memory differences, without the product test at the old limit: 208, with this one: 0); litLoop / skinLoop take the
+  kept lanes from `s` at exit (4 live vectors less); FMAC helpers / `Vu::V/W/A/WA` force-inlined.
+- **agent/natvu1k merged** (bb234d3; its loops in nmisc::loop's kind cache as kinds 17-30 in its test order, npart
+  isProgram keeps four generations with its d10 / d88 / e40 gates). `PS2X_VU1_ORACLE=OFF` not benched: not every family
+  wins yet (the coordinator's condition).
+- **One GIF submit per run** (`GOW_VU1NAT_MERGE_KICKS=1`, opt-in): misc -0.8 us per run in nv4b1, but nv4b1's late
+  scenes ran ~2 fps lower (35.2-35.6 vs 37.2-37.6, not repeated, cause unknown): off by default.
+- **update_nv4** (= nv4e, ELF `/root/elf_nv4e.elf`, built in `/root/gow-switch-nv2` from `/root/src-nv2`, script
+  `tools/vu1_nat/switch_build.sh <tag>` copies the worktree's VU sources, builds and packages; `tools/vu1_nat/nc8.sh`
+  natchecks the 8 recordings, `tools/vu1_nat/famavg.py` averages the per-family us of bench logs): default clocks `nv4d1` 29.1 / 34.9 / 37.3
+  fps vs update_k11d 29.3 / 35.1 / 37.7 (GPU-bound): **not installed**, k11d's exefs pushed back; GPU + EMC max `nv4xd`
+  41.2 / 52.7 / 54.7 (= update_nv2's 41.1 / 52.5 / 55.0: the VU1 thread is the limit, lit / skin / misc recompiled).
+- **Where the time is now** (nv3e profile `nv3ep`, all native): runLit's own samples are 12 % `ld1` and 5 % `st1` of
+  VU1State (every Op reads, normalises and writes `s.vf[]`: stores through `uint8_t *` memory alias the state, so
+  nothing stays in registers) and 6 % the MAC bookkeeping per FMAC; the lit / skin fast pass is ~145 A57 instructions
+  per vertex with ~15 stack reloads (skin: 71 reloads in the function), ~30 tracking ops, the scalar DIV block.
+- **Next**: (1) runLit in locals (a register-file struct passed by value / the generated blocks' style) is the one big
+  lever left for lit / skin (set-up ~5 us of lit's 8.8); (2) skin / skin28 pass split or fewer invariants (16 rows + 3
+  ADDA + I live); (3) npart / nmisc in locals for misc (1 us to win); (4) re-bench `GOW_VU1NAT_MERGE_KICKS=1` twice to
+  see whether the late-scene drop is real.
+
 ## Handoff (2026-10-25 night, nat-vu1j stopped here: ext agent/natvu1 head a3af967, packages update_nv3 / nv3c-e)
 Details in "Progress: A57 speed-ups (nat-vu1j)" (end of this file); bench rows in docs/benchmark.md "nat-vu1j".
 - **agent/natvu1i merged** (6b8b454; nat-vu1i e023fd4: census entries, nwind, npart snippets, nat-vu1h's clipper):
@@ -1232,3 +1266,31 @@ under OFF (ps2_vu1_native.inl block cache, HLE kernels, compiled programs) behin
 `recheck.sh`, `add_own.py`, `runx.py`, `fnv.py`, the census dumps (`dumps/<job>.vifrec`) and the twelve 3000-run
 recordings (`rec/<zone>.vifrec`); WSL harness `/root/vu1h/nvk` (build.sh nvk /root/natvu1k ...), dumps under
 `/root/nrs/nk/`.
+
+### Progress: undo without snapshots, cheaper FastOps (2026-10-25 night, nat-vu1l, ext branch agent/natvu1)
+All same bits (natcheck: the 8 recordings as nvi4, the 12 nat-vu1k recordings in /root/nrs/nk byte-exact; with
+`GOW_VU1NAT_FORCE_DECLINE=1` every run declines at its end and natcheck's "memory not restored" stays 0 on all 20 — a
+build without the kCullClip hook shows 261 on pcfight, so the check bites).
+- **Snapshots** (16 KB memcpy before a loop whose stores are not logged): per 3000 runs 384-1574 before (6df5c750: every
+  run; 7ab32108's clip pass ~20 %; c79fec55 / e4f3b5c3 / ea6b4a01: every run), ~10-60 after. How: runLit's loop lambda
+  logs the store block (`Undo::logRange`) for the 0x2320 output loop and the unlit entries' loops (noDivLoop, kUnlitSt A /
+  B: all store b + 1 / b + vi4 - 1 / b + vi4 per pass, the lit pattern), the undo log holds 512 entries (96: the menu's
+  clip-pass runs log ~90 single stores before their 0x2320 loop, so logRange found no room), a log without room takes the
+  snapshot itself (exact: the log holds every earlier change; the old abort-on-decline overflow cannot happen any more),
+  nmisc::clipPath and nclip::polyClip no longer snapshot first, and vu1hle::kCullClip's ADC / 929.z stores go through
+  `Ctx::onStore` (nrun::Undo::logHook). Left: nmisc's other loop kinds (wind / colDiv / nwind; 9ffe612e, b12c8560).
+- **FastOps** (lit / skin / skin28 fast pass): in round-toward-zero an overflowing product saturates to +-FLT_MAX, so a
+  FMAC whose addend is at most T = 2^126 ends more than T from zero when its product saturated: tracking the results
+  alone against T is enough, given that every addend is an earlier tracked result, an invariant ADDA row or the entry
+  ACC (those seed the tracking: `FastOps(start)`). Results in (T, FLT_MAX) only redo the pass exactly. pcmenu is the
+  recording that exercises it: no test at all 366 memory differences, results only at the old limit 208, this 0.
+- **Loops**: the kept lanes of f1 / f7 / f8 / f9 (lit) and f3 / f5 / f9 / f10 (skin) come back from `s` at exit instead of
+  four saved registers (litLoop 34 -> 30 stack reloads, skinLoop 86 -> 71, in the whole function incl. the exact redo).
+- **Set-up**: nrun::fmul / fadd / fsub / fmadd, Op::fin / fma and Vu::V / W / A / WA force-inlined (Op::fma and nrun::fmadd
+  were out of line in nv3e: ~2 % of the VU1 thread).
+- **GIF submit**: `GOW_VU1NAT_MERGE_KICKS=1` hands the run's packets to the GIF in one submitGifPacket (the GIF input is a
+  stream per path; GS::processGIFPacket's image fast path wants a lone packet, so it then takes the generic path):
+  opt-in, see the handoff.
+- **Merge of agent/natvu1k** (bb234d3): its new loops enter nmisc::loop's kind cache (kinds 17-30, same test order),
+  npart::isProgram keeps nat-vu1j's four generations and caches nat-vu1k's d10 / d88 / e40 snippet gates per slot.
+- **Console** (per run, whole-bench averages): see the handoff and docs/benchmark.md "nat-vu1l".

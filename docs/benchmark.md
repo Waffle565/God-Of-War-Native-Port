@@ -137,3 +137,21 @@ thread busy ms per 5 s, 90-150; all seed A at frame 60):
 Per run (us, nat for `=1`, rec from nv2m1 / nv3d2): 3d0d1206 3.6 / 4.2, 7ab32108 4.9 / 6.2, 93febeec 9.4 / 7.2-7.4,
 39f38df4 20.0 / 13.3-13.5, 6df5c750 36.0 / 28.0-28.4, misc 47.0 / 44.4-45.2. update_nv3 does not beat update_k11d at the
 default clocks (GPU-bound there): not installed, k11d's exefs pushed back to the console after the runs.
+nat-vu1l (ext agent/natvu1, docs/native-render-study.md; `GOW_PERF_DIAG=1`, `BENCH_GAME_S=150`; fps by
+`bench_report.py --scenes 10-20,30-60,90-150`; vu1 = VU1 thread busy ms per 5 s, 90-150; us = per run, run-weighted over
+every full `[vu1nat-run]` window after the first two, nat / rec):
+| run | package / env / clocks | heavy 10-20 | mid 30-60 | late 90-150 | vu1 | 3d0d / 7ab / 93fe / 39f3 / 6df5 / misc us |
+|---|---|---|---|---|---|---|
+| `nv3ep` | update_nv3 `=1` + `GOW_PC_SAMPLE` (profile of nv3e), default | | 35.1 | 37.2-37.5 | 3360-3412 | 3.75 / 4.99 / 9.55 / 20.0 / 36.5 / 42.5 |
+| `nv4a1` | update_nv4a (fewer snapshots) `=1`, default | 27.9 | 35.1 | 37.4 | 3411 | 3.71 / 4.65 / 9.99 / 20.3 / 35.4 / 42.0 |
+| `nv4b1` | update_nv4b (+ one GIF submit per run, exit lanes from s) `=1`, default | 28.1 | 35.2 | **35.4** | 3286 | 3.72 / 4.63 / 9.95 / 20.3 / 35.1 / 41.2 |
+| `nv4e1` | update_nv4e (+ FastOps on results / 2^126, inlined FMAC helpers, merge of natvu1k; per-packet submit) `=1`, default | 28.6 | 35.1 | 37.4 | 3263 | 3.50 / 4.60 / **8.79** / **18.65** / **32.3** / 41.85 |
+| `nv4em` | update_nv4e `=m` (all recompiled, measured), default | 28.4 | 35.1 | 37.2 | 3369 | 4.27 / 6.11 / 7.25 / 13.42 / 28.1 / 40.88 (rec) |
+| **`nv4d1`** | **update_nv4 (= nv4e, Switch default mask 0x3), default** | **29.1** | **34.9** | **37.3** | 3216 | 3.74 / 4.95 / (7.13 / 13.25 / 28.1 / 40.1 rec) |
+| **`nv4xd`** | **update_nv4 default mask, GPU + EMC max** | **41.2** | **52.7** | **54.7** | 4703 | 3.68 / 4.86 / (7.18 / 13.40 / 27.85 / 41.1 rec) |
+| (`f1`) | update_k11d (installed default) | 29.3 | 35.1 | 37.7 | 3173 | |
+| (`nv2xd`) | update_nv2 default mask, GPU + EMC max | 41.1 | 52.5 | 55.0 | 4700 | |
+update_nv4 does not beat update_k11d at the default clocks (GPU-bound: 29.1 / 34.9 / 37.3 vs 29.3 / 35.1 / 37.7) and
+equals update_nv2 at max clocks (the VU1 thread is the limit there, and lit / skin / misc still run recompiled): not
+installed, k11d's exefs pushed back. nv4b1's late-scene drop (35.4) came with the one-submit-per-run GIF path, which is
+therefore opt-in (`GOW_VU1NAT_MERGE_KICKS=1`); not repeated.
