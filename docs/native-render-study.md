@@ -1582,3 +1582,43 @@ particle runs. Now `GOW_VU1NAT_ORACLE_CYCLES=<n>` (default 65536, unchanged resu
 re-checked: the 3000-run recordings of nat-vu1k (scratch r1/) are gone; /root/nrs/nk holds only the short dumps
 (ATHN01F: 3 runs, byte-exact either way). Next: re-record ATHN01F (`GOW_VIF1_REC_AT=45` after the warp) and run
 `GOW_VU1NAT_ORACLE_CYCLES=0x10000000 ./nvp natcheck <rec>`. (2) df8474b4 / 8449e8a0 and (3) ATHN03A's 1 ULP: not done.
+
+### Progress: nat-vu1k leftovers: particle budget, thick checks, the 1-ULP (2026-10-25, nat-vu1q, ext branch agent/natvu1q 4fa4739 from agent/natvu1m 76c64cd, worktree ext/PS2Recomp-kl-natvu1q)
+
+PC / WSL only; harness `/root/vu1h/nvq` (`build.sh nvq /root/natvu1q /root/natvu1p/out/vu1pregen/vu1n_generado`,
+/root/natvu1q -> the new worktree).
+
+- **ATHN01F particle runs: the oracle's budget, not the native code.** nat-vu1k's 3000-run recordings were not gone:
+  they are archived in `nat-vu1k\rec\warp_<zone>.vifrec`. Its ATHN01F: with the default budget runs 1134 / 1135 / 2401 /
+  2402 differ (oracle end pc 968 / 5544 = 0x3c8 / 0x15a8); with `GOW_VU1NAT_ORACLE_CYCLES=0x10000000` packets 0,
+  memory 0 (only the known CLIP seeding registers). A fresh recording (`GOW_WARP=ATHN01F`, `GOW_VIF1_REC_AT=45`, natvu1m
+  PC build) shows the same: 4 packet differences at the default budget, 0 with the large one. Use the large budget
+  for every natcheck from now on.
+- **ATHN03A run 1741 (0d759bbc, qw 933.y 1 ULP): the oracle's float mode.** The prime pass reads stale input: vf2 =
+  (denormal, denormal, 0x008095de, 0). p6 `maddaz` adds vf22.y * vf2.z = 6.4e-39 (an underflow) to ACC.y = vf23.y =
+  -46.28: the native loop (FTZ + DAZ, as the native blocks and PCSX2's VU defaults) flushes the product, ACC stays
+  c2392214; the harness oracle ran with round toward zero only (`VU1NatOracle::run`), so its exact-engine stretches
+  (the native blocks set FTZ only once armed) kept the denormal product and RZ moved the sum to c2392213. Fix (harness
+  only): FTZ + DAZ for the whole oracle run (`GOW_VU1NAT_ORACLE_NOFTZ=1` restores the old mode). Result: ATHN03A
+  byte-exact; the 12 nat-vu1k recordings, the 7 new ones, the 12 short dumps of /root/nrs/nk and the 14 older ones in
+  /root/nrs unchanged otherwise (same part counts, same `check exact` continuity counts). The runtime's interpreter
+  (`VU1Interpreter::run`, round toward zero only, shared with VU0) is unchanged.
+- **df8474b4 / 8449e8a0: thick checks.** A 3000-run window is ~75 ms of play (~40k VU1 runs / s), and neither entry ran
+  in any window (OLYMP04 at 25 / 45 / 75 s, PAND03H at 25 / 45 / 75 s, nor in nat-vu1k's OLYMP04 recording, so that
+  recording never checked df8474b4). New: `GOW_VU1NAT_DUMP_ENTRY=<hash>[,<hash>...]` (high 32 bits, hex) dumps the
+  runs of those entries that are not culled to `GOW_VU1NAT_DUMP` (start state + memory as the run found them, at most
+  `GOW_VU1NAT_DUMP_N`, default 3000). OLYMP04 (census script, 150 s): **67 unculled df8474b4 runs, natcheck byte-exact**
+  (packets, memory, registers). 8449e8a0: no unculled run in PAND03H (150 s and 200 s) or PAND03G: still open.
+- Harness additions: natcheck honours `GOW_VU1NAT_TRACEPC=<run>` (with `GOW_VU1NAT_TRACEVF=<n>`) for the exact engine,
+  and a memory difference also prints the exact engine's qword.
+- PC build of the worktree without a full rebuild: natvu1m's `out/build-pc` copied with its mtimes, the worktree name
+  renamed inside its text files (same length), tracked files given natvu1m's mtimes, the ignored generated files
+  copied: only ps2_vu1_core.cpp recompiled (script `clonebuild.py` in the archive).
+
+**Data** (`D:\Claude Archive\GoW-Archive\natvu1-2026-10-25\nat-vu1q\`; WSL `/root/nrs/nq/`): `rec/q<at>_<zone>.vifrec`
+(3000-run windows), `rec/d_OLYMP04_df8474b4.vifrec` (the filtered dump), summaries, `natcheck_old_vs_ftz.txt`,
+tools (`census.py`, `clonebuild.py`, nc / cmp / tr scripts).
+
+**Open**: 8449e8a0 unculled (another zone or a scripted path through PAND03H's far side); the PS2 adder's behaviour
+for a tiny opposite-sign addend (hardware probably ignores it: x 0xc2e2fa5d, where native and oracle both give ...5c)
+is not modelled anywhere.
