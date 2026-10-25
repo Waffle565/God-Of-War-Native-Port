@@ -1600,7 +1600,7 @@ PC / WSL only; harness `/root/vu1h/nvq` (`build.sh nvq /root/natvu1q /root/natvu
   c2392214; the harness oracle ran with round toward zero only (`VU1NatOracle::run`), so its exact-engine stretches
   (the native blocks set FTZ only once armed) kept the denormal product and RZ moved the sum to c2392213. Fix (harness
   only): FTZ + DAZ for the whole oracle run (`GOW_VU1NAT_ORACLE_NOFTZ=1` restores the old mode). Result: ATHN03A
-  byte-exact; the 12 nat-vu1k recordings, the 7 new ones, the 12 short dumps of /root/nrs/nk and the 14 older ones in
+  byte-exact; the 12 nat-vu1k recordings, the 7 new ones, the 12 short dumps of /root/nrs/nk and the 13 older ones in
   /root/nrs unchanged otherwise (same part counts, same `check exact` continuity counts). The runtime's interpreter
   (`VU1Interpreter::run`, round toward zero only, shared with VU0) is unchanged.
 - **df8474b4 / 8449e8a0: thick checks.** A 3000-run window is ~75 ms of play (~40k VU1 runs / s), and neither entry ran
