@@ -4,7 +4,19 @@ The game's sound engine is its own IOP code: 989snd (`989NOMID.IRX`, sequencer, 
 SMPD streamer plugin, compiled ahead of time like every IRX (docs/native-port.md). Below it there is no sound hardware
 model: the SPU2 register-level model and the IOP's SPU DMA channels were removed on 2026-10-11.
 
-## Handoff (nat-iop8, 2026-10-25) - latest
+## Handoff (nat-iop9, 2026-10-26) - latest (stopped early: out of tokens)
+- ext `agent/natiop2` **4848b52** (on 713f418): grain **1** native (0x4a0c key on a tone): voice allocation 0x1a058
+  (free voice of the group range 0x1f014, else steal lowest priority / oldest), noise voices 0x19e6c, 0x19d60 (VOL 0,
+  NON), key on 0x1a374 (VOL, VMIXL/R, NON, PITCH, SSA or noise clock, ADSR, VMIXEL word, pending KON 0x1f1ac),
+  playing list 0x1b718 / 0x1b7d4, voice-end callback 0x6cb4 (mask part; the "sound ends" part declines, `L1952`).
+  sceSdGetSwitch is modelled (`getSwitch`: last value set in this call, else SoundEngine); LIBSD getters (#6 / #8 /
+  #10) are no longer recorded for the shadows (pure). No new stub (grain 1 runs inside 0x4748).
+- Verified only partly: shadow slots 0 + 3 (port/natiop9_gate.sh, port/natiop9/s1): **0 mismatches**, 60 fps,
+  speed 1.00; slot 0 block declines 531 -> 40 (L100005 30, L1952 9, L100007 1). NOT yet run: shadow slots 1 / 2 / 4,
+  native gate n1, sound correlation, aarch64 compile (/root/iop_a64.sh). Do these first.
+- Next: then grain 5 (0x5dbc), the stop 0xf1dc (+ 0x6cb4's free path 0x2374 / 0xe888), and the rest of nat-iop8's list.
+
+## Handoff (nat-iop8, 2026-10-25)
 - ext `agent/natiop2` **713f418** (on de98c7b): more of 989snd's tick native (see "989snd's tick"): the LFOs 0x2938 /
   0x24d8 (all six waveforms and kinds; was idle-only), ducking 0x1c8e4 / 0x1c6e8, pitch 0x6928 / 0x6a20 (bend,
   Note2Pitch, noise clock), grains 25 (random branch) and 27 (random pitch). New stub `989nomid_irx 1c8e4` in
