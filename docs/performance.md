@@ -461,6 +461,16 @@ same; the models (RGB_ONLY + Z write, 203425 / 205425) stay two passes, `GOW_GS_
 passing fragments in the fail draw (0.1 % of pixels differ, max abs 8). Details, data and next steps:
 docs/native-render-study.md "step 7 on the renderer side". Console GPU time: not measured yet.
 
+## Alpha test: RGB_ONLY in one draw, a stencil-split fail draw (2026-10-25, nat-vu1o, ext d32e48d)
+RGB_ONLY batches without Z write that write alpha (6.5 k per 5 s in the bench fight, the second-largest two-pass
+group) are now drawn once: the shader keeps every fragment and its dual-source output's alpha says pass / fail, the
+alpha blend keeps the target's alpha for failing fragments (exact; the blend order inside the batch is now the GS's
+primitive order, visible only in overlapping HUD glyphs). `GOW_GS_HW_ASEL=0` restores the two passes. The models
+(RGB_ONLY + Z write, 9.3 M triangles per 5 s) get an experiment, `GOW_GS_HW_FAILSPLIT=1`: stencil-marked pass pixels,
+the fail draw split into GEQUAL on unmarked and GREATER on marked pixels (7.8 k px over 36 bench shots differ, vs
+9.3 k for `GOW_GS_HW_FAILGT=1`); it needs a depth-stencil format for every target. Console GPU time of all three:
+not measured yet. Details: docs/native-render-study.md "step 7 on the renderer side, part 2".
+
 ## Menu clock: the Load Game menu ran 8 % fast (2026-10-13, ext branches agent/menuclock, agent/menuclock2)
 - Measured (port/menuclock, `GOW_DELTA_DIAG`, `GOW_VBLANK_DIAG`, `GOW_IOP_DRIFT`, `GOW_AUDIO_STATS`): title screen,
   main menu, pause menu and gameplay run at game speed 1.000, VBlank 59.99-60.00 Hz, IOP clock 1.000 +- 0.0004 of wall

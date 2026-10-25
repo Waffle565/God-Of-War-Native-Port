@@ -1349,3 +1349,68 @@ in GEQUAL on unmarked / GREATER on marked pixels: differs only at depth-equal fr
 **Tools** (scratch `nm/`): `pcrun.sh <name> <secs> [ENV=..]` (nat-vu1i's runner on this build, no ISO),
 `shotdiff.py`, `maskdiff.py refA refB newA newB` (diff outside the two-run noise), `vis.py` / `vis2.py` (diff
 picture: blue run-to-run, red new vs ref).
+
+### Progress: step 7 on the renderer side, part 2: one-draw RGB_ONLY and the stencil-split fail draw (2026-10-25, nat-vu1o, ext branch agent/natvu1m d32e48d, worktree ext/PS2Recomp-kl-natvu1m)
+Branch agent/natvu1m = 9e1cf56 + d32e48d (ext `gs_hw_backend.cpp`, `gs_dk.cpp`, `gs_gl.h` / `gs_gl.cpp`,
+`switch/dk_variant_keys.txt`). PC build `out/build-pc` as before; Switch: `gs_dk.cpp` and `gs_hw_backend.cpp` compile
+with the nv2 build's flags (not linked, no package: the console tree belongs to nat-vu1n).
+
+**RGB_ONLY without Z write, alpha written: one draw (`AlphaPlan::Select`, default on).** On the GS, passing and
+failing fragments of such a batch write the same (blended) colour; only the target's alpha differs (written / kept).
+The draw keeps every fragment (`uPass = 3`, a new value of the existing 2-bit variant field: same key layout) and
+the shader's second (dual-source) output carries `pass ? 1 : 0` in its alpha; the alpha blend is
+`As * Src1A + Ad * (1 - Src1A)` (exact: the factors are 0 or 1), the colour blend's Cs-alpha factor moves from SRC1
+alpha to SRC1 colour (`oBlend = vec4(f, f, f, passSel)`; every other pass keeps `vec4(f)`). Not for DATE or shader
+blending (both read the target), nor Z-aliased targets. Bench fight per 5 s (`GOW_GS_HW_STATS=1`, `[gs-hw-atest]`):
+6.5-6.7 k batches drawn once instead of twice; 1.6 k of them with an order-free blend (Cs*C + Cd), 4.8-5.1 k not.
+- `GOW_GS_HW_ASEL=0` = the two passes (reference), `=2` = only the order-free batches (check of the selection).
+- Pixels (PC bench, `pcrun.sh` 230 s, shots every 300 frames, masks as nat-vu1m): ASEL=0 equals 9e1cf56 (0 px in 32
+  of 36 shots, the rest single-run rain); ASEL=2: 0 px outside the rain in 24 of 36 shots, the others scattered
+  raindrop splashes (single run): the selection itself is exact. ASEL=1 (two runs): 156-3554 px per shot, all in the
+  HUD text (tutorial captions, the orb counter): overlapping glyph quads with normal alpha blending. One draw blends
+  them in primitive order (the GS's order); the two passes drew all passing fragments first, then the failing ones.
+  So the change goes towards the GS; the text looks the same at a glance (letter outlines differ by a few levels).
+- deko3d: the select variants need their own builds: 11 keys added to `switch/dk_variant_keys.txt` (the 4 the bench
+  builds: 206425 206c25 206d25 207425, plus every textured TCC pass-1 key with pass 3 + dual source; 67 keys in
+  all). `gs_dk_shaders_gen.cpp` regenerated in the worktree (77 shaders, 0 failed; the shader source changed, so
+  every hash did).
+
+**RGB_ONLY with Z write (the models, 11.9 k batches / 9.3 M triangles per 5 s): `GOW_GS_HW_FAILSPLIT=1` (experiment,
+off).** One depth buffer cannot keep the passing fragments' depth and also reject them exactly in the fail draw, so
+the fail draw is split by a stencil mark:
+- depth buffers become DEPTH32F_STENCIL8 (deko3d `ZF32_X24S8`) when the env is set; each target carries an 8-bit
+  sequence, each split batch takes the next value (on wrap the target's stencil is cleared: 47 clears per 5 s);
+- pass draw: stencil ALWAYS, REPLACE on depth pass (the pixels a passing fragment wrote);
+- fail draw 1: stencil NOTEQUAL, depth GEQUAL as before (no passing fragment of this batch wrote there: exact);
+- fail draw 2: stencil EQUAL, depth GREATER: the passing fragments meet their own depth and are rejected by early Z;
+  differs from the two passes only where a failing fragment lies at exactly the depth a passing fragment of the
+  same batch wrote there;
+- batches with one depth for all vertices keep the two passes (tried: changes nothing in the bench);
+- GL API: `StencilFunc` / `StencilOp` / `StencilMask` / `ClearStencil` (optional: missing = the env does nothing);
+  deko3d GL emulation: stencil enable, ops and compare in the depth-stencil state, `dkCmdBufSetStencil` for the
+  reference / masks, stencil clears, the depth-stencil attachment point.
+- Pixels vs 9e1cf56 (two runs each, two-run noise masks): **FAILSPLIT 7758 px over 36 shots** (126-1043 per shot,
+  max abs 2-6), **FAILGT 9288 px** (max abs 8). Both in the far background (the ship's rigging / mountains behind
+  the deck): coplanar fragments inside one batch (most likely two-sided cards at the same depth), which neither
+  variant can tell apart without shading the passing fragments again. By pixels FAILSPLIT is the better one; its
+  cost: a third draw of the batch (vertex and raster work x1.5 on 9.3 M triangles per 5 s) and a 64-bit depth format
+  for every target (twice the depth memory traffic of every draw). Which one saves more GPU time can only be
+  measured on the console (`GOW_DK_GPU_TIME`); until then both stay env-gated, two passes by default.
+- `[bench]` signatures identical to 9e1cf56 (219 lines, f=0-10920) for ASEL=0/1/2 and FAILSPLIT. A PC run can land
+  in a second start state too (both runs `sel` / `sel2`: `[bench] start wall=46.08` instead of 46.06, diverging at
+  f=4980 and differing in nearly every pixel); compare only runs whose signatures match.
+
+**Console test (owned by nat-vu1n)**: copy `gs_hw_backend.cpp`, `gs_dk.cpp`, `gs_gl.h`, `gs_gl.cpp` and the
+regenerated `gs_dk_shaders_gen.cpp` from the worktree into the Switch source tree, build, then with
+`GOW_DK_GPU_TIME=1`: env.txt `GOW_GS_HW_ASEL=0` (reference) vs the default (select), then `GOW_GS_HW_FAILGT=1` vs
+`GOW_GS_HW_FAILSPLIT=1` (each on top of the default). Expected: the select batches' second draw gone; FAILSPLIT vs
+FAILGT decides on the 205425 fail draw against the stencil format's cost.
+
+**Not done this round**: native stencil shadow volumes (item 4) and the nat-vu1k open items. The stencil path now
+exists in both GL layers; the open question for the volumes is the hand-over: the darken pass reads the count from
+the colour target (G channel, via alpha), so stencil counting needs a pass that turns the stencil count into that
+colour value (or a darken pass that tests the stencil itself).
+
+**Tools** (scratch `nm/`, added): `cmp.py dirA dirB shot out.png` (two shots stacked, diff numbers), `where.py refA
+refB newA newB shot out.png` (red = differs outside the noise, bounding box), `sw/cc.sh <files>` (WSL: compiles
+worktree GS files with the Switch nv2 flags into /tmp/nvo, no link).

@@ -31,7 +31,7 @@ toolchain (`deko3d` 0.5.0 with the `uam` shader compiler, `/opt/devkitpro/tools/
   - `glShaderSource` text is matched by its FNV-1a 64 hash; `glGetUniformLocation` returns the member index (or
     0x10000 + sampler binding) and `glUniform*` writes the CPU copy of the block;
   - draw variants: the uber program is always in; the specialised ones come from `switch/dk_variant_keys.txt` (keys
-    from `[gs-hw] draw variant ... key=` lines: PC zone tour with `GOW_GS_HW_STATS=1` + console logs, 51 so far). A
+    from `[gs-hw] draw variant ... key=` lines: PC zone tour with `GOW_GS_HW_STATS=1` + console logs, 67 so far, 11 of them the alpha-test select variants of nat-vu1o). A
     variant without a build logs `[gs-dk] no deko3d build of a shader ... a draw variant (uber used)` and the backend
     falls back to the uber program; add its key and regenerate.
   - Regenerate: `python -I tools/dk_shaders.py ext/PS2Recomp-kl-swdeko ext/PS2Recomp-kl-swdeko/switch/dk_variant_keys.txt
