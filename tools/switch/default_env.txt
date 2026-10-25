@@ -1,0 +1,3 @@
+# Console default launch config (user decision 2026-10-25): FAILGT on. tools/switch_default.sh puts this as
+# sdmc:/switch/gow/env.txt together with the default package's exefs (benches replace and then delete env.txt).
+GOW_GS_HW_FAILGT=1

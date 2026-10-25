@@ -202,3 +202,8 @@ us per run run-weighted over the whole bench (`famavg.py`), nat / rec of the sam
 Native wins 3d0d / 7ab / misc (-24 / -32 / -13 %) and the VU1 thread (-8 %), loses lit +7 %, skin +21 %, skin28 +2 %:
 `PS2X_VU1_ORACLE=OFF` still not built (condition: every family wins). Against nat-vu1n's `=1` benches (nv5kk2, 150 s
 script) lit 7.93 -> 7.68, skin 16.48 -> 15.91, skin28 29.86 -> 29.19 (different scene mix: indicative only).
+
+Console default from 2026-10-25 (user decision, nat-vu1s): update_nv5k + `GOW_GS_HW_FAILGT=1` (env.txt,
+`tools/switch_default.sh`). Bench `nv5kdg` (`BENCH_GAME_S` 150, `GOW_PERF_DIAG=1`, `GOW_DK_GPU_TIME=1`, default
+clocks; bench_report scenes): 0-30 46.8, 30-60 47.1, 60-90 45.8, 90-120 46.4, 120-150 47.2, 150-180 47.5 fps; vu1
+3754-3833 ms per 5 s, gpu 4874-4905 (nv5lg, nv5l + FAILGT: 46.0 / 47.6 / 46.0 / 47.2 / 47.2 / 47.3).
