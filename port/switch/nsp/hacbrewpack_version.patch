@@ -1,0 +1,14 @@
+diff --git a/cnmt.c b/cnmt.c
+index a217ce1..b4d7552 100644
+--- a/cnmt.c
++++ b/cnmt.c
+@@ -14,6 +14,9 @@ void cnmt_create(cnmt_ctx_t *cnmt_ctx, filepath_t *cnmt_filepath, hbp_settings_t
+     // Common values
+     cnmt_ctx->cnmt_header.type = 0x80; // Application
+     cnmt_ctx->cnmt_header.extended_header_size = 0x10;
++    /* gow port: HBP_TITLE_VERSION=<n> sets the content meta version (a new version refreshes the home menu icon cache) */
++    if (getenv("HBP_TITLE_VERSION"))
++        cnmt_ctx->cnmt_header.title_version = (uint32_t)strtoul(getenv("HBP_TITLE_VERSION"), NULL, 0);
+     cnmt_ctx->cnmt_header.content_entry_count = 0x2;
+     if (settings->htmldoc_romfs_dir.valid == VALIDITY_VALID)
+         cnmt_ctx->cnmt_header.content_entry_count += 0x1;

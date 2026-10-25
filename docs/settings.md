@@ -168,10 +168,18 @@ Tested 2026-10-18 (dist folder, muted): panel opens, Text English -> Français +
 `Text=fr`, Esc closes without reaching the game's menu.
 
 ## Switch
-The overlay is in ps2xIOP, shared by both builds. The Switch build needs: the ext change merged into its branch, the
-`lang/` folder in the RomFS next to the disc files (port/switch/nsp, make_romfs_links.sh), and
-`PS2X_DISC_OVERLAY=lang/<text>_<voice>.layout` in its defaults (`sdmc:/switch/gow/env.txt` overrides). A language
-choice on the console would be an `env.txt` line until there is an in-game setting.
+The overlay code is ps2xIOP's (`disc_source.cpp`, ext e53cfc1), shared by both builds; the Switch build tree
+`/root/src-nv2` carries it plus two Switch fixes (`port/switch/lang_switch.patch`, originals there as `*.pre_lang`):
+- a device path (`sdmc:/...`, `romfs:/...`) counts as absolute (it has no root directory, so `std::filesystem`'s
+  `operator/` appended it to the disc folder), both for `PS2X_DISC_OVERLAY` and for the overlay's file entries;
+- the language choice at start (`ps2_switch_runtime.cpp` `pickLanguage`, after `env.txt`): `GOW_TEXT` / `GOW_VOICE`
+  from `sdmc:/switch/gow/env.txt` (en fr de it es; voice also ja; voice defaults to the text language), else the
+  console's system language (`setGetSystemLanguage` + `setMakeLanguage`: Italian, French incl. Canadian, German,
+  Spanish incl. Latin American -> that language, anything else English). It takes `lang/<text>_<voice>.layout`
+  next to the boot disc (`romfs:/disc-usa/lang/`, made by make_romfs_links.sh from `disc-usa/lang`), else
+  `sdmc:/switch/gow/lang/` (`tools/switch_push_lang.sh` copies the 60 MB there, for an NSP installed before the
+  packs), and logs `[switch] language: system it, text it, voice it -> ...`. Without a layout: plain USA disc
+  (English). `PS2X_DISC_OVERLAY=` in env.txt overrides everything.
 
 Menus checked 2026-10-19 (dist runner, muted, it_it): title menu "Nuova partita"/"Carica", difficulty "Seleziona
 difficoltà", load screen "Nessun dato salvato di God of War / nello slot di salvataggio 1." (before the save folder

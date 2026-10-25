@@ -10,7 +10,14 @@ ROOT="$(cd "$HERE/../../.." && pwd)"
 DKP=/opt/devkitpro
 ELF="${ELF:-/root/gow-switch-build/ps2xRuntime/ps2EntryRunner.elf}"
 PACK="${PACK:-/root/nsp-tools/hacBrewPack/hacbrewpack}"
-TITLE=0100D0D0600A0000
+# TITLE / NAME / ROMFS / OUT override the title id, home-menu name, RomFS folder and output file (a small test package:
+# TITLE=0100D0D0600B0000 NAME="GoW icon test" ROMFS=<tiny dir> OUT=icontest.nsp)
+TITLE="${TITLE:-0100D0D0600A0000}"
+NAME="${NAME:-God of War}"
+OUT="${OUT:-God of War.nsp}"
+# VERSION: content meta version (hacBrewPack patched, hacbrewpack_version.patch). The home menu keeps the icon and name
+# it first saw for a title id + version: a reinstall at the same version keeps showing the old icon (docs/switch.md)
+export HBP_TITLE_VERSION="${VERSION:-0}"
 WORK=/root/gow-nsp
 export PATH="$DKP/tools/bin:$PATH"
 
@@ -22,7 +29,7 @@ rm -rf "$WORK"
 mkdir -p "$WORK/exefs" "$WORK/control"
 elf2nso "$ELF" "$WORK/exefs/main"
 npdmtool "$HERE/gow.json" "$WORK/exefs/main.npdm"
-nacptool --create "God of War" "Waffle565" "0.1.0" "$WORK/control/control.nacp"
+nacptool --create "$NAME" "Waffle565" "0.1.0" "$WORK/control/control.nacp"
 # nacptool fills 12 of the 16 language entries (0x300 bytes each): copy entry 0 into the rest, so the name shows on
 # a console set to Korean, Chinese or Brazilian Portuguese too
 python3 - "$WORK/control/control.nacp" <<'EOF'
@@ -40,8 +47,8 @@ done
 
 # RomFS = disc-usa without the memory card (the card lives on the SD card: sdmc:/switch/gow/play.mcd). The tree is
 # made of NTFS hard links (romfs/disc-usa) so the 8 GB of PAKs are not copied.
-ROMFS="$HERE/romfs"
-[ -d "$ROMFS/disc-usa" ] || { echo "error: run make_romfs_links.sh on Windows first" >&2; exit 1; }
+ROMFS="${ROMFS:-$HERE/romfs}"
+[ -d "$ROMFS/disc-usa" ] || [ -n "${ROMFS_ANY:-}" ] || { echo "error: run make_romfs_links.sh on Windows first" >&2; exit 1; }
 
 # hacBrewPack aborts on any value that is not 32 or 64 hex digits (newer Lockpick dumps have 34-digit *_kek_source
 # entries and RSA keypairs it does not need): give it a filtered copy, deleted after packing.
@@ -50,9 +57,9 @@ tr -d '\r' < "$KEYS" | awk -F' *= *' 'NF==2 && (length($2)==32 || length($2)==64
 trap 'rm -f "$KEYS_OK"' EXIT
 
 cd "$WORK"
-"$PACK" -k "$KEYS_OK" --titleid "$TITLE" --titlename "God of War" --titlepublisher "Waffle565" \
+"$PACK" -k "$KEYS_OK" --titleid "$TITLE" --titlename "$NAME" --titlepublisher "Waffle565" \
     --exefsdir "$WORK/exefs" --romfsdir "$ROMFS" --controldir "$WORK/control" --nologo \
     --tempdir "$WORK/temp" --ncadir "$WORK/nca" --backupdir "$WORK/backup" --nspdir "$HERE/out"
 # hacBrewPack names the file by title id; the user downloads it by name (user 2026-10-18: "name the nsp god of war")
-mv -f "$HERE/out/$(echo "$TITLE" | tr 'A-F' 'a-f').nsp" "$HERE/out/God of War.nsp"
+mv -f "$HERE/out/$(echo "$TITLE" | tr 'A-F' 'a-f').nsp" "$HERE/out/$OUT"
 ls -la "$HERE/out"

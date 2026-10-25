@@ -82,7 +82,10 @@ The PAKs are 4 GB each: the SD card must be exFAT (FAT32 has a 4 GB file limit).
 - Needs the user's own `prod.keys` (Lockpick_RCM on the console); never commit or share them. Installing a
   self-built NSP needs Atmosphère's signature patches (as for any homebrew NSP).
 - Packer: hacBrewPack v3.05 built from source in WSL (`/root/nsp-tools/hacBrewPack`; the original The-4n repo is
-  deleted, mirror github.com/rlaphoenix/hacBrewPack; `apt install build-essential` first).
+  deleted, mirror github.com/rlaphoenix/hacBrewPack; `apt install build-essential` first), with `port/switch/nsp/hacbrewpack_version.patch` applied (`git apply` in
+  `/root/nsp-tools/hacBrewPack`, then `make`; adds the version, see below). hactool (SciresM, built in
+  `/root/nsp-tools/hactool`) reads a built NSP back (`-t pfs0`, then `--romfsdir` on the control NCA; give it the same
+  filtered key file as build_nsp.sh).
 - Steps: `port/switch/nsp/make_romfs_links.sh` (Git Bash: RomFS tree of NTFS hard links, no 8 GB copy), then in WSL
   `port/switch/nsp/build_nsp.sh <prod.keys>` (elf2nso → exefs/main, npdmtool gow.json → main.npdm, nacptool +
   default icon → control, hacbrewpack --nologo) → `port/switch/nsp/out/*.nsp`. The NSP contains the game data: only
@@ -91,11 +94,24 @@ The PAKs are 4 GB each: the SD card must be exFAT (FAT32 has a 4 GB file limit).
   address space (type 3), application_type 1, no map_region and no debug_flags (Citron rejects the load with
   error 32 otherwise), hbloader's filesystem_access.
 - Home-menu name and icon: `nacptool` writes the name for 12 of the 16 NACP languages, `build_nsp.sh` copies
-  entry 0 into all 16; the icon is `port/switch/nsp/icon.jpg` (256x256, made from the game's own logo as the native
-  port renders it, `port/usertest1/logo_native.png`), copied as `icon_<Language>.dat` for every language.
-  The pack log confirms the icons go into the control NCA. When the home menu still shows no icon (user
-  2026-10-18), it is the console's icon cache from an earlier install of the same title: delete the software
-  (System Settings > Data Management) and install again (game saves are on the SD card, `play.mcd`, and stay).
+  entry 0 into all 16; the icon is `port/switch/nsp/icon.jpg` (256x256 baseline JPEG, 4:2:0, no EXIF; source image
+  `icon_src.png`), copied as `icon_<Language>.dat` for every language.
+- **Why the home menu showed "?" (proven 2026-10-25, screenshots `port/switch/shots/icon/`)**: the installed control
+  data was right all along (sphaira's Games list reads name and icon from it), but the HOME menu keeps the icon and name
+  it first saw for a title id **+ version** and does not reload them when the same version is installed again.
+  hacBrewPack always wrote version 0, and the first install (2026-10-16) had the name in Italian but only
+  `icon_AmericanEnglish.dat`, so the Italian console cached "no icon" for v0 forever. Test with a 29 MB title from the
+  same pipeline (0100D0D0600B0000 "GoW icon test"): first install -> icon shows; reinstall v0 with another icon -> the
+  home menu keeps the first one; reinstall as v65536 -> the new icon shows. Fix: hacBrewPack patched
+  (`port/switch/nsp/hacbrewpack_version.patch`, env `HBP_TITLE_VERSION` -> content meta version) and
+  `build_nsp.sh` takes `VERSION=<n>`: every full NSP whose icon or name changes must use a version above the installed
+  one (multiples of 65536: 65536, 131072, ...). Nothing has to be deleted on the console.
+- `build_nsp.sh` also takes `TITLE`, `NAME`, `ROMFS` (+ `ROMFS_ANY=1` for a folder without `disc-usa/`) and `OUT`
+  for small test packages.
+- Installing an NSP without USB: copy it to `sdmc:/nsp/` over FTP (`tools/switch_ftp.py put <nsp> nsp`), then in
+  sphaira (the hbmenu tile) L = file browser -> `nsp` -> the file -> "Install Selected files?" Sì (installs to the SD
+  card, ~14 MB/s). DBI started from sphaira crashes ("Il software è stato chiuso a causa di un errore"). sphaira's
+  menus need a press held ~0.1 s (`switch_bot.py cmd press X`, `cmd release X`); plain `click` is often missed there.
 - Output name: `out/God of War.nsp` (user 2026-10-18); older builds are named by title id.
 - Code-only update without reinstalling (`port/switch/nsp/make_update.sh`, WSL, after switch/build.sh): Atmosphère's
   loader takes a title's ExeFS from `sdmc:/atmosphere/contents/0100D0D0600A0000/exefs/` (`main` + `main.npdm`)
@@ -186,6 +202,11 @@ The PAKs are 4 GB each: the SD card must be exFAT (FAT32 has a 4 GB file limit).
     PC's /24 and stores the address in port/switch/bot_ip.txt; `shot <jpg>` (pixelPeek), `click HOME A ...`, `title`.
   - DBI and the game cannot run together: copy files, close DBI, start the game (HOME, A on its tile), screenshot,
     then back to DBI for the log.
+- Test user (2026-10-25): every start of the game asks "Chi usa il software?" (the NACP's StartupUserAccount). Test runs
+  pick **ClaudeTest**, a local user without a Nintendo Account (5th and last of Waffle565, piggy, Roberta, spirixe,
+  ClaudeTest), so the user's own profiles stay untouched: `sw_pick_user` in tools/switch_lib.sh presses DRIGHT 5 times
+  (the cursor starts on the first user and stops at the last) and A; `SW_USER_RIGHTS=<n>` changes the count if users
+  are added. By hand: `switch_bot.py click DRIGHT DRIGHT DRIGHT DRIGHT` then `click A`.
 - Remote testing over WLAN (2026-10-24): at max GPU/EMC clocks the console draws more than a PC USB port supplies
   and ran flat during a bench, so it now stays on a wall charger and files go over the home Wi-Fi instead of USB.
   - FTP server: **sys-ftpd 1.0.5** (cathery/sys-ftpd, formerly sys-ftpd-light; the release asset
@@ -212,7 +233,10 @@ The PAKs are 4 GB each: the SD card must be exFAT (FAT32 has a 4 GB file limit).
     screenshots in `port/switch/logs/run_<name>/`, summary printed.
   - A full NSP (RomFS, icon or metadata changes) still goes over USB (DBI's MTP "install" folder or DBI backend):
     the SD card has only ~4 GB free (232 GB card), less than the 8.5 GB NSP, so "copy to SD, install from SD card"
-    does not fit.
+    does not fit, and even a streamed install over the installed title needs the new 8.5 GB beside the old 8.2 GB
+    until it finishes: a full reinstall needs the old software deleted first (System Settings > Gestione dati >
+    Gestione software > God of War > Elimina software; the game's saves are in `sdmc:/switch/gow/play.mcd` and stay).
+    Small packages (test titles) install from `sdmc:/nsp/` with sphaira (above).
   - Verified 2026-10-24 (console on a wall charger, USB unplugged): FTP login, put/get/compare/delete of a 1 MB file;
     `UPDATE=port/switch/nsp/out/update_k10c bash tools/switch_cycle.sh wlan1 60 -` pushed the ExeFS and deleted
     env.txt over FTP, started the game (after the reboot hbmenu was the first tile: `sw_launch` closed it and took
