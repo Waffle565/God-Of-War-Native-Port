@@ -260,3 +260,22 @@ adaptation, so a movie can be compared with its source track sample by sample.
   `GOW_GS_HW_SKIPCHECK=1`, `GOW_DISP_STORE_LOG=1` (docs/diagnostics.md). A flash shows as a picture that differs by
   more than 8 from both neighbours while the neighbours match each other (port/introglitch).
 - The Switch build needs a rebuild with this ext change merged into its branch (the code is in the shared runtime).
+
+## Switch: intro movie froze, drawn into 512x416 of the screen (fixed 2026-10-25, sw-fix, update_swfix3)
+- Symptom (user, console default update_lang2): the new-game intro (Semo01) played its first seconds, then one
+  picture (Kratos' feet on the cliff) stayed on screen for the rest of the movie, in the top-left 80 % x 93 % with
+  black right and bottom bands (port/switch/shots/swfix/t1/v_montage.jpg); the sound went on and gameplay followed.
+- Cause: the movie player draws its picture through a VU1 micro program (MSCAL start pc 0x400, itop 0x24B, micro
+  memory hash d501c4d9afed65cd) that no native VU1 family covers (the zone gates never play a movie). The console
+  builds since update_nv7foff are `PS2X_VU1_ORACLE=OFF` (no recompiled VU1), which skipped such a run
+  (`[vu1nat-skip] ... start pc 400`, ~30 per second): no movie batch was drawn, the screen kept whatever the target
+  held. Fix (ps2_vu1_core.cpp): in the OFF build a VU1 run without native code runs on the step interpreter (the
+  cycle-exact one VU0 uses; tryRun leaves memory and registers as the run found them); `[vu1nat-interp]` logs the
+  first 8 and every power of two. `GOW_VU1_SKIP_UNKNOWN=1` skips as before. The movie now plays full screen to its
+  end at speed 1.00 (port/switch/shots/swfix/t4/montage.jpg, ~1000 interpreted runs); the ship-fight bench is
+  unchanged (no such run there).
+- Also fixed on the way (gs_hw_backend.cpp `drawVariantFor`): a draw-variant key whose program cannot be built (the
+  deko3d build has no DKSH for the movie's keys 032921 / 034921) used a copy of the uber entry, i.e. a second
+  "already sent" uniform cache for the same program, so uniforms set through one entry were skipped by the other.
+  Such keys now alias the uber entry itself.
+

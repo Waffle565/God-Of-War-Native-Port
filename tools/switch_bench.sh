@@ -45,3 +45,6 @@ sw_close "$S"
 sw_pull "$D" || { B shot "$S/fail2.jpg" >/dev/null; exit 1; }
 F rm switch/gow/env.txt >/dev/null 2>&1
 python -I tools/bench_report.py $D/log.txt
+# sw-fix 2026-10-25: a bench leaves the console in the default state (the user once played a bench build without
+# env.txt: English, old controls); KEEP_BENCH=1 keeps the bench package installed (loops of benches)
+[ "${KEEP_BENCH:-0}" = 1 ] || bash tools/switch_default.sh

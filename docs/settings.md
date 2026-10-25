@@ -184,6 +184,11 @@ The overlay code is ps2xIOP's (`disc_source.cpp`, ext e53cfc1), shared by both b
   stayed English on the console), and logs `[switch] language: system it, text it, voice it -> ...`. Without a layout: plain USA disc
   (English). Console bench 2026-10-25 (ship fight, default clocks): it_it 43.5 fps = English reference the same
   hour (spd5, 43.5); the overlay costs nothing measurable. `PS2X_DISC_OVERLAY=` in env.txt overrides everything.
+- 2026-10-25 (sw-fix): the user saw English on the console default: the console did not hold the default at all
+  (an unknown exefs without the language code, no env.txt, left by a bench / test run). The language code itself
+  works (`[switch] language: system it, text it, voice it -> sdmc:/switch/gow/lang/it_it.layout`, Italian title,
+  port/switch/shots/swfix/t1/b_01.jpg). `tools/switch_bench.sh` now ends with `tools/switch_default.sh`
+  (`KEEP_BENCH=1` to keep the bench package).
 
 Menus checked 2026-10-19 (dist runner, muted, it_it): title menu "Nuova partita"/"Carica", difficulty "Seleziona
 difficoltà", load screen "Nessun dato salvato di God of War / nello slot di salvataggio 1." (before the save folder

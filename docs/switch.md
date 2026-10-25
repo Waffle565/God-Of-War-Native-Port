@@ -33,6 +33,16 @@ black. Next step: the user's real Switch; see "Test in Citron".
   generated code takes hours), `-fsigned-char` (x86 behaviour of plain `char`), sse2neon's precise min/max (NaN bit
   patterns used as large values), division, square root and dot products, logs off, FFmpeg off (libmpeg2).
 
+## Controls (ps2_pad.cpp, libnx HID; user decision 2026-10-25)
+- Default, Nintendo style: **A = Cross, B = Circle, X = Square, Y = Triangle**, + = Start, - = Select, L/R = L1/R1,
+  ZL/ZR = L2/R2, stick clicks = L3/R3, D-pad = D-pad. `GOW_PAD_POSITIONAL=1` in env.txt: by position instead
+  (B = Cross, A = Circle, Y = Square, X = Triangle; the layout before update_swfix3).
+- Sticks: HID stick positions (+-32767) -> DualShock analog bytes (0x80 centre, y inverted), the pad reports analog
+  mode (0x73). Left stick = movement, right stick = evade roll (God of War's camera is fixed: no camera stick).
+  Until update_swfix3 the sticks did nothing on the console: gow_overrides.cpp `gowPad2ReadState` replaced them
+  with keyboard sticks whenever raylib saw no gamepad, and the deko3d build has no raylib window, so raylib never
+  sees one (centre every frame). The keyboard fallback is now not built for `PS2X_DK`.
+
 ## What the Switch build does differently (all behind `__SWITCH__` / `PLATFORM_SWITCH` / `PS2X_IS_SWITCH`)
 - **GS renderer context** (gs_gl.cpp): its own EGL OpenGL core context (4.6 → 4.5 → 4.3, surfaceless), the same GL
   entry-point list as Windows (`loadApi`), `glTextureBarrierNV` when `glTextureBarrier` (4.5) is missing. Frames are
@@ -173,9 +183,9 @@ The PAKs are 4 GB each: the SD card must be exFAT (FAT32 has a 4 GB file limit).
     ~0.45 s). Sharing the GS texture with the host (probe FAILED on switch-mesa) would remove the per-field
     readback, the copies and the host upload altogether; short of that, the CLUT loads (~150 us each) and the
     present composition are the GL thread's next costs.
-  - Remote loop notes: pad mapping on the console is Nintendo positions (B = Cross, A = Circle, Y = Square,
-    X = Triangle, PLUS = Start); botbase clicks of 50 ms can be missed at 25 fps, `cmd configure
-    buttonClickSleepTime 120` makes them reliable. New Game: B, B (Hero), PLUS skips the intro movie.
+  - Remote loop notes: pad mapping see "Controls" (since update_swfix3 A = Cross, so New Game is A, A); botbase
+    clicks of 50 ms can be missed at 25 fps, `cmd configure buttonClickSleepTime 120` makes them reliable; botbase
+    `cmd setStick LEFT|RIGHT <x> <y>` (hex, -0x8000..0x7FFF) drives the sticks.
 - v16 window presentation (ext agent/sw-present; logs `port/switch/logs/20261018_swp1*`, 2026-10-19): the GS
   renderer's own context draws and swaps the window, so a frame never leaves the GPU and the host thread does no GL.
   - Why not shared textures: switch-mesa's shared EGL contexts do not see each other's textures (the shared probe

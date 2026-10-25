@@ -1,0 +1,130 @@
+--- ps2xRuntime/src/lib/ps2_pad.cpp.pre_swfix	2026-10-25 22:48:37.715356202 +0100
++++ ps2xRuntime/src/lib/ps2_pad.cpp	2026-10-25 22:53:39.701869064 +0100
+@@ -1,6 +1,7 @@
+ #include "runtime/ps2_pad.h"
+ #include "ps2_host_backend.h"
+ #include <cstdio>
++#include <cstdlib>
+ #include <cstring>
+ #if defined(PS2X_DK)
+ #include <switch.h>
+@@ -45,8 +46,10 @@
+     data[3] = 0xFF;
+     data[4] = data[5] = data[6] = data[7] = kPadStickCenter;
+ #if defined(PS2X_DK)
+-    // GOW-Port: deko3d build: no raylib window, so no SDL input; the Switch pad through libnx HID. Buttons by position
+-    // as before (B = Cross, A = Circle, Y = Square, X = Triangle, + = Start, - = Select, ZL/ZR = L2/R2).
++    // GOW-Port: deko3d build: no raylib window, so no SDL input; the Switch pad through libnx HID. Buttons Nintendo
++    // style (user 2026-10-25, docs/switch.md "Controls"): A = Cross, B = Circle, X = Square, Y = Triangle, + = Start,
++    // - = Select, ZL/ZR = L2/R2. env.txt GOW_PAD_POSITIONAL=1: by position instead (B = Cross, A = Circle,
++    // Y = Square, X = Triangle).
+     {
+         static PadState pad;
+         static bool configured = false;
+@@ -68,10 +71,14 @@
+         map(HidNpadButton_Down, PAD_DOWN);
+         map(HidNpadButton_Left, PAD_LEFT);
+         map(HidNpadButton_Right, PAD_RIGHT);
+-        map(HidNpadButton_B, PAD_CROSS);
+-        map(HidNpadButton_A, PAD_CIRCLE);
+-        map(HidNpadButton_Y, PAD_SQUARE);
+-        map(HidNpadButton_X, PAD_TRIANGLE);
++        static const bool positional = [] {
++            const char *value = std::getenv("GOW_PAD_POSITIONAL");
++            return value && value[0] == '1';
++        }();
++        map(positional ? HidNpadButton_B : HidNpadButton_A, PAD_CROSS);
++        map(positional ? HidNpadButton_A : HidNpadButton_B, PAD_CIRCLE);
++        map(positional ? HidNpadButton_Y : HidNpadButton_X, PAD_SQUARE);
++        map(positional ? HidNpadButton_X : HidNpadButton_Y, PAD_TRIANGLE);
+         map(HidNpadButton_L, PAD_L1);
+         map(HidNpadButton_R, PAD_R1);
+         map(HidNpadButton_ZL, PAD_L2);
+--- ps2xRuntime/src/runner/gow_overrides.cpp.pre_swfix	2026-10-25 22:48:37.716757156 +0100
++++ ps2xRuntime/src/runner/gow_overrides.cpp	2026-10-25 22:48:51.361487621 +0100
+@@ -318,7 +318,10 @@
+         uint8_t state[32]{};
+         if (!buffer || !socket || socket->port != 0 || !runtime ||
+             !runtime->padBackend().readState(0, 0, state, sizeof(state))) { padReturn(ctx, 0xffffffffu); return; }
+-        // GOW-Port: keyboard sticks only without any gamepad (PSPadBackend uses the first available slot).
++        // GOW-Port: keyboard sticks only without any gamepad (PSPadBackend uses the first available slot). Not in the
++        // deko3d (Switch) build: it has no raylib window, so raylib never sees a gamepad and this overwrote the HID
++        // sticks PSPadBackend had read with the centre (the sticks did nothing on the console).
++#if !defined(PS2X_DK)
+         if (!IsGamepadAvailable(0) && !IsGamepadAvailable(1) && !IsGamepadAvailable(2) && !IsGamepadAvailable(3))
+         {
+             state[6] = IsKeyDown(KEY_A) ? 0 : IsKeyDown(KEY_D) ? 255 : 128;
+@@ -326,6 +329,7 @@
+             state[4] = IsKeyDown(KEY_J) ? 0 : IsKeyDown(KEY_L) ? 255 : 128;
+             state[5] = IsKeyDown(KEY_I) ? 0 : IsKeyDown(KEY_K) ? 255 : 128;
+         }
++#endif
+         // Opt-in smoke test: advance title/new-game prompts without host UI input.
+         // Capture the GS's own presented pixels; normal play never injects input.
+         static const bool smokeTest = [] {
+--- ps2xRuntime/src/lib/gs/gpu/gs_hw_backend.cpp.pre_swfix	2026-10-25 23:04:40.515985826 +0100
++++ ps2xRuntime/src/lib/gs/gpu/gs_hw_backend.cpp	2026-10-25 23:04:40.607519807 +0100
+@@ -2925,6 +2925,11 @@
+         GLuint program = 0;
+         GLint loc[kDrawUniforms] = {};
+         UniformValue sent[kDrawUniforms] = {};
++        // a key whose variant could not be built draws with the uber program through the uber entry itself: a copy of
++        // that entry had its own `sent` cache for the same program, so uniforms one of them set were skipped by the
++        // other as already sent (stale target size / offsets: the intro movie drawn into 512x416 of its 640x448 frame
++        // on the Switch, whose deko3d build lacks the movie's variants)
++        DrawVariant *alias = nullptr;
+     };
+     static constexpr uint32_t kUberVariant = 0xFFFFFFFFu;
+     std::unordered_map<uint32_t, DrawVariant> drawVariants;
+@@ -2967,7 +2972,7 @@
+     DrawVariant &drawVariantFor(uint32_t key)
+     {
+         if (const auto it = drawVariants.find(key); it != drawVariants.end())
+-            return it->second;
++            return it->second.alias ? *it->second.alias : it->second;
+         const auto start = std::chrono::steady_clock::now();
+         const auto field = [&](int shift, uint32_t mask) { return static_cast<int>((key >> shift) & mask); };
+         std::string defines = "#define GS_SPECIALIZED 1\n";
+@@ -3018,7 +3023,11 @@
+             std::fprintf(stderr, "[gs-hw] draw variant #%u key=%06x %s in %.1f ms\n", variantsBuilt, key, prog ? "built" : "FAILED (uber)",
+                          std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count());
+         if (!prog)
+-            return drawVariants[key] = drawVariants[kUberVariant];
++        {
++            DrawVariant &uber = drawVariants[kUberVariant];
++            drawVariants[key].alias = &uber; // map nodes keep their address
++            return uber;
++        }
+         return drawVariants[key] = makeDrawVariant(prog);
+     }
+     // binds the draw program for the recorded uniforms and sends it the values it lacks (before every draw call: the CLUT
+--- ps2xRuntime/src/lib/vu/ps2_vu1_core.cpp.pre_swfix	2026-10-25 23:08:46.078127438 +0100
++++ ps2xRuntime/src/lib/vu/ps2_vu1_core.cpp	2026-10-25 23:09:15.146308353 +0100
+@@ -2030,9 +2030,25 @@
+ #if PS2X_VU1_ORACLE
+     if (!natRun)
+ #else
+-    // nat-vu1k: no recompiled VU1 in this build (PS2X_VU1_ORACLE=0): a VU1 run the native code does not take is skipped
+-    if (!natRun && m_unit == Unit::VU1)
++    // nat-vu1k: no recompiled VU1 in this build (PS2X_VU1_ORACLE=0): a VU1 run the native code does not take ...
++    // sw-fix (2026-10-25): ... runs on the step interpreter (cycle-exact, shared with VU0; tryRun left memory and
++    // registers as the run found them). Skipping it lost every batch of the movie player's VU1 program (start pc 0x400,
++    // no native family): the intro movie froze on one picture, drawn into part of the screen (docs/fmv.md "Switch").
++    // GOW_VU1_SKIP_UNKNOWN=1: skip as before.
++    static const bool skipUnknown = [] { const char *e = std::getenv("GOW_VU1_SKIP_UNKNOWN"); return e && e[0] == '1'; }();
++    if (!natRun && m_unit == Unit::VU1 && skipUnknown)
+         VU1NatAccess::skipRun(*this, &context);
++    else if (!natRun && m_unit == Unit::VU1)
++    {
++        static std::atomic<uint64_t> interpreted{0};
++        const uint64_t n = ++interpreted;
++        if (n <= 8u || (n & (n - 1u)) == 0u)
++            std::fprintf(stderr, "[vu1nat-interp] #%llu VU1 run without native code on the step interpreter: start pc %x itop %x\n",
++                         static_cast<unsigned long long>(n), m_state.pc, m_state.itop);
++        while (stepInterpreted(context))
++            ++interpretedSteps;
++        VU1NatAccess::endRun();
++    }
+     else if (!natRun) // VU0 micro programs: the step interpreter, as before
+ #endif
+     {

@@ -1004,3 +1004,15 @@ Run: `python -I tools/zones.py --slots 1,2,3,4` (scale: `PS2X_GS_HW_SCALE`); sav
   (A01HL17.VPK). Bench ship fight default clocks: lang2it2 43.7 fps vs spd5 reference the same hour 43.5 (the
   earlier 47.0 of spd5g is not reached today by spd5 itself). tools/switch_default.sh default = update_lang2 + FAILGT.
   Test user is now "claude" (user renamed it; a "+" add-user tile follows it: DRIGHT x4).
+
+- 2026-10-25 ~23:30 (sw-fix, on the console): **console default is now update_swfix3 + FAILGT** (update_lang2 +
+  port/switch/swfix.patch in /root/src-nv2, originals there as `*.pre_swfix`; `tools/switch_default.sh`). User reports
+  fixed and checked on the console: (1) English: the console was not in the default state (foreign exefs, no
+  env.txt); Italian with the default; benches now restore the default at their end. (2) Buttons Nintendo style
+  A = Cross, B = Circle, X = Square, Y = Triangle (`GOW_PAD_POSITIONAL=1` = old layout; docs/switch.md "Controls").
+  (3) Sticks: gow_overrides replaced the HID sticks with keyboard sticks (raylib sees no gamepad in the deko3d
+  build); bot stick input moves Kratos / rolls (port/switch/shots/swfix/t2/montage_s.jpg). (4) Intro movie froze and
+  was drawn small: its VU1 program (pc 0x400) was skipped by the ORACLE=OFF build; now interpreted (docs/fmv.md
+  "Switch"). Bench ship fight, same hour: swfix3 43.5 fps (44.9/42.3/42.7/43.9/43.5) = update_lang2 43.4
+  (`bench_swfix3`, `bench_lang2ref3`). Slow-motion fix (nat-spd frame clock) kept.
+
