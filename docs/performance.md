@@ -1,5 +1,18 @@
 # Performance (USA build on the KIexster stack)
 
+> **Handoff sw-stall (2026-10-26 ~00:30, stopped: user out of tokens).** Ship-fight stalls found and fixed in
+> update_sws5 (ext agent/swstall 7519883 on agent/natspd; = the swfix3 default sources + `GOW_DK_FRAMES` default 3):
+> the GS thread ran ~170 frames ahead of the GPU and stalled 70-230 ms whenever deko3d's queue ring filled ("The
+> ship-fight stalls" below). Same-session results: play `sws5play` 240 fight windows 47.8 fps, speed 1.009, long frames
+> 5.2/min (max 7 fields; baseline sws2play 46.8 fps, 71.5/min, max 219); bench `sws5b0` 44.8 / 46.9 / 47.4 / 48.6 vs
+> default `swfix3b0` 47.5 / 46.6 / 45.9 / 47.2 / 47.4 (0-30 scene -2.7, fight scenes +0.3-1.5). **Not installed**
+> (bench 0-30 lower; the user's decision). Console left on update_swfix3 + FAILGT (exefs md5 verified). GPU levers
+> tried (all opt-in, gains within ~0.5 fps): `GOW_DK_COMPRESS`, `GOW_SCALER=fast`, `GOW_DK_LAZYBARRIER` (worse);
+> upper bound of dropping all barriers +0.9-1.5 fps (`GOW_DK_NOBARRIER=2`, picture not valid). Next: try
+> `GOW_DK_FRAMES=5/8` (envs sws_bf5/bf8: the 0-30 loss may be the short queue), then the GPU draw cost (models pass
+> 203425 ~27 % of GPU time, shuffle 12 %, fail-only 204925 12 %, scale 9 %). Build: tools/switch_stall/ (private WSL
+> tree /root/src-sws + /root/gow-switch-sws; sync.sh re-syncs it with /root/src-nv2 before a package).
+
 Target (user, 2026-10-09): ≥ 60 fps, "see this game fly".
 
 ## Baseline (2026-10-09, port/perf1.log, OpenGL GS, interpreter VU1, VU1 capture on)

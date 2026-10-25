@@ -1020,3 +1020,8 @@ Run: `python -I tools/zones.py --slots 1,2,3,4` (scale: `PS2X_GS_HW_SCALE`); sav
   icons** as a data overlay (tools/gow_pad_icons.py, lang_pack `_nx` variants), checked on the PC: menus and Power Up
   screen show A / Y / L / R (port/switch/shots/pad_icons/). Not on the console yet, not the default; the next steps
   are in docs/settings.md "Button icons".
+- 2026-10-26 ~00:30 (sw-stall, stopped: user out of tokens): ship-fight stalls = the GS thread ~170 frames ahead of the
+  GPU (deko3d queue ring back-pressure, 70-230 ms blocks in dkQueuePresentImage); fix `GOW_DK_FRAMES` (default 3) in
+  **Switch head ext agent/swstall 7519883** (on agent/natspd f012118), package update_sws5 (= swfix3 sources + it):
+  play long frames 71.5 -> 5.2/min, fight 47.8 fps speed 1.009; bench 0-30 scene -2.7 fps, fight scenes +0.3-1.5.
+  Not installed; console default stays update_swfix3 + FAILGT. Handoff: top of docs/performance.md.
