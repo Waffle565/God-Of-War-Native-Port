@@ -1016,3 +1016,7 @@ Run: `python -I tools/zones.py --slots 1,2,3,4` (scale: `PS2X_GS_HW_SCALE`); sav
   "Switch"). Bench ship fight, same hour: swfix3 43.5 fps (44.9/42.3/42.7/43.9/43.5) = update_lang2 43.4
   (`bench_swfix3`, `bench_lang2ref3`). Slow-motion fix (nat-spd frame clock) kept.
 
+- 2026-10-26 (sw-icons, PC only, stopped by the user's token limit before any console session): **Switch button
+  icons** as a data overlay (tools/gow_pad_icons.py, lang_pack `_nx` variants), checked on the PC: menus and Power Up
+  screen show A / Y / L / R (port/switch/shots/pad_icons/). Not on the console yet, not the default; the next steps
+  are in docs/settings.md "Button icons".

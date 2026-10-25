@@ -145,6 +145,33 @@ Text format (FLP_HUD in R_PERM.WAD, FLP_Shell in R_SHELL.WAD; `python -I tools/g
   is streamed).
 - `tools/savetest.py --elf <disc>/SCUS_973.99` runs on another disc folder (used for test discs).
 
+## Button icons (tools/gow_pad_icons.py, 2026-10-26, sw-icons; WIP)
+Where the PS2 symbols live: the button prompts are Flash sprites in FLP_HUD (R_PERM.WAD) and FLP_Shell (R_SHELL.WAD):
+XButton, CircleButton, SquareButton, TriangleButton, their *Greek variants (the QTE coin above enemies), XButtonPress,
+L1/L2/R1/R2Button, Start/SelectButton, Joystick, Dpad. The message table writes them as `[XButton]` tags, and the
+menu legends are the sprite followed by the text "= Select" (the font has no button glyph). A face button is a body
+(dark disc: mesh part with TXR_HUD006, or the coin TXR_HUD183) plus an untextured flat-colour vector mesh (the
+symbol). L1/R1/L2/R2/L3/R3 are a body plus a text label. So texture hashing at GS upload cannot work (the symbols have
+no texture).
+Swap (data only, no runtime cost): `gow_pad_icons.apply(wad)` adds GFX_/PAL_/TXR_PAD_A/B/X/Y (64x64 8-bit, drawn by
+the tool: round strokes, white with a dark outline) in front of the Flash chunk's mesh group, points each symbol's mesh
+reference at a centred full-UV quad part with that texture, appends one transformation per (old transformation,
+symbol) so the quad covers the button body, and rewrites the labels L1->L, R1->R, L2->ZL, R2->ZR, L3->LS, R3->RS.
+Symbols are found by name (Cross = A, Circle = B, Square = X, Triangle = Y, docs/switch.md "Controls"), then by
+colour in every other sprite with a body (menu legends ButtonBack, press animations, controls screen). FLP format from
+mogaika/god_of_war_browser (pack/wad/flp); the parser reaches the string table exactly (checked in all five
+languages, HUD and Shell). tools/lang_pack.py now also writes `text_<code>_nx.bin`, `shell_<code>_nx.bin` and
+`<text>_<voice>_nx.toc/.layout` (the old files stay byte-identical); `--out <dir>` writes elsewhere.
+Checked on the PC (dist GodOfWar.exe, en_en_nx overlay, background window): title "A = Select", Power Up screen
+"Press A", "A = Continue", "A = Power Up", "Y = Back", L/R labels (port/switch/shots/pad_icons/). Not seen yet: a QTE
+coin in a fight (alignment checked numerically: the quad box equals the coin box), the other languages in game.
+Not done: Start/Select bodies (no label to change), message text "L3 button and R3 button", FMV pictures.
+Next steps: (1) Switch: in ps2_switch_runtime.cpp pickLanguage() try `lang/<text>_<voice>_nx.layout` first unless
+env.txt sets `GOW_PAD_ICONS=ps` (private tree /root/src-icons = copy of /root/src-nv2 with both patches), build,
+make_update_to.sh; (2) put the _nx files on the console (sdmc:/switch/gow/lang or a romfs rebuild, LANG_SRC); (3) ask
+main for console time, screenshot a menu + a QTE prompt, bench the ship fight (baseline update_swfix3 ~43.5 fps),
+install as default only if fps is not lower; (4) refresh dist/data/lang with make_pc_folder.ps1.
+
 ## In-game settings panel
 
 F1, the pad's guide button or Select+Start open a settings panel over the running game (ext

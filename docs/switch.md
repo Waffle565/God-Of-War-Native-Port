@@ -37,6 +37,8 @@ black. Next step: the user's real Switch; see "Test in Citron".
 - Default, Nintendo style: **A = Cross, B = Circle, X = Square, Y = Triangle**, + = Start, - = Select, L/R = L1/R1,
   ZL/ZR = L2/R2, stick clicks = L3/R3, D-pad = D-pad. `GOW_PAD_POSITIONAL=1` in env.txt: by position instead
   (B = Cross, A = Circle, Y = Square, X = Triangle; the layout before update_swfix3).
+- On-screen button icons: still the PS2 symbols on the console; the Switch letters exist as `_nx` language overlays
+  (tools/gow_pad_icons.py, docs/settings.md "Button icons"), checked on the PC only (2026-10-26).
 - Sticks: HID stick positions (+-32767) -> DualShock analog bytes (0x80 centre, y inverted), the pad reports analog
   mode (0x73). Left stick = movement, right stick = evade roll (God of War's camera is fixed: no camera stick).
   Until update_swfix3 the sticks did nothing on the console: gow_overrides.cpp `gowPad2ReadState` replaced them
