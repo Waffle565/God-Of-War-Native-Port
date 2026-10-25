@@ -187,3 +187,18 @@ per run 0.1-1.1 us less than `nv5j1` (`=1` without it): nv4b1's drop was not the
 | `nv5lv` | update_nv5l `=1` + `GOW_GS_HW_STENCILVOL=1` | 33.2 | 42.3 | 43.5 | | 4935 | |
 | `nv5lg` | update_nv5l `=1` + `GOW_GS_HW_FAILGT=1` | 35.7 | 47.6 | 47.2 | | 4903 | |
 | `nv5lgv` | update_nv5l `=1` + `FAILGT=1` + `STENCILVOL=1` | 35.4 | 47.4 | 47.0 | | 4899 | |
+
+nat-vu1r (ext agent/natvu1 adcb308, docs/native-render-study.md; `GOW_PERF_DIAG=1`, `GOW_DK_GPU_TIME=1`, default clocks,
+**the default script length** (`BENCH_GAME_S` 240, 480 s wall: ~103 windows, not the 150 s of the rows above, so the
+per-run numbers compare only with each other); fps per bench_report scene, `vu1` = VU1 thread busy ms per 5 s at 90-240;
+us per run run-weighted over the whole bench (`famavg.py`), nat / rec of the same package):
+
+| run | package / env | 0-30 | 30-60 | 90-120 | 210-240 | vu1 | 3d0d / 7ab / 93fe / 39f3 / 6df5 / misc us |
+|---|---|---|---|---|---|---|---|
+| `nv6a1` | update_nv6a (rcpv, non-aliasing MAC / undo stores, MERGE_KICKS default on) `=1` | 44.8 | 42.2 | 43.9 | 43.9 | 3533-3595 | 3.10 / 4.03 / **7.68** / **15.91** / **29.19** / 36.83 |
+| `nv6am` | update_nv6a `=m` (all recompiled) | 43.0 | 42.8 | 42.4 | 42.8 | 3852-3915 | 4.10 / 5.97 / 7.16 / 13.15 / 28.64 / 42.55 (rec) |
+| `nv6ap` | update_nv6a `=1` + `GOW_PC_SAMPLE=1000` (GSWorker profile) | 44.1 | 42.9 | 43.4 | 43.6 | 3604-3682 | 3.19 / 4.09 / 7.93 / 16.29 / 29.36 / 37.05 |
+
+Native wins 3d0d / 7ab / misc (-24 / -32 / -13 %) and the VU1 thread (-8 %), loses lit +7 %, skin +21 %, skin28 +2 %:
+`PS2X_VU1_ORACLE=OFF` still not built (condition: every family wins). Against nat-vu1n's `=1` benches (nv5kk2, 150 s
+script) lit 7.93 -> 7.68, skin 16.48 -> 15.91, skin28 29.86 -> 29.19 (different scene mix: indicative only).

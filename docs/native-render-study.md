@@ -1,5 +1,25 @@
 # Native rendering instead of the recreated VU1: study and migration plan (2026-10-24)
 
+## Handoff (2026-10-25 morning, nat-vu1r stopped here: ext agent/natvu1 head adcb308, package update_nv6a)
+Details in "Progress: the divide fast path, non-aliasing MAC / undo stores (nat-vu1r)" (end of this file); bench rows in
+docs/benchmark.md "nat-vu1r".
+- **Console, same package, same settings (default script, default clocks), us per run nat (`nv6a1`) vs rec (`nv6am`)**:
+  3d0d 3.10 vs 4.10, 7ab 4.03 vs 5.97, misc 36.83 vs 42.55 (native wins), 93fe **7.68 vs 7.16 (+7 %)**, 39f3
+  **15.91 vs 13.15 (+21 %)**, 6df5 **29.19 vs 28.64 (+2 %)**. VU1 thread busy 3533-3595 vs 3852-3915 ms per 5 s, fps
+  43.3-44.8 vs 41.7-43.2. Not every family wins: **no `PS2X_VU1_ORACLE=OFF` package built**, nothing installed,
+  update_k11d's exefs pushed back.
+- **Changes (adcb308, natcheck byte-identical to the base f11b370 on all 40 recordings, x86 + a64 under qemu, with and
+  without `GOW_VU1NAT_FORCE_DECLINE=1`)**: `vu1n::rcpv` (1 / x with divv's bits, FDIV only, for |x| in [2^-126, 2^126]:
+  the loops' rcpw and every `divv(1, x)`); nlit::Op's MAC state as a double vector + a double (float / uint32 stores
+  aliased the register file); Undo's counters uint16_t and its copies as double vectors; one GIF submit per run by
+  default (`GOW_VU1NAT_MERGE_KICKS=0` = per packet).
+- **Where skin loses** (nv6ap profile, `GOW_PC_SAMPLE`): runLit 10.5 % of the VU1 thread, 19.7 % of it `vu1n::ldr`
+  (register file reloads after out-of-line calls), skinLoop 4.2 % (FDIV ~7 % of it, the rest FMAC + FastOps). Ideas checked and dropped: FPSR overflow flags
+  instead of FastOps' per-result tracking (misses an exact FLT_MAX result from a normalised +-FLT_MAX operand, which
+  maddc treats as the wide case); a 4-lane DIV (nat-vu1j: slower).
+- **Next**: (1) skin set-up / skinLoop (the 21 % family); (2) lit (+7 %); (3) the ORACLE=OFF package once all win (the
+  coordinator's condition); FAILGT and the console default stay the user's / coordinator's decision.
+
 ## Handoff (2026-10-25 night, nat-vu1n stopped here: ext agent/natvu1 head f11b370 (VU 1ea385f + natvu1m 76c64cd), packages update_nv5b / nv5f / nv5j / nv5k / nv5l)
 Details in "Progress: typed register-file accesses, cheaper set-up, the GPU merges (nat-vu1n)" (end of this file);
 bench rows in docs/benchmark.md "nat-vu1n".
@@ -1637,3 +1657,38 @@ tools (`census.py`, `clonebuild.py`, nc / cmp / tr scripts).
 **Open**: 8449e8a0 unculled (another zone or a scripted path through PAND03H's far side); the PS2 adder's behaviour
 for a tiny opposite-sign addend (hardware probably ignores it: x 0xc2e2fa5d, where native and oracle both give ...5c)
 is not modelled anywhere.
+
+### Progress: the divide fast path, non-aliasing MAC / undo stores (2026-10-25 morning, nat-vu1r, ext agent/natvu1 adcb308)
+- **`vu1n::rcpv(x)`** (ps2_vu1_native.h): DIV Q, vf0w, x. For |x| in [2^-126, 2^126] qnorm(x) = x, the quotient lies in
+  [2^-126, 2^126] in every rounding mode (no zero divisor, no overflow, no subnormal), so qfinish is the identity and a
+  plain FDIV gives divv's bits; two FP compares sit beside the FDIV instead of qnorm / qfinish's moves to general
+  registers on its dependency chain. Zero / subnormal / huge / Inf / NaN divisors take divv. Used by nlit::x::rcpw (all
+  lit / skin / misc / wind loops) and every `divv(1.0f, x)` of the clip, wind and unlit paths. In the nv5jp profile
+  qnorm / qfinish / divv were ~17 % of skinLoop's samples; console per run -3 to -4 % on lit / skin / skin28.
+- **Aliasing**: nlit::Op recorded every FMAC's raw result as `__m128` (may_alias on x86; float32x4_t on aarch64 has
+  float's alias set) and its DEST mask as uint32_t, so each FMAC's stores could alias VU1State's vf / vi and the compiler
+  reloaded registers after them (nv5jp: runLit's top lines were `vu1n::ldr` 15.8 % and the MAC stores 12.4 %). Now
+  macR is a double vector (bitcast) and macM a double (exact for every uint32); same reads (macNow / setMac). Undo's
+  n / used / nTouched are uint16_t and cpqT stores a double vector (the undo buffers are read back by memcpy only).
+  a64 object: runLit 1259 -> 1189 loads, 781 -> 751 stores (static); the rest of the reloads follow out-of-line calls
+  (kick, logFull, the nmisc / nclip hooks), so a C++-locals rewrite of the set-up would gain less than nat-vu1n
+  expected. VU-memory stores stay uint32 vectors (re-typing them would break the loads' aliasing).
+- **`GOW_VU1NAT_MERGE_KICKS`** is on by default (one submitGifPacket per run); `=0` restores one per packet.
+- **Checked**: natcheck summaries identical to the f11b370 harness on /root/nrs (8), /root/nrs/nk (12), /root/nrs/nq
+  (20, ATHN01F with `GOW_VU1NAT_ORACLE_CYCLES=0x10000000`), x86 and a64 (qemu), plain and `GOW_VU1NAT_FORCE_DECLINE=1`
+  (WSL root, tools/vu1_nat/: `bh.sh <name>` builds `<name>` + `<name>a` from /root/natvu1w, `nca.sh <harness> [fd]`
+  natchecks all 40 recordings 8-way into /root/vu1h/nca_<harness>[_fd].txt, `cmp.sh <base> <new>` builds and diffs
+  both arches and both modes against a base, `tm.sh <reps> <harness>...` times them on one core, `prof.sh <bench> <elf>
+  <func>` the console profile by line).
+  x86 harness time unchanged (within 1 %, sequential on one core): the A57 is where these changes matter.
+- **Dropped**: FPSR cumulative flags (OFC / IOC once per pass) instead of FastOps' AND + UMAX per result: a normalised
+  +-FLT_MAX operand (a stale prime-pass input) can give an exact FLT_MAX result without the overflow flag, which maddc
+  treats as the wide case and FastOps' 2^126 threshold catches.
+- **Console** (docs/benchmark.md "nat-vu1r"): update_nv6a `=1` vs `=m`, same settings: lit +7 %, skin +21 %, skin28
+  +2 %, the rest native wins; VU1 thread -8 %. No ORACLE=OFF package (not every family wins); k11d's exefs pushed back.
+- **Profile `nv6ap`** (update_nv6a `=1` + `GOW_PC_SAMPLE=1000`, GSWorker; `prof.sh`-style: `switch_pcprof.py
+  pcs_GSWorker.txt /root/elf_nv6a.elf --lines <func>`): runLit 10.5 % of the thread's samples (nv5jp 12.1 %); inside it
+  the MAC store line 10.4 -> 3.6 %, `vu1n::ldr` 15.8 -> 19.7 % (the latency moved onto the loads that remain: the
+  register file lives in VU1State across the out-of-line calls). skinLoop 4.2 % of the thread: qnorm / qfinish gone,
+  rcpv's FDIV ~7 % of the loop, the rest NEON FMAC + FastOps tracking. For skin the remaining lever is its set-up in runLit
+  (per-run register traffic through VU1State), not the loop.
