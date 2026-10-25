@@ -4,7 +4,31 @@ The game's sound engine is its own IOP code: 989snd (`989NOMID.IRX`, sequencer, 
 SMPD streamer plugin, compiled ahead of time like every IRX (docs/native-port.md). Below it there is no sound hardware
 model: the SPU2 register-level model and the IOP's SPU DMA channels were removed on 2026-10-11.
 
-## Handoff (nat-iop7, 2026-10-25) - latest
+## Handoff (nat-iop8, 2026-10-25) - latest
+- ext `agent/natiop2` **713f418** (on de98c7b): more of 989snd's tick native (see "989snd's tick"): the LFOs 0x2938 /
+  0x24d8 (all six waveforms and kinds; was idle-only), ducking 0x1c8e4 / 0x1c6e8, pitch 0x6928 / 0x6a20 (bend,
+  Note2Pitch, noise clock), grains 25 (random branch) and 27 (random pitch). New stub `989nomid_irx 1c8e4` in
+  tools/iop/native_overrides.txt (master): regenerate iopn_989nomid_irx_25e00.cpp in any other worktree (`python -I
+  tools/iop/iopn_gen.py port/iop_mods <tmp>`, copy that file only). register_functions.cpp there: never commit.
+  New tick pieces: one `case` in iopSnd989TickStep + `isTickStep` (iop_native_snd989.cpp) + a stub line.
+- Goal 0 (the 2 fx mismatches in slot 1): not a native error. An interrupt handler (thread 0) ran 989snd's effect
+  volume setter 0xe23c (sceSdSetParam EVOL L / R core 1) while the tick's 0xe2e8 (thread 3) was interrupted; the
+  shadow counted those calls as the tick's. The native call's result (idle at its entry) is a valid order. LIBSD
+  recordings now carry the thread and the shadows compare only the checked thread's calls; the others are printed.
+- Verified (PC, port/natiop8_gate.sh, results port/natiop8/): shadow slots 0-4 (`GOW_NATIVE_SND989=0
+  GOW_SND989_SHADOW=1`, p1 + g1 for grain 25) **0 mismatches**; slot 0: LFOs / duck / kon / koff ~49k / 12k, 0
+  declined; block declines now grains 1 / 5 / 7 / 8 only. Native gate (n1) **5/5 ok, 60 fps, game speed 1.00**;
+  sound native vs shadow slots 1-4: correlation 0.9991-0.9999, mean relative difference 0.003-0.006, identical first
+  1.41 s. aarch64 (Switch flags, devkitA64 g++ -Wall, private copy /root/src-iop, script /root/iop_a64.sh):
+  all 41 ps2xIOP sources compile, no warnings in the hand-written native files (compile only, no console).
+- Next: (a) grains 1 (0x4a0c key on a tone, voice allocation) and 5 (0x5dbc start a sound), the stop 0xf1dc (calls
+  0x4814 block end, 0xe888 free (44 blocks), 0x12924 stream stop, 0x1af04 / 0x1ad54 voices), 0x12e90 (type-4 /
+  stream sounds), volume ramp records 0x32b0 / 0x35dc / 0x3e18 (never seen in the gate slots), the non-idle effect
+  path 0xe2e8, then the sound list step 0xf5b0 and the tick loop 0x10a58; (b) unchanged (kernel semaphores, loaders,
+  #129, RPC server).
+- Switch: no console run; IOP-side C++ only.
+
+## Handoff (nat-iop7, 2026-10-25)
 - ext `agent/natiop2` **de98c7b** (e4607ea + de98c7b on 65223ba): pieces of 989snd's tick native (see "989snd's tick"):
   ramp records 0xf690 with pan ramps 0x2e88, the block-sound step 0x4748 (grain timer and the register / random /
   goto / loop / wait / key-off grains), key-on / key-off flush 0x1a878 / 0x1a990 (sceSdSetSwitch), group fades 0x2938
@@ -298,7 +322,7 @@ Per frame the game sends one batch (cmd 0x4D) of: 4c SMPD fn 1a (x2), 42, 4c SMP
 ## 989snd's tick (native pieces, nat-iop7, iop_native_snd989_set.cpp / iop_native_snd989.cpp)
 - The tick (989NOMID 0x10a58.., sound thread, 989snd's lock 0x105cc held for the whole tick) per sub-tick: counter
   [0x1ee68] += 1, 0xf5b0 (the sound list [0x1ee34], link +0x24), 0x1a990 key-off flush, 0x1a878 key-on flush, 0xe2e8
-  effect changes, 0x2938 group fades, every 4th 0x1c8e4. 0xf5b0 per sound: type 5 (block) with +0x16 bit 1 clear ->
+  effect changes, 0x2938 LFOs, every 4th 0x1c8e4 (ducking). 0xf5b0 per sound: type 5 (block) with +0x16 bit 1 clear ->
   0x4748; type 4 -> 0x12e90 (streams, not transcribed); then, if the sound has ramp records (+8), 0xf690; a non-zero
   result -> 0xf1dc (stop the sound).
 - Native (stubs in the compiled 989snd code, tools/iop/native_overrides.txt; each entry reaches the dispatcher, the C++
@@ -318,20 +342,50 @@ Per frame the game sends one batch (cmd 0x4D) of: 4c SMPD fn 1a (x2), 42, 4c SMP
     +0x16 bit 6 limits it to one pass per tick), 38 (wait one tick while voices play), 41 (0x1ad54: key off the sound's
     voices).
     989snd's random numbers 0xc770: XOR of two halfwords of the 249-entry table 0x1e630 (index [0x1e62c], lag 0x67).
-    Not transcribed (decline, `L1000<type>` in the decline summary): 1 (key on a tone), 5 (start a sound), 7, 25, 27
-    (random pitch through 0x6928) and the rest; in a fight ~0.03 % of the 1.6M calls decline.
+    Also native: grains 25 (0x51e4, random branch: m = rand() % byte 0, never the last choice byte 2 twice; +0x4a += m x byte 1, the loop
+    counters +0x50 = 1 / +0x52 = byte 1 + 1 / +0x54 = (byte 0 - 1 - m) x byte 1) and 27 (random pitch bend, see
+    "Pitch" below). Not transcribed (decline, `L1000<type>` in the decline summary): 1 (key on a tone), 5 (start a
+    sound), 7 / 8 (plugin calls 0x18c) and the rest; in a fight ~0.03 % of the block calls decline.
   - **0x1a990 / 0x1a878** key-off / key-on flush: pending masks [0x1f1b4] / [0x1f1ac] (two words, 24 voices per core)
     -> sceSdSetSwitch KOFF (0x16) / VMIXEL + VMIXER (0x19 / 0x1b from 0x1f1a4) + KON (0x15), cleared; the voices move
     between the masks 0x1f1bc (keyed on) and 0x1f1c4 (keyed off).
-  - **0x2938** (group fades, every other sub-tick) and **0xe2e8** (effect changes per core, then 0x392c effect depth
-    ramps) when idle: odd counter / empty list [0x1e43c]; [0x1ee00] / [0x1ee04] == 0 and the ramp steps
-    [0x1f2fc + 0x48c] / [0x1f320 + 0x48c] == 0. Anything else declines.
+  - **0x2938: the LFOs** (every other sub-tick: the counter [0x1ee68] even; list [0x1e43c], next +0x2c). An LFO
+    record (0x30 bytes): +0 waveform (table .data 0x1e444: 0 none 0x20e0, 1 sine from the 513 halfwords 0x1e038
+    quarter by quarter, 2 square with duty +0x18, 3 triangle, 4 saw, 5 random: a new value from 0xc770 at each half
+    period, +0x1c = which half), +2 kind, +3 target LFO index, +4 bit 0 invert, +6 depth, +0xc phase (+= 2 x rate +0x10,
+    wrapped below 0x8000000; the waveform sees the old phase >> 16), +0x20 scale, +0x28 the sound. 0x24d8 per LFO by
+    kind (jump table 0x1d618): 1 volume (sound +0x38 = scale x (wave - 0x7fff) >> 16), 2 pan (+0x3c), 3 / 4 pitch
+    (+0x44 / +0x40, scale x wave >> 15), 5 the rate and 6 the depth of another LFO of the sound (+0x5c + index x 0x30;
+    6 then recomputes its scale, 0x29d4); result bit 0 (volume / pan changed) -> 0x650c(handle, 0x7fffffff, -2, 1),
+    bit 1 (pitch) -> 0x6a20.
+  - **Pitch** 0x6928(handle, bend) (the sound and its children +0x2c / +0x30 get bend +0x42) -> 0x6a20(sound): +0x36 =
+    clamp(+0x40 + +0x42), +0x14 = +0x44 + +0x46, copied to each voice (+0x24 / +0x26); unless the sound is paused
+    (+0x16 bit 1) each voice gets sceSdSetParam PITCH (0x1b67c: note x 128 + fine with the bend scaled by the template's
+    range +8 / +9; 0x1b5dc: sceSdNote2Pitch, a non-negative center note scaled by 44100 / 48000) or, for a noise voice
+    (template +0xe bit 3), sceSdSetCoreAttr noise clock (core | 8, 0..63). Note2Pitch (#13) is pure: native code
+    computes it without the call and the shadow does not record it. Grain **27** (0x5340: random bend =
+    (rand() % 32767 -> -0x8000..0x7fff) x byte 0 / 100) is native through it.
+  - **0x1c8e4: ducking** (every 4th sub-tick): a group (voice +0x1b) is active while one of its voices plays (state
+    +8 == 1 / 4, sound not paused); each of the 4 duck records 0x26a84 (0x18 bytes: +0 group or -1, +4 mask of the
+    groups it ducks, +8 target, +0xc down step, +0x10 up step, +0x14 level) moves its level down towards the target
+    while its group is active, else up to 0x10000; the 15 group levels 0x1f0f4 = the minimum level of the records
+    ducking the group; changed groups -> 0x1c6e8(mask): new L/R volumes (0x1c634) for their playing voices.
+  - **0xe2e8** (effect changes per core, then 0x392c effect depth ramps) when idle: [0x1ee00] / [0x1ee04] == 0 and
+    the ramp steps [0x1f2fc + 0x48c] / [0x1f320 + 0x48c] == 0. Anything else declines. The 2 "mismatches" nat-iop7 saw
+    in slot 1 were not native errors: an interrupt handler (thread 0) called 989snd's effect setter 0xe23c while the
+    tick's 0xe2e8 (thread 3) was interrupted, and its two sceSdSetParam (EVOL L / R of core 1, 0x0b81 / 0x0c81) were
+    counted as the tick's. The LIBSD recording now keeps each call's thread (IopNativeWrites::Sd::thread) and the
+    shadows compare only the calls of the checked thread (iopLibsdRecordedEqual); other threads' calls are printed
+    (`w<offset> thread 3 interrupted by thread 0: LIBSD #5(...)`).
 - Shadow (`GOW_NATIVE_SND989=0 GOW_SND989_SHADOW=1`): every entry predicted and checked like the commands (v0, the
-  stores, a 989snd data snapshot, the LIBSD calls, cycles); a nested entry (0xf690's recursion, another thread while a
-  call is checked) is not checked. The `[snd989-shadow]` line has columns ramp / block / kon / koff / fades / fx and
-  ends with the decline summary (`declines L<line>:n`, shared with the setters).
-- Not native yet: 0x12e90 (type-4 / stream sounds), grains 1 / 5 / 7 / 25 / 27..., 0xf1dc (stop), 0x1c8e4, the tick
-  loop itself.
+  stores, a 989snd data snapshot, the LIBSD calls of the checked thread, cycles); a nested entry (0xf690's recursion,
+  another thread while a call is checked) is not checked. The `[snd989-shadow]` line has columns ramp / block / kon /
+  koff / fades (= the LFOs) / fx / duck and ends with the decline summary (`declines L<line>:n`, shared with the
+  setters).
+- New tick pieces go through `iopSnd989TickStep(offset)` (iop_native_snd989_set.cpp) and `isTickStep` in
+  iop_native_snd989.cpp, plus their stub line in tools/iop/native_overrides.txt.
+- Not native yet: 0x12e90 (type-4 / stream sounds), grains 1 / 5 / 7 / 8 / 25..., 0xf1dc (stop), the volume ramp
+  records 0x32b0 / 0x35dc / 0x3e18, the tick loop itself.
 
 ## SMPD front end (native, nat-iop3, ps2xIOP/src/native/iop_native_smpd.cpp)
 - SMPD plugin fn 02 (status block) and fn 1a (echo) are served by native C++ (`iopNativeSmpdOverrides`, registered

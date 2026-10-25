@@ -39,3 +39,4 @@ libsd_irx 1560 bus_setup
 989nomid_irx 1a990 snd_tick_key_off_flush
 989nomid_irx 2938 snd_tick_group_fades
 989nomid_irx e2e8 snd_tick_effect_changes
+989nomid_irx 1c8e4 snd_tick_ducking
