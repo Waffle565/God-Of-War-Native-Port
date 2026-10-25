@@ -453,6 +453,14 @@ at the game's 1785 MHz boost), then lower clocks. Bench at those clocks (docs/be
   Levers in order: shade each alpha-tested batch once (pass / fail in one draw where AFAIL allows, or a cheaper fail
   pass), shorter specialised shaders for the hot variants, fewer shuffle fragments, a cheaper upscale.
 
+## Alpha-tested batches drawn once where AFAIL allows (2026-10-25, nat-vu1m, ext 9e1cf56)
+The backend's alpha test drew every AFAIL != KEEP batch twice (pass draw, fail draw, each shading the whole batch).
+`alphaPlanFor` (ext `gs_hw_backend.cpp`) now decides vertex-alpha batches per triangle on the CPU (the 202925 / 204925
+pair: all fail, only the fail draw remains, pixel-identical) and merges texture-alpha batches whose two draws write the
+same; the models (RGB_ONLY + Z write, 203425 / 205425) stay two passes, `GOW_GS_HW_FAILGT=1` lets early Z skip their
+passing fragments in the fail draw (0.1 % of pixels differ, max abs 8). Details, data and next steps:
+docs/native-render-study.md "step 7 on the renderer side". Console GPU time: not measured yet.
+
 ## Menu clock: the Load Game menu ran 8 % fast (2026-10-13, ext branches agent/menuclock, agent/menuclock2)
 - Measured (port/menuclock, `GOW_DELTA_DIAG`, `GOW_VBLANK_DIAG`, `GOW_IOP_DRIFT`, `GOW_AUDIO_STATS`): title screen,
   main menu, pause menu and gameplay run at game speed 1.000, VBlank 59.99-60.00 Hz, IOP clock 1.000 +- 0.0004 of wall

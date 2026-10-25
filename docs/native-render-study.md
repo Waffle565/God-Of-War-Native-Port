@@ -1294,3 +1294,58 @@ build without the kCullClip hook shows 261 on pcfight, so the check bites).
 - **Merge of agent/natvu1k** (bb234d3): its new loops enter nmisc::loop's kind cache (kinds 17-30, same test order),
   npart::isProgram keeps nat-vu1j's four generations and caches nat-vu1k's d10 / d88 / e40 snippet gates per slot.
 - **Console** (per run, whole-bench averages): see the handoff and docs/benchmark.md "nat-vu1l".
+
+### Progress: step 7 on the renderer side, single-pass alpha test (2026-10-25, nat-vu1m, ext branch agent/natvu1m, worktree ext/PS2Recomp-kl-natvu1m)
+Branch agent/natvu1m = agent/natvu1k 4bf860c + 9e1cf56 (ext `gs_hw_backend.cpp` only; shared by the GL and deko3d
+backends; PC build folder `out/build-pc`, MSVC Release, logs off, `PS2X_VU1_ORACLE=OFF`).
+
+**Order changed on purpose.** The step-7 items are not equal at the default clocks, where the GPU is the limit:
+- *Draw sink* (item 1): saves the packet build in VU memory and the GS frontend's per-vertex parse, both **CPU** work
+  (the frontend already has a lean PACKED fast path, `processPackedUnitsFast`); the GPU work is unchanged, and the EE
+  already waits on the GS queue at the default clocks. The A+D registers of each batch still have to reach the GS
+  register state (they persist into PATH2 / PATH3 draws), so the sink is a second producer of the same ordered
+  command stream, not a bypass. Not built this round; it pays off once the GPU is below 16.7 ms.
+- *Draw merging* (item 2) already exists in the backend: consecutive batches with the same state accumulate in
+  `pending` and are drawn as one indexed draw (strip vertices shared, `pendingIdx`); ADC triangles are never emitted
+  (the frontend's kick flag). Nothing left there for the native path beyond the bounding box hand-over.
+- *Single-pass alpha test* (item 3) is the GPU lever, and it is independent of who produces the vertices: done first.
+
+**What the alpha-tested batches are** (`GOW_GS_HW_STATS=1`, `[gs-hw-atest]`, PC bench fight, per 5 s): ~20 k
+alpha-tested batches; **every** remaining two-pass batch is `AFAIL = RGB_ONLY`, `ATST = GEQUAL`, alpha written:
+11.7 k batches / 9.3 M triangles with Z write (the models: the 203425 / 205425 pair), 6.5-8.6 k / 0.3-0.6 M without Z
+write, 0.3 k with shader blending. Plus 1.3-1.6 k batches / ~0.57 M triangles whose alpha is the **vertex** alpha
+(TCC = 0; the DECAL / FST / flat 202925 / 204925 pair) and that **all fail** the test.
+
+**Plans** (`alphaPlanFor`, per batch; `GOW_GS_HW_ATEST1=0` = the two passes as before):
+- vertex alpha (TME = 0 or TCC = 0, every TFX): each triangle's outcome is decided on the CPU (flat: the three
+  vertices give the same outcome, so the provoking vertex does not matter; Gouraud: three equal alphas), each
+  triangle drawn once in the pass or the fail draw, passing ones first (the two passes' order): **pixel-identical**.
+  In the bench all such batches fail: only the fail draw runs (FailOnly), the pass draw that discarded everything is
+  gone. ATST = ALWAYS / NEVER the same for any alpha.
+- texture alpha where the fail draw writes what the pass draw writes (FB_ONLY without Z write, RGB_ONLY without Z
+  and alpha write): one draw with the test set to ALWAYS; ZB_ONLY without Z write: the pass draw alone. Not met in
+  the bench (alpha is always written).
+- the rest stays two passes. Same shader variant keys as before: no new deko3d shader builds.
+- `GOW_GS_HW_FAILGT=1` (experiment, off): after a Z-writing pass draw with ZTST = GEQUAL the fail draw tests GREATER,
+  so the passing fragments (at their own depth) are rejected by early Z instead of shaded and discarded again.
+  Differs from the GS where a failing fragment lies exactly at the stored depth: bench 200-370 px per shot (0.1 %),
+  max abs 2-8, in the far background (mountains / sky layers). Its gain needs the console GPU timer.
+
+**Check** (PC bench fight, `pcrun.sh` 230 s, bench shots every 300 frames, two runs per build for the noise mask:
+pixels differing between two runs of one build, dilated 2 px = the rain): `[bench]` signatures identical (182
+lines); ATEST1 on vs off: 0 px outside the noise in 32 of 36 shots, the rest is rain the two-run mask missed (shot
+2400: red / blue rain streaks everywhere, the same pattern as ref vs ref2, which also leaves 1677 px outside its
+mask). PC GPU timer numbers are not usable (two runners in parallel, the queries include waits).
+
+**Next**: (1) console bench with `GOW_DK_GPU_TIME` at the default clocks: ATEST1 on vs off (expected: the 202925
+pass draw, ~0.37 s per 5 s, gone) and FAILGT on (the 205425 fail draw, 0.47 s); main schedules the console.
+(2) RGB_ONLY without Z write, alpha written (6.5-8.6 k batches): one draw is possible with dual-source alpha
+selection (colour factor moved to SRC1 colour, alpha blended with SRC1 alpha = pass ? 1 : 0); needs a shader variant
+define and the deko3d shader list. (3) RGB_ONLY with Z write: exact single pass is impossible (one depth buffer
+cannot keep or write per fragment); options are FAILGT or a stencil mark of the pass draw's pixels (fail draw split
+in GEQUAL on unmarked / GREATER on marked pixels: differs only at depth-equal fragments of the same batch).
+(4) the draw sink and native stencil shadows (items 1 and 4) after the GPU measurements.
+
+**Tools** (scratch `nm/`): `pcrun.sh <name> <secs> [ENV=..]` (nat-vu1i's runner on this build, no ISO),
+`shotdiff.py`, `maskdiff.py refA refB newA newB` (diff outside the two-run noise), `vis.py` / `vis2.py` (diff
+picture: blue run-to-run, red new vs ref).
