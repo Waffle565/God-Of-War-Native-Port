@@ -176,10 +176,14 @@ The overlay code is ps2xIOP's (`disc_source.cpp`, ext e53cfc1), shared by both b
   from `sdmc:/switch/gow/env.txt` (en fr de it es; voice also ja; voice defaults to the text language), else the
   console's system language (`setGetSystemLanguage` + `setMakeLanguage`: Italian, French incl. Canadian, German,
   Spanish incl. Latin American -> that language, anything else English). It takes `lang/<text>_<voice>.layout`
-  next to the boot disc (`romfs:/disc-usa/lang/`, made by make_romfs_links.sh from `disc-usa/lang`), else
-  `sdmc:/switch/gow/lang/` (`tools/switch_push_lang.sh` copies the 60 MB there, for an NSP installed before the
-  packs), and logs `[switch] language: system it, text it, voice it -> ...`. Without a layout: plain USA disc
-  (English). `PS2X_DISC_OVERLAY=` in env.txt overrides everything.
+  next to the boot disc (`romfs:/disc-usa/lang/`, linked by make_romfs_links.sh), else
+  `sdmc:/switch/gow/lang/` (`tools/switch_push_lang.sh` copies it there, for an NSP installed before the packs; in
+  use since 2026-10-25). Source: the PC folder's current pack (`dist/God of War (PC)/data/lang`, 2026-10-19) without
+  the Japanese dub (3.4 GB; `*_ja` combinations are missing, so voice ja falls back to the plain disc): ~200 MB,
+  500 files. `disc-usa/lang` is an older pack (10-18: one `shell.bin`, voices in one `voice_<l>.bin`; its menus
+  stayed English on the console), and logs `[switch] language: system it, text it, voice it -> ...`. Without a layout: plain USA disc
+  (English). Console bench 2026-10-25 (ship fight, default clocks): it_it 43.5 fps = English reference the same
+  hour (spd5, 43.5); the overlay costs nothing measurable. `PS2X_DISC_OVERLAY=` in env.txt overrides everything.
 
 Menus checked 2026-10-19 (dist runner, muted, it_it): title menu "Nuova partita"/"Carica", difficulty "Seleziona
 difficoltà", load screen "Nessun dato salvato di God of War / nello slot di salvataggio 1." (before the save folder

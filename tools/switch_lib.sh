@@ -6,7 +6,7 @@
 #   sw_transfer                sets SW_T=ftp|mtp (call once)
 #   sw_ready                   FTP: close whatever runs, home menu.  MTP: check we are in hbmenu/DBI (MTP screen)
 #   sw_push_update <dir>       put <dir>/atmosphere/contents/0100D0D0600A0000/exefs/{main,main.npdm}
-#   sw_launch <shots dir>      start the game from the state sw_ready left (user ClaudeTest), check its title
+#   sw_launch <shots dir>      start the game from the state sw_ready left (user "claude"), check its title
 #   sw_close <shots dir>       game -> home menu, close it (FTP) / back to DBI's MTP screen (MTP)
 #   sw_pull <dest dir>         log.txt + pcs_*.txt
 GAME_TID=0100D0D0600A0000
@@ -48,12 +48,12 @@ sw_push_update() {
   F put $E/main atmosphere/contents/$GAME_TID/exefs || return 1
   F put $E/main.npdm atmosphere/contents/$GAME_TID/exefs || return 1
 }
-# "Who is using the software?" (the NACP asks for a user at every start): test runs use the local test user ClaudeTest
+# "Who is using the software?" (the NACP asks for a user at every start): test runs use the local test user "claude"
 # (no Nintendo Account, created 2026-10-25), the last of the five users, so the user's own profiles and saves stay
-# untouched. The cursor starts on the first user; DRIGHT stops at the last one. SW_USER_RIGHTS overrides the count.
+# untouched. The cursor starts on the first user; claude is the 5th (DRIGHT x4), a 6th press would reach the "+" (add user) tile. SW_USER_RIGHTS overrides the count.
 sw_pick_user() {
   local S=$1 k
-  for k in $(seq ${SW_USER_RIGHTS:-5}); do B click DRIGHT; done
+  for k in $(seq ${SW_USER_RIGHTS:-4}); do B click DRIGHT; done
   sleep 1; B shot "$S/0_user.jpg" >/dev/null
   B click A; sleep 6
 }

@@ -96,16 +96,18 @@ The PAKs are 4 GB each: the SD card must be exFAT (FAT32 has a 4 GB file limit).
 - Home-menu name and icon: `nacptool` writes the name for 12 of the 16 NACP languages, `build_nsp.sh` copies
   entry 0 into all 16; the icon is `port/switch/nsp/icon.jpg` (256x256 baseline JPEG, 4:2:0, no EXIF; source image
   `icon_src.png`), copied as `icon_<Language>.dat` for every language.
-- **Why the home menu showed "?" (proven 2026-10-25, screenshots `port/switch/shots/icon/`)**: the installed control
-  data was right all along (sphaira's Games list reads name and icon from it), but the HOME menu keeps the icon and name
-  it first saw for a title id **+ version** and does not reload them when the same version is installed again.
-  hacBrewPack always wrote version 0, and the first install (2026-10-16) had the name in Italian but only
-  `icon_AmericanEnglish.dat`, so the Italian console cached "no icon" for v0 forever. Test with a 29 MB title from the
-  same pipeline (0100D0D0600B0000 "GoW icon test"): first install -> icon shows; reinstall v0 with another icon -> the
-  home menu keeps the first one; reinstall as v65536 -> the new icon shows. Fix: hacBrewPack patched
-  (`port/switch/nsp/hacbrewpack_version.patch`, env `HBP_TITLE_VERSION` -> content meta version) and
-  `build_nsp.sh` takes `VERSION=<n>`: every full NSP whose icon or name changes must use a version above the installed
-  one (multiples of 65536: 65536, 131072, ...). Nothing has to be deleted on the console.
+- **Why the home menu showed "?" (2026-10-25, screenshots `port/switch/shots/icon/`)**: two things.
+  (1) The icon of the first NSP (10-16) was libnx's `default_icon.jpg`, a JPEG with **4:4:4** chroma and optimized
+  Huffman tables: the console does not show it (home menu and sphaira draw "?"; test title with that icon, 2026-10-25,
+  name read fine). A 4:2:0 baseline JPEG (what PIL writes with `subsampling=2`, port/switch/nsp/icon.jpg) shows.
+  (2) Later NSPs had a good icon (sphaira's Games list showed it from the installed control data) but the home menu
+  kept "?": every NSP was v0, and the home menu shows the new icon once the content meta version goes up (test title:
+  v0 -> v65536 install refreshed it; a same-version reinstall through sphaira is skipped by its "skip if already
+  installed", so that case was not measured directly). Fix: hacBrewPack patched
+  (`port/switch/nsp/hacbrewpack_version.patch`, env `HBP_TITLE_VERSION` -> content meta version) and `build_nsp.sh`
+  takes `VERSION=<n>`: a package with a new icon or name must use a version above the installed one (65536, 131072,
+  ...). Installed 2026-10-25: GoW v65536 with the user's icon (`icon_src_2048.jpg` -> icon.jpg, 256x256 Lanczos,
+  baseline 4:2:0), control-only package (below): the home menu shows it.
 - `build_nsp.sh` also takes `TITLE`, `APP_NAME` (not `NAME`: WSL sets that to the host name), `ICON`, `ROMFS` and
   `OUT` for small test packages.
 - **Control-only package** (new icon or name, ~0.5 MB instead of 8.5 GB): `REUSE_NSP=<the installed NSP>
@@ -115,6 +117,9 @@ The PAKs are 4 GB each: the SD card must be exFAT (FAT32 has a 4 GB file limit).
   (sphaira's installer checks `ncmContentStorageHas` and skips that NCA; with the option off it would install the empty
   file). `port/switch/nsp/pfs0.py` lists / extracts an NSP's small entries. The 10-18 NSP (program
   f9795578e30c19d3f6422d18e299026b, 8.57 GB) is kept as `out/base_20261018_v0.nsp` for this.
+  Proven 2026-10-25: test title (icon shows, the reused program starts) and God of War (installed v65536 = that program
+  + the new control). **The installed GoW is now v65536**: the next icon/name change needs `VERSION=131072`, any full NSP
+  at least that too (a lower version is refused without sphaira's "allow downgrade").
 - Installing an NSP without USB: copy it to `sdmc:/nsp/` over FTP (`tools/switch_ftp.py put <nsp> nsp`), then in
   sphaira (the hbmenu tile) L = file browser -> `nsp` -> the file -> "Install Selected files?" Sì (installs to the SD
   card, ~14 MB/s). DBI started from sphaira crashes ("Il software è stato chiuso a causa di un errore"). sphaira's
@@ -210,9 +215,9 @@ The PAKs are 4 GB each: the SD card must be exFAT (FAT32 has a 4 GB file limit).
   - DBI and the game cannot run together: copy files, close DBI, start the game (HOME, A on its tile), screenshot,
     then back to DBI for the log.
 - Test user (2026-10-25): every start of the game asks "Chi usa il software?" (the NACP's StartupUserAccount). Test runs
-  pick **ClaudeTest**, a local user without a Nintendo Account (5th and last of Waffle565, piggy, Roberta, spirixe,
-  ClaudeTest), so the user's own profiles stay untouched: `sw_pick_user` in tools/switch_lib.sh presses DRIGHT 5 times
-  (the cursor starts on the first user and stops at the last) and A; `SW_USER_RIGHTS=<n>` changes the count if users
+  pick **claude** (created as ClaudeTest, renamed by the user), a local user without a Nintendo Account (5th and last of Waffle565, piggy, Roberta, spirixe,
+  claude), so the user's own profiles stay untouched: `sw_pick_user` in tools/switch_lib.sh presses DRIGHT 4 times
+  (the cursor starts on the first user; one more press reaches the "+" add-user tile) and A; `SW_USER_RIGHTS=<n>` changes the count if users
   are added. By hand: `switch_bot.py click DRIGHT DRIGHT DRIGHT DRIGHT` then `click A`.
 - Remote testing over WLAN (2026-10-24): at max GPU/EMC clocks the console draws more than a PC USB port supplies
   and ran flat during a bench, so it now stays on a wall charger and files go over the home Wi-Fi instead of USB.

@@ -992,3 +992,15 @@ Run: `python -I tools/zones.py --slots 1,2,3,4` (scale: `PS2X_GS_HW_SCALE`); sav
   (tools/switch_push_lang.sh); /root/src-nv2 + `port/switch/lang_switch.patch` (overlay disc_source from ext e53cfc1 +
   device-path fix), package `update_lang2`. Test runs pick the local user ClaudeTest (tools/switch_lib.sh).
   Console checks pending (console in use by the user).
+
+- 2026-10-25 ~10:50 console time (sw-pkg, on the console): **icon on the home menu, Italian on the Switch, default
+  update_lang2**. Icon: real first cause found: the 10-16 NSP's libnx `default_icon.jpg` is 4:4:4, which the console
+  does not show ("?"); then the home menu kept "?" for v0. Control-only package (installed program NCA reused,
+  0.5 MB, sphaira "skip if already installed" was already on) proven on test title 0100D0D0600B0000 (icon + launch),
+  then installed for God of War as **v65536** with the user's icon: home menu shows it
+  (port/switch/shots/icon/home_final.jpg). Test title deleted (user-approved), test NSPs removed from sdmc:/nsp.
+  Language: current pack (PC folder data/lang, without ja, 500 files) on sdmc:/switch/gow/lang; console Italian ->
+  title "Nuova partita / Seleziona" (port/switch/shots/lang_it_title.jpg), Italian voice file read in the ship
+  (A01HL17.VPK). Bench ship fight default clocks: lang2it2 43.7 fps vs spd5 reference the same hour 43.5 (the
+  earlier 47.0 of spd5g is not reached today by spd5 itself). tools/switch_default.sh default = update_lang2 + FAILGT.
+  Test user is now "claude" (user renamed it; a "+" add-user tile follows it: DRIGHT x4).
