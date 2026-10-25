@@ -23,7 +23,12 @@ model: the SPU2 register-level model and the IOP's SPU DMA channels were removed
 - Next: (3) loaders fn 0d / 0f / 06 and the bank load #129 (file reads + sound-RAM transfers); (4) the RPC server
   (0x1878 / batch 0x177c) and 989snd's tick (it runs the ramp records: function 0x2e88 per record), then 989NOMID /
   SMPD_IOP need not be loaded. The engine class in iop_native_snd989_set.cpp (overlay, locks, sound lookup, setters)
-  is the base to build them on.
+  is the base to build them on: the ramp record function 0x2e88 (29 blocks) calls only #32 0xcef8, 0xd244 and 0xf86c,
+  all transcribed, so the tick's record step is the cheapest next piece. Loader leads (SMPD table .data 0x8218):
+  fn 06 0x6900 = stream refill request (+0x188 / +0x18c = min(request, free), SignalSema [0x989c] wakes the stream
+  thread, optional WaitSema [0x98a0], status 0x2c88(1)): needs kernel semaphore services in IopNativeServices;
+  fn 0f 0x6890 -> 0x5f5c (stream open, 27 blocks), fn 0d 0x4260 (-> 989snd #77 / #15 / #9); #129 = 0x83dc (98 blocks,
+  file reads through jalr callbacks).
 - Switch: no console run; IOP-side C++ only.
 
 ## Handoff (nat-iop5, 2026-10-25)
