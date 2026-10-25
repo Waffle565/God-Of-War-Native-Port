@@ -61,6 +61,20 @@ toolchain (`deko3d` 0.5.0 with the `uam` shader compiler, `/opt/devkitpro/tools/
   it to finish, so the split is approximate where one kind's work overlaps the next; the busy total is the GPU's.
   `tools/bench_report.py` shows `gpu` / `acq` columns from these lines. Off: no reports, no cost.
 - `GOW_DK_PRESENT_FLIP=0` turns the present pass's vertical flip off (if the picture ever shows upside down).
+- Stall diagnostics (`GOW_PERF_DIAG=1`; sw-stall, ext agent/swstall): `[gs-dk-stall]` every 5 s, per place where the
+  GS thread blocks in deko3d or on a fence: `kind=calls/total ms/>8:n/>25:n/max ms` for `acquire`
+  (dkSwapchainAcquireImage), `present` (dkQueuePresentImage: queue flush + queueBuffer), `submit` (finish list +
+  dkQueueSubmitCommands + dkQueueFlush), `chunk` (command-memory ring), `stage` (staging-ring wrap: waits for all
+  submitted work), `sync` (readbacks, mapped reads, glFinish, fence waits), `frames` (`GOW_DK_FRAMES`); with
+  `GOW_DK_GPU_TIME=1` also `gpuframes=n/>25:n/>40:n/max` (GPU busy time per presented frame). Single blocks of 25 ms and
+  more: `[gs-dk-long] kind ms= submits_in_flight= presents_in_flight=` (at most 8 per second); GPU frames of 40 ms and
+  more: `[gs-dk-gpuframe] ms=`; a single queued op holding the GS GL thread 25 ms or more: `[gs-gl-long] op ms=`.
+- Opt-in experiments (sw-stall): `GOW_DK_FRAMES=n` (at most n presented frames queued on the GPU: the GS thread waits
+  for the frame n presents back after each present), `GOW_DK_LAZYBARRIER=1` (a render-target change or a texture
+  barrier drains the fragment pipeline only when a draw samples an image drawn into since the last barrier, or draws
+  into an image sampled since then; `[gs-dk-lazy] barriers= skipped=`), `GOW_DK_COMPRESS=1|2` (hardware compression
+  for depth images, 2 = also colour images), `GOW_SCALER=fast` (bicubic + sharpen from 5 fetches: the sharpen's
+  neighbours are the bicubic's outer taps, 1-2 source pixels away, instead of 4 extra fetches 1 pixel away).
 
 ## Console results (2026-10-19, remote loop: tools/switch_bot.py + switch_mtp.py, `PS2X_GS_HW_SCALE=1`)
 - Citron cannot run it: `dkQueueCreate` never returns there (Citron's GPU service), so deko3d builds are tested on the

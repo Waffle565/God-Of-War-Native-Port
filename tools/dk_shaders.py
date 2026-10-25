@@ -152,14 +152,24 @@ void main()
     vec2 tc0 = (center - 1.0) / uSrcSize;
     vec2 tc3 = (center + 2.0) / uSrcSize;
     vec2 tc12 = (center + offset12) / uSrcSize;
-    vec4 c = tex(vec2(tc12.x, tc0.y)) * (w12.x * w0.y) + tex(vec2(tc0.x, tc12.y)) * (w0.x * w12.y)
-           + tex(vec2(tc12.x, tc12.y)) * (w12.x * w12.y) + tex(vec2(tc3.x, tc12.y)) * (w3.x * w12.y)
-           + tex(vec2(tc12.x, tc3.y)) * (w12.x * w3.y);
+    vec4 tn = tex(vec2(tc12.x, tc0.y)), tw = tex(vec2(tc0.x, tc12.y)), tc = tex(vec2(tc12.x, tc12.y));
+    vec4 te = tex(vec2(tc3.x, tc12.y)), ts = tex(vec2(tc12.x, tc3.y));
+    vec4 c = tn * (w12.x * w0.y) + tw * (w0.x * w12.y) + tc * (w12.x * w12.y) + te * (w3.x * w12.y) + ts * (w12.x * w3.y);
     float norm = (w12.x * w0.y) + (w0.x * w12.y) + (w12.x * w12.y) + (w3.x * w12.y) + (w12.x * w3.y);
     c /= norm;
-    vec2 px = 1.0 / uSrcSize;
-    vec3 n = tex(vUV + vec2(0.0, -px.y)).rgb, s = tex(vUV + vec2(0.0, px.y)).rgb;
-    vec3 e = tex(vUV + vec2(px.x, 0.0)).rgb, w = tex(vUV + vec2(-px.x, 0.0)).rgb;
+    vec3 n, s, e, w;
+    if (uPlain < -0.5)
+    {
+        // GOW_SCALER=fast: the sharpen's neighbours are the bicubic's own outer taps (1-2 source px away instead
+        // of 1), 5 fetches per pixel instead of 9
+        n = tn.rgb; s = ts.rgb; e = te.rgb; w = tw.rgb;
+    }
+    else
+    {
+        vec2 px = 1.0 / uSrcSize;
+        n = tex(vUV + vec2(0.0, -px.y)).rgb; s = tex(vUV + vec2(0.0, px.y)).rgb;
+        e = tex(vUV + vec2(px.x, 0.0)).rgb; w = tex(vUV + vec2(-px.x, 0.0)).rgb;
+    }
     vec3 lo = min(min(n, s), min(e, w)), hi = max(max(n, s), max(e, w));
     vec3 amp = clamp(min(lo, 1.0 - hi) / max(hi, vec3(0.0001)), 0.0, 1.0);
     float peak = -1.0 / mix(8.0, 5.0, uSharpen);
