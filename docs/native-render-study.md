@@ -960,3 +960,134 @@ removal plan; (5) step 7.
   and docs/benchmark.md "nat-vu1g". Start states: on1 / on2 B, m1 / m2 A, xon A, xm B, so fps compare only within a
   state; on1 = on2 to frame 3840 (the usual 64 s divergence). Shots (rain, HUD, enemies) look normal in all runs.
 - **Switch default** (86235f2): `liveFamilies()` mask, default 0x3 on `__SWITCH__` (3d0d1206 + 7ab32108 native).
+
+### Progress: the winding entries' clipped path, the decline census, the last recorded entries (2026-10-25, nat-vu1i, ext branch agent/natvu1i, worktree ext/PS2Recomp-kl-natvu1i)
+Branch agent/natvu1i = agent/natvu1h 5184cc7 + 3463959 (winding path, census) + 63cd2fa (0x15d0 path, two lit
+entries) + a merge of agent/natvu1 86235f2 (nat-vu1g: `GOW_VU1_NATIVE_FAMS`, Switch default mask 0x3) + 0d3002b
+(census after the merge) + d3ea2fb (particle snippet 0x0728) + a1fd885 (the zone gate's three entries) + e023fd4
+(particle snippet 0x0698). natcheck re-verified after the merge on all six
+recordings. New files `ps2_vu1_nat_wind.inl` (namespace `vu1nat::nwind`, included by ps2_vu1_nat_lit.inl before
+ps2_vu1_nat_misc.inl) and `ps2_vu1_nat_census.inl` (included by ps2_vu1_nat.inl before tryRun); hooks: the 0x1820 /
+0x1ba0 lines of nclip::polyClip, the 0x1140 branch of nclip::path1120 (+ a `cont` out parameter), the 0x1808 / 0x1bb0 /
+0x1120 cases and the loop lambda's 0x2438 line in runLit, four lines in nmisc::loop, two kEntries rows, one snippet case
+in npart, three census calls in tryRun, the `not covered` list in natcheck.
+
+**The winding entries e4f3b5c3 / ea6b4a01 with a clipped batch** (Athens runs 1656 / 1657):
+- the copy pass (0x0940 -> 0x0b38 -> 0x0388, no module callbacks) calls the entry's **own loop at entry + 0x18**:
+  `ownLoopE4f3` (6 pairs, xyz = vf23 + vf20-22 * itof4(position), hash e3b647207133dade over 72 bytes) and
+  `ownLoopEa6b` (vi7 = vi3 + vi5, loops while vi3 != vi7, writes the input w word + 1 of the vertex before; hash
+  15b3245b06646330 over 96 bytes); both exit `iaddiu vi8, vi0, 2; jr vi14; isubiu vi1, vi0, 31698`, so 928.x = -31698;
+- **winding test 0x1820-0x1868** (polyClip, 928.x < 0): the three cross products' z weighted with the w of the
+  corners (maddw.z into vf0, flags only) against the vertex's ADC bit (FMEQ after the mfir / mtir pair: the flags of
+  that maddw.z); equal -> back to 0x1728 without clipping;
+- **polygon output** `jr 928.x + 2` = 0x2180: `bal vi15 -> 0x14e8` with vi15 = 0x2190, vi8 = 3: `loop2190` (prologue
+  I = 2^20, vf7.z = I; XYZ = (vf21 * w - vf20 * xyz) * Q of the pass before, z = 2^20 - z, ftoi4; only sq.xyzw vf4);
+- **strip output** at 0x1bb0 `jr 928.x` = 0x2170 -> 0x2428: `bal vi15 -> 0x1570` with vi15 = 0x2438, vi8 = 2:
+  `loop2438` (prologue vi6 = 0x8080, vi8 = 0x8001; the winding of the last two screen positions, mulay.x / msuby.x
+  into the flags, compared by the FMEQ 4 pairs later with the vertex's w bits -> ADC word 0 / 0xffff into the output w;
+  position (vf1 * vf23, z + vf22.w; vf21 * z - vf20 * that) * Q, DIV of 1 / z).
+- Jump targets are now `(vi & 0x7ff) * 8` (928.x is negative for these modules).
+
+**The unlit header-sign path with header bit 13** (0x1140 `ibltz vi5 -> 0x15d0`, 7ab32108: 130 runs per 5 s in the PC
+bench, in no recording): 0x15d0-0x1640 (stride / prime count, prime pass into qw 931+, the batch in place) then `b
+0x12b0` with vi14 = 928.z: runLit goes on there (the kick and the strip clip test 0x16a8).
+
+**The last two entries of the recordings** (both a lit set-up, prime count 1, their loop directly at entry + 0x18):
+541e797b (216 bytes; Desert / Cliffs / walk / Athens, 1-6 runs per recording) -> `loop541e` (20 pairs: colour = vf31 +
+(vf29 + vf9 * l.w + vf27 * l.x + vf28 * l.y, w = vf30.w) * itof0(rgba), min 255 + 2^23, l = max(vf16-18 *
+itof15(normal), vf11) of the vertex before; perspective divide, the DIV of p4 read by the MULQ of p11; hash
+dcbfa46a05255a28 over 192 bytes); 60641204 (184 bytes; menu, 9 runs) -> `loop6064` (18 pairs, the same colour with min
+255.5, no divide, XYZ stored as floats, exit vi1 = 1019; hash 73d4bfb93bdb185d over 160 bytes).
+
+**Particle snippet 0x0728** (npart, found by the PC census, 1 run in 200 s of the bench fight): vf8 = a + b t + c
+t^2/2 (qw 1-3), vf9 = vf8 * f (qw 0). **Snippet 0x0698** (Olympus recording, 6 runs): vf8 = a + b t.z + c t.w (sqi to
+vi3++), vf9 = a + b t.x + c t.y. Both inside nat-vu1f's codeHash range, so no new gate.
+
+**Gate**: `nlit::fixedHash` now also covers the clipper and the paths above (0x0940-0x0b38, 0x1350-0x13f8,
+0x14e8-0x1570, 0x15d0-0x1648, 0x1808-0x1bb0, 0x1bd8-0x20c8, 0x20d8-0x2150, 0x2170-0x21e8, 0x2428-0x24d8):
+kFixedValue a3ced83bc8b06bd9 (was 356ebd77e6dbab0c), the same in all six recordings. Before, the clipper of nat-vu1h
+(0x0940, 0x1808-0x2150, 0x1350) was not in any hash.
+
+**Result** (natcheck: every covered run byte-exact, GIF packets, 16 KB VU memory, registers; only the known CLIP
+seeding artifact runs Athens 2019 / walk 825, 860):
+
+| recording | runs native | VU pairs native | was (nat-vu1h) |
+|---|---|---|---|
+| pcfight | 3000 / 3000 | 100.0 % | 100.0 % |
+| pcmenu | 3000 / 3000 | 100.0 % | 99.8 % (9 runs 60641204) |
+| pcwalk | 3000 / 3000 | 100.0 % | 100.0 % (2 runs 541e797b) |
+| pcathn02 | 3000 / 3000 | 100.0 % | 99.6 % (runs 1656 / 1657, 541e797b) |
+| pcdesert | 3000 / 3000 | 100.0 % | 99.9 % (6 runs 541e797b) |
+| pccliffs | 3000 / 3000 | 100.0 % | 99.9 % (3 runs 541e797b) |
+| cen2 (census dump, 1 run) | 1 / 1 | 100.0 % | (snippet 0x0728) |
+| z1 / z3 (zone census dumps, 6 / 2 runs) | 6 / 6, 2 / 2 | 100.0 % | (85b9642a, fbde7722, 2565a5fa) |
+| pcolymp (new: slot 1 Olympus, REC_AT 125) | 3000 / 3000 | 100.0 % | (6 runs at the snippet 0x0698 before e023fd4) |
+| pccliff2 (new: slot 3 Cliffs, REC_AT 130) | 3000 / 3000 | 100.0 % | - |
+
+pcolymp has 24 runs and pccliff2 8 with a CLIP register difference and `next run changed 0 of 24 / 8 tested` (the
+oracle's seeding artifact of nat-vu1e; more of them on Olympus); pcolymp holds 225 runs of 85b9642a and 26 of fbde7722
+(byte-exact); 2565a5fa did not come in pccliff2's 3000-run window (only its two dump runs check it). New recordings in
+`D:\Claude Archive\GoW-Archive
+atvu1-2026-10-24\` and WSL `/root/nrs/`.
+
+**Decline census** (`ps2_vu1_nat_census.inl`, with `GOW_VU1_NATIVE_RUN=1`): every run the native code does not take
+is counted per (entry hash = classifyRun's entryHash, start pc, decline pc, reason: `declined` / `no-entry` / `not-offered`);
+a new key prints one `[vu1nat-unknown] #n <reason>: entry hash .. start .. decline .. (first: gen, entry pc, fixed code)`
+line, `[vu1nat-census]` lists all keys with run counts every 30 s (only when a not-native run comes), and
+`GOW_VU1NAT_DUMP=<file>` appends the first run of each key as a GOW_VIF1_REC record (`natcheck <file>` reads it; the
+runs are not consecutive, so the "next run" check does not apply). The entry hash is cached per (generation, entry pc,
+start, decline pc): the micro memory changes generation tens of times per second (module uploads), so keying by the
+whole code image gave one key per generation (5814 keys in the first try). The families `GOW_VU1_NATIVE_FAMS` leaves
+out are not counted. natcheck now also lists the runs it does not try: `not covered: entry <hash> start <pc>: n runs
+(first run k)`.
+
+**Census results** (PC, MSVC Release build with the five log options off, `GOW_VU1_NATIVE_RUN=1`):
+- bench fight (`pcrun.sh cen2`, 200 s, frames 60-12120 at 60 fps): **one** not-native run in the whole run: the
+  particle program declined at the snippet 0x0728 (closed above, byte-exact on its dump).
+- zone gate (`tools/zones.py --slots 0,1,2,3,4 --exe <natvu1i> --silent` with `GOW_VU1NAT_DUMP={zone}/vu1nat_dump.vifrec`;
+  all five zones ok, 60.0 fps in the last windows, game speed 1.01): slot 0 (new game, the ship), slot 2 (Desert) and
+  slot 4 (final battle): **0 keys**; slot 1 (Olympus): entries **85b9642a** (867 k runs in the zone's 200 s, starts 0 /
+  18 / 30) and **fbde7722** (70 k runs); slot 3 (Cliffs): **2565a5fa** (97 k runs). No `declined` keys in any zone:
+  everything the native code starts it finishes.
+- closed (byte-exact on their dumps; 3 / 6 / 2 runs, so a thin check, see the recordings below): 85b9642a = prime count 2
+  + texDivLoop directly at entry + 0x18 (only a kEntries row); fbde7722 (184 bytes, prime count 2) -> `loopFbde` (16
+  pairs: ST = vf19 + vf16-18 * itof15(normal) xy, colour min(vf31 + vf30 * itof0(rgba), 255 + 2^23), divide; the
+  lower `sq.xyz vf3` of p10 stores the old vf3 in the pair where the upper mulq rewrites it); 2565a5fa (152 bytes,
+  prime count 3) -> `loop2565` (14 pairs: position through the second matrix vf12-15 and vf20-23 + that * w, w =
+  itof4(2 * the input w word) through ilw / mfir, divide, ST itof12 * Q; the lower moves of p0 / p5 read the old
+  vf8 / vf3).
+
+**PC bench** (nat-vu1c's check, task 1; MSVC Release of agent/natvu1i e023fd4 configured with
+`PS2X_ENABLE_AGRESSIVE_LOGS / DEBUG_UI / IOP_RPC_TRACE / RUNTIME_LOGS / SCCACHE=OFF`, bench fight `pcrun.sh boff / bon`
+250 s, `GOW_PERF_DIAG=1 GOW_BENCH_SHOT=300`; two other agents' runners were on the machine):
+- `[bench]` signatures: both runs start state B (f72fa8ad); **all 202 lines identical, frames 60-12120** (the whole
+  run, past the usual 64 s divergence).
+- pixels (40 shots, every 300 frames, nothing masked): 0.001-0.78 % of the pixels differ, mean abs <= 0.005 per channel
+  (nat-vu1c's band between two recompiled runs of the logging build was 80-92 %); the particle runs follow the
+  hardware same-register MAX on purpose, the rest is byte-exact by natcheck.
+- `[vu1nat-run]` (bon, a 5 s window in the fight): 365 k runs native, 0 recompiled, 0 other entries, 0 not offered;
+  per run 3d0d1206 0.77, 7ab32108 0.84, 93febeec 1.89, 39f38df4 5.80, misc (nmisc + the second program) 11.41 us;
+  0 `[vu1nat-unknown]` lines.
+- fps 59.98 / 60.00 (frame-limited at 60 with the logs off); VU1 thread job time (`[gsw-split] vu_ms`, mean of the 5 s
+  windows) **1593 -> 1181 ms per 5 s (-26 %)**, EE 2356 -> 2170 ms.
+- No `GOW_VU1_NATIVE_RUN=m` baseline on this build (an earlier m run shared the machine with a stuck runner of mine, so
+  its per-family times are not usable).
+
+**Removal plan steps 3 / 4**: not started. The bench fight and the recordings are fully covered, but the zone gate's
+census (above) is the gate for the fallback; coverage is complete on everything this round saw (bench fight, the five zones, eight recordings), but the census
+found three entries the six recordings never had, after ~20 min of play in each zone at most; before the fallback
+(skip + undo) replaces the recompiled VU1, the census should run over a longer play-through (a new game further than
+the ship, Athens, Pandora's temple, the menus / cutscenes / save screens) with zero `[vu1nat-unknown]` lines. The
+`not-offered` reason (start pc other than 0x00 / 0x18 / 0x30, pending pipeline) never came in any run.
+
+**Tools** (scratch, archived in `D:\Claude Archive\GoW-Archive\natvu1-2026-10-24\nat-vu1i\`): `runx.py <vifrec> <k>
+<prefix>` (one run's code / data / state as files, for vudis.py / natdis.py), `fnv.py` (the fixed-code hash and loop
+hashes of a code image), `pcrun.sh` (bench run of the natvu1i build, kills by pid and checks it is gone), `srec.sh` / `slot.py` (save-slot
+recordings), the census dumps (`cen2.vifrec`, `z1_census.vifrec`, `z3_census.vifrec`), the zones' `[vu1nat*]` lines.
+Note for WSL harness runs: `wsl -e bash -c "... setsid nohup ... &"` must end with a `sleep` of a few seconds, or the
+background processes die with the session before they start.
+
+**Next** (in order): (1) console bench of agent/natvu1i (nat-vu1g owns the console; the Switch default mask 0x3 keeps
+the slower families recompiled there); (2) a longer census play-through (above) until it shows zero
+`[vu1nat-unknown]`; (3) then removal plan step 3 (`PS2X_VU1_ORACLE`, fallback = skip + undo restore) and step 4;
+(4) step 7 (direct draws).
