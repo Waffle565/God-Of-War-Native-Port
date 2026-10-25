@@ -155,3 +155,31 @@ update_nv4 does not beat update_k11d at the default clocks (GPU-bound: 29.1 / 34
 equals update_nv2 at max clocks (the VU1 thread is the limit there, and lit / skin / misc still run recompiled): not
 installed, k11d's exefs pushed back. nv4b1's late-scene drop (35.4) came with the one-submit-per-run GIF path, which is
 therefore opt-in (`GOW_VU1NAT_MERGE_KICKS=1`); not repeated.
+
+nat-vu1n (ext agent/natvu1, docs/native-render-study.md; same columns as nat-vu1l; `gpu` = GPU busy ms per 5 s at
+90-150 (`GOW_DK_GPU_TIME=1`, from nv5f on); us per run, whole bench, nat / rec. From nv5f on the nat time starts after
+the classification, like the rec time; earlier nat rows include it):
+
+| run | package / env / clocks | heavy 10-20 | mid 30-60 | late 90-150 | vu1 | gpu | 3d0d / 7ab / 93fe / 39f3 / 6df5 / misc us |
+|---|---|---|---|---|---|---|---|
+| `nv5b1` | update_nv5b (typed accesses + natvu1m 9e1cf56 ATEST1) `=1`, default | 29.8 | 39.7 | 41.6 | 3540 | | 3.47 / 4.53 / 8.91 / 19.04 / 32.24 / 39.40 |
+| `nv5f1` | update_nv5f (+ inlined set-up, Undo &, classification out of the timing, + sw-vu1gpu timer) `=1`, default | 30.2 | 39.3 | 41.8 | 3510 | 4905 | 3.34 / 4.20 / **8.13** / **16.61** / **29.97** / **36.39** |
+| `nv5fa0` | update_nv5f `=1` + `GOW_GS_HW_ATEST1=0`, default | 29.1 | 35.3 | 37.6 | 3162 | 4912 | 3.35 / 4.18 / 8.07 / 16.62 / 29.96 / 36.03 |
+| `nv5ffg` | update_nv5f `=1` + `GOW_GS_HW_FAILGT=1`, default | 31.3 | 43.4 | 44.9 | 3767 | 4887 | |
+| `nv5fm` | update_nv5f `=m` (all recompiled, measured), default | 29.8 | 39.3 | 41.2 | 3723 | 4900 | 4.15 / 5.94 / 7.17 / 13.33 / 28.47 / 40.67 (rec) |
+| `nv5jp` | update_nv5j (nv5f + `[[unlikely]]` redo, stq lane stores, MAC in two stores, natvu1m d32e48d) `=1` + `GOW_PC_SAMPLE` | 32.9 | 42.9 | 43.3 | 3684 | | 3.26 / 4.21 / 8.34 / 16.96 / 30.12 / 36.66 |
+| `nv5j1` | update_nv5j `=1`, default | 32.8 | 42.6 | 43.6 | 3622 | 4900 | 3.23 / 4.13 / 8.19 / 16.73 / 30.14 / 36.38 |
+| `nv5ja` | update_nv5j `=1` + `GOW_GS_HW_ASEL=0` | 30.1 | 39.5 | 41.8 | 3530 | 4903 | 3.23 / 4.14 / 8.20 / 16.71 / 30.09 / 36.32 |
+| `nv5jg` | update_nv5j `=1` + `GOW_GS_HW_FAILGT=1` | 35.5 | 47.8 | 46.6 | 3932 | 4877 | 3.18 / 4.12 / 8.14 / 16.66 / 30.04 / 36.66 |
+| `nv5js` | update_nv5j `=1` + `GOW_GS_HW_FAILSPLIT=1` | 33.7 | 43.9 | 44.6 | 3749 | 4894 | 3.22 / 4.13 / 8.15 / 16.71 / 30.13 / 36.43 |
+| `nv5jm` | update_nv5j `=m` | 32.6 | 42.8 | 42.9 | 3849 | 4885 | 4.10 / 5.95 / 7.33 / 13.27 / 28.56 / 39.98 (rec) |
+| **`nv5kd`** | **update_nv5k (ext 1ea385f + d32e48d, Switch default mask 0x23), default** | **33.4** | **42.1** | **43.7** | 3524 | 4892 | 3.24 / 4.14 / (rec) / (rec) / (rec) / 36.43 |
+| `nv5kk1` | update_nv5k `=1` + `GOW_VU1NAT_MERGE_KICKS=1`, default | 33.3 | 42.4 | 43.6 | 3520 | 4892 | 3.07 / 3.92 / 7.82 / 16.38 / 29.97 / 35.45 |
+| `nv5kk2` | same, repeated | 33.2 | 42.3 | 43.6 | 3554 | 4896 | 3.08 / 3.97 / 7.93 / 16.48 / 29.86 / 35.27 |
+| **`nv5kx`** | **update_nv5k default mask, GPU + EMC max** | **43.1** | **56.2** | **57.8** | 4647 | 4420 | 3.22 / 4.15 / (rec) / (rec) / (rec) / 36.44 |
+
+update_nv5k beats update_k11d at the default clocks (33.4 / 42.1 / 43.7 vs 29.3 / 35.1 / 37.7: the GS alpha-test work of
+nat-vu1m / nat-vu1o) and update_nv4 at max clocks (43.1 / 56.2 / 57.8 vs 41.2 / 52.7 / 54.7), but it is not installed:
+nat-vu1n's install condition was a `PS2X_VU1_ORACLE=OFF` package, which needs every family to win; k11d's exefs pushed
+back. `GOW_VU1NAT_MERGE_KICKS=1` twice (`nv5kk1` / `kk2`): no late-scene drop this time (43.6 / 43.6 vs `nv5j1` 43.6),
+per run 0.1-1.1 us less than `nv5j1` (`=1` without it): nv4b1's drop was not the merged submit.

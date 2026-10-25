@@ -16,6 +16,12 @@ O=$H/obj_$name
 [ -n "$REBUILD" ] && rm -rf $O
 mkdir -p $O
 CXX="g++ -pthread -std=c++20 ${OPT:--O2} -DNDEBUG -fsigned-char -ffp-contract=off -ffunction-sections -fdata-sections -msse4.2 -I$R/include -I$R/include/runtime -I$R/src/lib"
+# ARCH=a64 (nat-vu1n): the same harness for aarch64 through sse2neon (the Switch build's defines), run under qemu-aarch64:
+#   the NEON-only code paths (#if __aarch64__) checked byte-exact on the PC; give the harness name a64 suffix by hand
+if [ "$ARCH" = a64 ]; then
+    NEON=${SSE2NEON:-/root/gow-switch-nv2/_deps/sse2neon-src}
+    CXX="aarch64-linux-gnu-g++ -pthread -std=c++20 ${OPT:--O2} -DNDEBUG -fsigned-char -ffp-contract=off -ffunction-sections -fdata-sections -march=armv8-a+fp+simd -DUSE_SSE2NEON -DSSE2NEON_PRECISE_DIV=1 -DSSE2NEON_PRECISE_DP=1 -DSSE2NEON_PRECISE_MINMAX=1 -DSSE2NEON_PRECISE_SQRT=1 -I$NEON -I$R/include -I$R/include/runtime -I$R/src/lib"
+fi
 objs=()
 for f in $R/src/lib/vu/ps2_vu1_core.cpp $R/src/lib/vu/ps2_vu1_lower.cpp $R/src/lib/vu/ps2_vu1_upper.cpp "$HERE/main.cpp" "$HERE/../vu1_harness/stubs.cpp" $G/vu1n_part*.cpp; do
     o=$O/$(basename "$f" .cpp).o
@@ -27,5 +33,5 @@ for f in $R/src/lib/vu/ps2_vu1_core.cpp $R/src/lib/vu/ps2_vu1_lower.cpp $R/src/l
     objs+=($o)
 done
 wait
-g++ -static -pthread -Wl,--gc-sections -o $H/$name "${objs[@]}"
+${CXX%% *} -static -pthread -Wl,--gc-sections -o $H/$name "${objs[@]}"
 ls -la $H/$name

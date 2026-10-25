@@ -1,5 +1,38 @@
 # Native rendering instead of the recreated VU1: study and migration plan (2026-10-24)
 
+## Handoff (2026-10-25 night, nat-vu1n stopped here: ext agent/natvu1 head 1ea385f, packages update_nv5b / nv5f / nv5j / nv5k)
+Details in "Progress: typed register-file accesses, cheaper set-up, the GPU merges (nat-vu1n)" (end of this file);
+bench rows in docs/benchmark.md "nat-vu1n".
+- **Console, per run, whole bench, default clocks, nat (`nv5f1`, `=1`) vs rec (`nv5fm`, same package `=m`; from nv5f on
+  both times start after the classification)**: 3d0d1206 3.34 vs 4.15 us, 7ab32108 4.20 vs 5.94, 93febeec **8.13**
+  (nv4e 8.79) vs 7.17, 39f38df4 **16.61** (18.65) vs 13.33, 6df5c750 **29.97** (32.3) vs 28.47, misc **36.39** (41.85)
+  vs 40.67. misc now wins (-10.5 %): **Switch default mask 0x23** (80bc8a2). lit / skin / skin28 still lose (+13 / +25 /
+  +5 %): `PS2X_VU1_ORACLE=OFF` not built (the condition: every family wins).
+- **What changed** (all same bits, x86 + new aarch64/qemu harness): VU1State / VU memory accessed through typed GNU
+  vectors (vu1n::ldr / str / stmT / stWordsT / cpqT) so a VU-memory store no longer forces register reloads; Vu caches
+  `Undo &` (no `__aarch64_read_tp` call per store); Op helpers / lightRow / scaleRow / Undo::log inlined; MAC tracking in
+  two stores per FMAC; stq lane stores; `[[unlikely]]` loop redo; NEON clipValv; nat timing starts after the
+  classification like rec. Merged agent/natvu1m (9e1cf56, d32e48d + its gs_dk_shaders_gen.cpp) and agent/sw-vu1gpu
+  (GPU timer).
+- **Where lit / skin lose now** (`nv5jp` profile): runLit is 11 % of the VU1 thread, 16 % of it still register-file
+  loads and 12 % the MAC stores: every Op still goes through VU1State in memory. The next lever is the one nat-vu1l
+  named: runLit's set-up with the registers in C++ locals (generated-block style) and no MAC tracking where no MAC
+  reader follows (to check: lit / skin seem to read it only at the 0x1750 clip test, which can compute its flags directly);
+  litLoop / skinLoop spend 25-30 % in the scalar DIV + qfinish of `rcpw`.
+- **GPU (nat-vu1m / nat-vu1o asks)**: d32e48d default 32.8 / 42.6 / 43.6 fps vs `ASEL=0` 30.1 / 39.5 / 41.8, `FAILGT=1`
+  **35.5 / 47.8 / 46.6**, `FAILSPLIT=1` 33.7 / 43.9 / 44.6 (fail draw c2f413ed 549 / 707 / 235 / 427 ms per 5 s); table in
+  the nat-vu1n section.
+- **update_nv5k** (ext 1ea385f + d32e48d, default mask 0x23) at default clocks `nv5kd`: 33.4 / 42.1 / 43.7 fps (k11d
+  29.3 / 35.1 / 37.7; the gain is the GS alpha-test work, the GPU is the limit), VU1 busy 3524 ms per 5 s (all native
+  3622, all recompiled 3849); GPU + EMC max `nv5kx` 43.1 / 56.2 / 57.8 (update_nv4 41.2 / 52.7 / 54.7). Not installed
+  (the install condition was the ORACLE=OFF package); k11d's exefs pushed back.
+- **`GOW_VU1NAT_MERGE_KICKS=1`** re-benched twice (`nv5kk1` / `kk2`, `=1`): 33.3 / 42.4 / 43.6 and 33.2 / 42.3 / 43.6 fps
+  (nv5j1 without it 32.8 / 42.6 / 43.6), per run lit 7.82 / 7.93 (8.19), misc 35.45 / 35.27 (36.38): nv4b1's late-scene
+  drop did not come back; candidate for default on.
+- **Next**: (1) runLit in locals + MAC tracking only where read (above); (2) DIV block of the lit / skin loops;
+  (3) decide FAILGT (console picture check); (4) install a package as console default once the coordinator agrees
+  (nat-vu1n did not: no `PS2X_VU1_ORACLE=OFF` package, k11d's exefs pushed back).
+
 ## Handoff (2026-10-25 night, nat-vu1l stopped here: ext agent/natvu1 head bb234d3, packages update_nv4 = nv4e, nv4a-d)
 Details in "Progress: undo without snapshots, cheaper FastOps (nat-vu1l)" (end of this file); bench rows in
 docs/benchmark.md "nat-vu1l".
@@ -455,6 +488,10 @@ All off by default. Runtime (ext `ps2xRuntime`):
     previous run and not rewritten by the VIF (qword poisoning) change its result: the state a native run must leave
     for a fallback run.
   - `torec <vifrec> <out.rec>`: runs as `GOW_VU1N_REPLAY` records for the older tools (blockprof, icount).
+  - `ARCH=a64 build.sh ...` (nat-vu1n): the same harness for aarch64 (aarch64-linux-gnu-g++, sse2neon with the Switch
+    build's defines), run under `qemu-aarch64`: checks the `#if __aarch64__` code paths on the PC. Compare its summaries
+    with the aarch64 build of the base commit: under qemu the NEON build already differs from its own oracle on some
+    runs (see nat-vu1n).
   - `rec2vifrec.py <rec> <out>`: an older `GOW_VU1N_RECORD` file (fight.rec, menu.rec: every 7th run, no stream) as a
     runs-only vifrec for the dispatch / classification part.
 
@@ -1414,6 +1451,76 @@ colour value (or a darken pass that tests the stencil itself).
 **Tools** (scratch `nm/`, added): `cmp.py dirA dirB shot out.png` (two shots stacked, diff numbers), `where.py refA
 refB newA newB shot out.png` (red = differs outside the noise, bounding box), `sw/cc.sh <files>` (WSL: compiles
 worktree GS files with the Switch nv2 flags into /tmp/nvo, no link).
+
+### Progress: typed register-file accesses, cheaper set-up, the GPU merges (2026-10-25 night, nat-vu1n, ext branch agent/natvu1)
+
+All VU changes same bits: natcheck on all 20 recordings (/root/nrs 8 + /root/nrs/nk 12) and the
+`GOW_VU1NAT_FORCE_DECLINE=1` restore check give summaries identical to bb234d3's (x86 harness), and the aarch64
+harness (below) gives summaries identical to bb234d3's aarch64 harness; `GOW_VU1NAT_PART_DECLINE=1`: 0 unrestored.
+
+- **Why the register file did not stay in registers**: nrun::Vu / nlit::Op / npart::Run read and wrote VU1State through
+  the intrinsics (`_mm_loadu_ps` / `_mm_storeu_ps`, sse2neon's vld1q / vst1q on the Switch), and stored VU memory the same
+  way or by memcpy. GCC treats those as accesses of any type, so after every VU-memory store (sq, isw, the undo log's
+  copy) it reloaded and re-normalised every register it had already read. Checked on small cases with devkitA64 GCC
+  16.1: a load through a GNU `float` vector type survives a store through a `uint32` vector type to another pointer;
+  a vld1q load does not (it is reloaded), and a vld1q load after a typed store is never moved above it (so the rule
+  below is safe).
+- **Typed accesses** (ps2_vu1_native.h): `vu1n::ldr` / `str<M>` (the register file as `vf4`, GNU float vectors),
+  `stmT<M>` / `stWordsT` (VU-memory stores as `vu4` uint32 vectors / uint32 words), `cpqT` (the undo log's single-qword
+  copy, Undo::log and Undo::touch). Vu::V / W / A / WA / sq / isw, Op::raw / sq, npart::Run::Raw / sq / isw and runLit's
+  direct register reads use them. Rule: VU memory is never read as `vf4` (its loads stay intrinsics or memcpy), the
+  register file is never stored as `vu4`; the int `vi[]` share TBAA with the uint32 stores and are reloaded as before.
+- **Set-up**: Vu keeps `Undo &u` (one TLS lookup per run: with `-mtp=soft` every `nrun::undo()` is a call to
+  `__aarch64_read_tp`); Op's FMAC / move helpers, lightRow / scaleRow, Vu::lq / ilw / seti / sq / isw and Undo::log's
+  fast path force-inlined (a full log takes the snapshot out of line); Op's MAC tracking in two stores per FMAC (macM
+  carries setMac's flag; the nv3e A57 profile had the three stores of Op::fma / fin on ~10 % of runLit's samples).
+- **Loops**: vu1hle::stq's xyz / xy / w stores are NEON lane stores on aarch64 (no load + blend of the old qword); the
+  exact redo of litLoop / skinLoop / skin28Loop is `[[unlikely]]` (laid out cold).
+- **Measurement**: tryRun's native time per family now starts after the classification (code info, entry kind,
+  isProgram), where a recompiled run's time starts (pendT0), so nat / rec compare the runs themselves; the nat numbers
+  before nat-vu1n included the classification.
+- **aarch64 harness** (`ARCH=a64 tools/vu1_nat/build.sh <name> ...`, run with `qemu-aarch64 /root/vu1h/<name> natcheck
+  ...`): the same harness through sse2neon with the Switch build's defines, so the `#if __aarch64__` paths are checked
+  on the PC. Under qemu the NEON build differs from its own oracle on some runs already at bb234d3 (pcfight 10 packets,
+  pcwalk 20 packets / 1 memory / 21 registers, ...): compare against the aarch64 build of the base commit, not against
+  zero (qemu's FPCR rounding / flush emulation is the suspect, not checked).
+- **Merges**: agent/natvu1m 9e1cf56 then d32e48d (gs_hw single-pass alpha test, RGB_ONLY select, FAILGT / FAILSPLIT;
+  the git-ignored gs_dk_shaders_gen.cpp copied from the natvu1m worktree) and agent/sw-vu1gpu (the deko3d GPU timer
+  `GOW_DK_GPU_TIME`, which agent/natvu1 lacked: nv5b1 printed no `[gs-dk-gpu]` lines). One conflict in gs_dk.cpp's
+  depth / stencil clear (natvu1m's stencil clear kept, the timer's gpuMark added). `tools/vu1_nat/gpuavg.py` averages
+  the `[gs-dk-gpu]` / `[gs-dk-gpu-prog]` lines of a log.
+- **Where the time is now** (`nv5jp`, update_nv5j `=1` + `GOW_PC_SAMPLE`, default clocks; % of the VU1 thread's
+  samples): runLit 10.7 (+0.9 its loop lambda), npart::Run::go 5.1, memmove 4.5, skinLoop 4.3, litLoop 4.1,
+  vu1hle::kCullClip 3.8, tryRun 3.7, nmisc::windLoop 5.7, skin28Loop 2.6, npart::Run::element 2.6. Inside runLit,
+  16 % of its samples are still `vu1n::ldr` (register-file loads) and 10 % + 2 % Op::fma / fin's two MAC stores; in
+  npart::Run::go 37 % + 9 % are ldr / str. So the typed accesses removed the reloads after VU-memory stores but the
+  register file still goes through memory on every Op (each Op reads its operands from VU1State and writes its result
+  back: the structure, not the aliasing, is the cost now). In litLoop / skinLoop the top lines are NEON arithmetic,
+  the operand normalisation of the entry (ps2_vu1_native.h qnorm, 10-19 %) and the scalar DIV (`num / den`, 5-8 %).
+- **Console, per run** (whole-bench averages, default clocks; nat `nv5f1` / `nv5j1`, rec `nv5fm`): 3d0d1206 3.34 / 3.23
+  vs 4.15 us, 7ab32108 4.20 / 4.13 vs 5.94, 93febeec 8.13 / 8.19 vs 7.17, 39f38df4 16.61 / 16.73 vs 13.33, 6df5c750
+  29.97 / 30.14 vs 28.47, misc 36.39 / 36.38 vs 40.67. Against nv4e (same runs, the old nat timing incl. the
+  classification): 93fe 8.79 -> 8.13, 39f3 18.65 -> 16.61, 6df5 32.3 -> 29.97, misc 41.85 -> 36.39 (nv5b1, typed
+  accesses only and the old timing: 8.91 / 19.04 / 32.24 / 39.40). misc wins (-10.5 %): Switch default mask 0x23
+  (3d0d, 7ab, misc). The VU1 thread busy at 90-150 is lower all native than all recompiled (nv5f1 3510 vs nv5fm 3723
+  ms per 5 s) because the three winning families carry more runs than the three losing ones lose.
+- **Console GPU runs for nat-vu1m / nat-vu1o** (default clocks, `GOW_DK_GPU_TIME=1`, all `=1`; fps heavy 10-20 / mid
+  30-60 / late 90-150; GPU busy ~4.9 s per 5 s in all, i.e. GPU-bound; ms and Mfrag per 5 s, whole-bench averages by
+  `gpuavg.py`). 9e1cf56 (update_nv5f): ATEST1 on `nv5f1` 30.2 / 39.3 / 41.8, `GOW_GS_HW_ATEST1=0` `nv5fa0` 29.1 / 35.3 /
+  37.6 (its pass draw d28ec8bd 342 ms is gone with ATEST1), ATEST1 + FAILGT `nv5ffg` 31.3 / 43.4 / 44.9 (fail draw
+  941b04f2 707 -> 419 ms, 200 -> 83 Mfrag). d32e48d (update_nv5j, other program hashes):
+
+  | run | env | fps | draw / shuffle / scale ms | fail draw c2f413ed ms / Mfrag | main draw a28a2b6a ms |
+  |---|---|---|---|---|---|
+  | `nv5ja` | `GOW_GS_HW_ASEL=0` (reference) | 30.1 / 39.5 / 41.8 | 3819 / 517 / 509 | 707 / 199.8 | 1370 |
+  | `nv5j1` | default | 32.8 / 42.6 / 43.6 | 3740 / 551 / 542 | 549 / 154.2 | 1287 |
+  | `nv5jg` | default + `GOW_GS_HW_FAILGT=1` | **35.5 / 47.8 / 46.6** | 3603 / 592 / 578 | 235 / 29.1 | 1330 |
+  | `nv5js` | default + `GOW_GS_HW_FAILSPLIT=1` | 33.7 / 43.9 / 44.6 | 3719 / 565 / 557 | 427 / 27.2 | 1277 |
+
+  The select default gains 2.7-3.1 fps over ASEL=0 (the 32c794af / 22c35f90 pair, ~60 ms, and a quarter of the fail
+  draw's fragments go). FAILSPLIT cuts the fail draw's fragments as much as FAILGT (27 vs 29 Mfrag) but keeps most of
+  its time (427 vs 235 ms: the third draw's raster work and the 64-bit depth / stencil format): FAILGT is the faster
+  experiment by 2-4 fps. Picture checks of FAILGT / FAILSPLIT on the console were not part of this round.
 
 ### Progress: step 7 on the renderer side, part 3: stencil shadow volumes (2026-10-25, nat-vu1p, ext branch agent/natvu1m 76c64cd, worktree ext/PS2Recomp-kl-natvu1m)
 Item 4 of the plan, as an experiment: `GOW_GS_HW_STENCILVOL=1` (off by default; off = the colour-counting wrap groups
