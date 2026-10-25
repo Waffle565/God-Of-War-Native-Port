@@ -4,7 +4,27 @@ The game's sound engine is its own IOP code: 989snd (`989NOMID.IRX`, sequencer, 
 SMPD streamer plugin, compiled ahead of time like every IRX (docs/native-port.md). Below it there is no sound hardware
 model: the SPU2 register-level model and the IOP's SPU DMA channels were removed on 2026-10-11.
 
-## Handoff (nat-iop6, 2026-10-25) - latest
+## Handoff (nat-iop7, 2026-10-25) - latest
+- ext `agent/natiop2` **de98c7b** (e4607ea + de98c7b on 65223ba): pieces of 989snd's tick native (see "989snd's tick"):
+  ramp records 0xf690 with pan ramps 0x2e88, the block-sound step 0x4748 (grain timer and the register / random /
+  goto / loop / wait / key-off grains), key-on / key-off flush 0x1a878 / 0x1a990 (sceSdSetSwitch), group fades 0x2938
+  and effect changes 0xe2e8 when idle. Six new stubs in tools/iop/native_overrides.txt (master): regenerate
+  iopn_989nomid_irx_25e00.cpp in any other worktree (`python -I tools/iop/iopn_gen.py port/iop_mods <tmp>`, copy that
+  file only). register_functions.cpp there: never commit. Build out/build-pc current (cmake: docs/build-and-run.md).
+- Verified (PC, port/natiop7_gate.sh, results port/natiop7/): shadow slots 0-4 0 mismatches for every new piece
+  except 2 fx calls in slot 1 where another thread changed the effect state inside an interrupted call (the IRX then
+  made 2 LIBSD calls; the native call runs atomically at the entry); slot 0 (fight): block 650k-1.6M calls, ~0.03-0.06 %
+  declined (grains 1 / 5 / 7 / 8 / 25 / 27), kon / koff / fades / fx ~49k each, all served; menus decline fades
+  while a fade runs. Native gate **5/5 ok, 60 fps, game speed 1.00**; sound native vs shadow slots 1-4: correlation
+  0.9996-0.9999, mean relative difference 0.004-0.005, identical first 1.41 s.
+- Next: (a) the remaining tick: grain 1 (0x4a0c key on a tone: voice allocation 0x19..., 46 blocks) and 5 (0x5dbc start a
+  sound), 0x12e90 (type-4 / stream sounds, 47 blocks), 0x1c8e4 (every 4th sub-tick: voice end detection, 34 blocks),
+  0xf1dc (stop), the volume ramp records 0x32b0 / 0x35dc / 0x3e18, fades 0x24d8, then the tick loop 0x10a58 itself;
+  (b) native kernel semaphore services for native code, then the loaders fn 06 0x6900, fn 0f 0x6890 -> 0x5f5c, fn 0d
+  0x4260, bank load #129 0x83dc; then the RPC server (unchanged leads below).
+- Switch: no console run; IOP-side C++ only.
+
+## Handoff (nat-iop6, 2026-10-25)
 - ext `agent/natiop2` **65223ba** (1be2974 + decline statistics, on 0a2f982): the 989snd setters #117 / #41 / #32 / #122 and SMPD's stream method
   0x13c0 -> 0x2448 -> 0x1784 native, so SMPD fn 0b is native for every call seen except flags 0x10 / 0x8 (never in
   the traces), lock contention and ending streams (see "989snd setters and the SMPD stream method"). New file
@@ -274,6 +294,44 @@ Per frame the game sends one batch (cmd 0x4D) of: 4c SMPD fn 1a (x2), 42, 4c SMP
   missed, the LIBSD calls the IRX made while the call ran (recorded in iopNativeLibsdImport) and the cycles. The
   `[smpd-shadow] fn0b` line counts the paths `soundSet` / `m6f20Set` / `stream` and `<path>+<d>:n` = calls that took
   d more cycles than predicted (0 = exact; more = an interrupt inside the call).
+
+## 989snd's tick (native pieces, nat-iop7, iop_native_snd989_set.cpp / iop_native_snd989.cpp)
+- The tick (989NOMID 0x10a58.., sound thread, 989snd's lock 0x105cc held for the whole tick) per sub-tick: counter
+  [0x1ee68] += 1, 0xf5b0 (the sound list [0x1ee34], link +0x24), 0x1a990 key-off flush, 0x1a878 key-on flush, 0xe2e8
+  effect changes, 0x2938 group fades, every 4th 0x1c8e4. 0xf5b0 per sound: type 5 (block) with +0x16 bit 1 clear ->
+  0x4748; type 4 -> 0x12e90 (streams, not transcribed); then, if the sound has ramp records (+8), 0xf690; a non-zero
+  result -> 0xf1dc (stop the sound).
+- Native (stubs in the compiled 989snd code, tools/iop/native_overrides.txt; each entry reaches the dispatcher, the C++
+  serves it or declines and the IRX code runs):
+  - **0xf690(record, sound)**: the record list from its last record (recursion first), a record whose word 0 has bit 31
+    set (being written) is skipped, mode +8 == 1 counts +4 down, at 0 the record's function [+0x10] runs. Only 0x2e88
+    (pan ramp, #41) is transcribed: pan = current (0xd244) + step (+0x18: |step| < 2 -> +-1 per period, else
+    `((pan * 32 + step) << 11) >> 16`), wrapped to 0..359 towards the target +0x20 (clamped to it when passed), #32
+    (handle, 0x7fffffff, pan); at the target the record is unlinked (0xf86c), else mode 1 reloads +4 = +0x1c.
+    Other record functions (volume ramps 0x32b0 / 0x35dc / 0x3e18) decline.
+  - **0x4748(block sound)**: +0x4a = current grain (-1: done -> 1 when no voices +0x18 / +0x1c and no children +0x2c),
+    +0x48 grain timer (decremented, +0x16 bit 6 cleared); at <= 0 the grains due run through 0x6398 (handler table
+    .data 0x1e47c[type], template +8 grains of 8 bytes, +3 type, +4 delay; loop counter +0x50 / +0x52 / +0x54; past
+    the last grain +0x4a = -1). Grain types native: 0 / 2 / 3 / 20 / 21 / 35 (null), 26 (random delay), 30 / 31 / 32 / 33
+    (register = byte / random / ++ / --; s8 index >= 0 the sound's +0x4c.., < 0 the globals 0x1e45c[~i]), 34
+    (test a register: false skips a grain), 36 (goto label grain 35), 22 (loop back to the previous loop start, type 21;
+    +0x16 bit 6 limits it to one pass per tick), 38 (wait one tick while voices play), 41 (0x1ad54: key off the sound's
+    voices).
+    989snd's random numbers 0xc770: XOR of two halfwords of the 249-entry table 0x1e630 (index [0x1e62c], lag 0x67).
+    Not transcribed (decline, `L1000<type>` in the decline summary): 1 (key on a tone), 5 (start a sound), 7, 25, 27
+    (random pitch through 0x6928) and the rest; in a fight ~0.03 % of the 1.6M calls decline.
+  - **0x1a990 / 0x1a878** key-off / key-on flush: pending masks [0x1f1b4] / [0x1f1ac] (two words, 24 voices per core)
+    -> sceSdSetSwitch KOFF (0x16) / VMIXEL + VMIXER (0x19 / 0x1b from 0x1f1a4) + KON (0x15), cleared; the voices move
+    between the masks 0x1f1bc (keyed on) and 0x1f1c4 (keyed off).
+  - **0x2938** (group fades, every other sub-tick) and **0xe2e8** (effect changes per core, then 0x392c effect depth
+    ramps) when idle: odd counter / empty list [0x1e43c]; [0x1ee00] / [0x1ee04] == 0 and the ramp steps
+    [0x1f2fc + 0x48c] / [0x1f320 + 0x48c] == 0. Anything else declines.
+- Shadow (`GOW_NATIVE_SND989=0 GOW_SND989_SHADOW=1`): every entry predicted and checked like the commands (v0, the
+  stores, a 989snd data snapshot, the LIBSD calls, cycles); a nested entry (0xf690's recursion, another thread while a
+  call is checked) is not checked. The `[snd989-shadow]` line has columns ramp / block / kon / koff / fades / fx and
+  ends with the decline summary (`declines L<line>:n`, shared with the setters).
+- Not native yet: 0x12e90 (type-4 / stream sounds), grains 1 / 5 / 7 / 25 / 27..., 0xf1dc (stop), 0x1c8e4, the tick
+  loop itself.
 
 ## SMPD front end (native, nat-iop3, ps2xIOP/src/native/iop_native_smpd.cpp)
 - SMPD plugin fn 02 (status block) and fn 1a (echo) are served by native C++ (`iopNativeSmpdOverrides`, registered

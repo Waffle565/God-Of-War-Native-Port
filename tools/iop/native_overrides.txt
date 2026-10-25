@@ -33,3 +33,9 @@ libsd_irx 1560 bus_setup
 989nomid_irx 1398 snd_cmd4b_largest_allocation
 989nomid_irx 13c0 snd_cmd4c_plugin_call
 989nomid_irx 1410 snd_cmd68_plugin_call_args
+989nomid_irx f690 snd_tick_ramp_records
+989nomid_irx 4748 snd_tick_block_sound
+989nomid_irx 1a878 snd_tick_key_on_flush
+989nomid_irx 1a990 snd_tick_key_off_flush
+989nomid_irx 2938 snd_tick_group_fades
+989nomid_irx e2e8 snd_tick_effect_changes
