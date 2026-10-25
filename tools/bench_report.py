@@ -10,13 +10,23 @@ usage: bench_report.py <log.txt> [--ref <other log.txt>] [--scenes a-b,c-d,...] 
   gpu (GPU busy, `[gs-dk-gpu]`: GOW_PERF_DIAG=1 GOW_DK_GPU_TIME=1, docs/switch-deko3d.md), acq (of it, the GPU's wait for a
   swapchain image). Columns without their log lines show -1.
 - --ref: compares the `[bench]` signatures (Kratos position, health, rand seed every 60 frames) with another run and
-  prints the first frame that differs: equal signatures = the same frames.
+  prints the first frame that differs: equal signatures = the same frames; for differing seeds also how many rand calls
+  one run is ahead of the other (a few, positions equal: rand calls shifted across a frame boundary by timing).
 - --windows: also prints every 5 s window with the frame range it covered.
 """
 import re
 import sys
 
 DEFAULT_SCENES = '0-30,30-60,60-90,90-120,120-150,150-180,180-210,210-240'
+
+
+def lcg_steps(a, b, limit=4096):
+    """Steps of the game's rand LCG from seed a to seed b (None beyond limit)."""
+    for n in range(limit + 1):
+        if a == b:
+            return n
+        a = (a * 0x41C64E6D + 0x3039) & 0xFFFFFFFF
+    return None
 
 
 def parse(path):
@@ -120,6 +130,16 @@ def main():
         print(f'\nsignature vs {ref}: {same} equal, {diff} differ' +
               (f'; first difference at frame {first[0]} (game {first[0] / 60:.1f} s):\n  this {first[1]}\n  ref  {first[2]}'
                if first else ''))
+        # rand calls between the two seeds (the game's LCG, gowRand): a few calls with equal positions = the same game
+        # state with some rand calls landing on the other side of a frame boundary (timing), not a divergence
+        lag = []
+        for f, _, s in bench:
+            if f in rs and rs[f] != s:
+                a, b = (int(x.split('seed=')[1][:8], 16) for x in (s, rs[f]))
+                lag.append((f, lcg_steps(b, a), lcg_steps(a, b), s.split(' seed=')[0] == rs[f].split(' seed=')[0]))
+        if lag:
+            print('  rand calls ahead of ref (frame: this ahead / ref ahead, None = over 4096): ' +
+                  ', '.join(f'{f}: {x}/{y}{"" if p else " (pos differ)"}' for f, x, y, p in lag[:8]))
 
 
 if __name__ == '__main__':

@@ -121,3 +121,19 @@ nat-vu1g (native VU1 runs, docs/native-render-study.md; `GOW_PERF_DIAG=1`; vu1 =
 nv2 per run (A57): 3d0d1206 3.6 vs 4.2 us, 7ab32108 4.5 vs 6.0-6.1 us native vs recompiled. The nv2 builds' signatures
 already part at frame 120 between two runs of the same package and env (`nv2d1` vs `nv2xd`; rand seed, positions still
 equal), so the 63 s identity no longer holds there; `nv2ap` had a third frame-60 seed (4b2b0cc2). Not investigated.
+nat-vu1j (ext agent/natvu1, docs/native-render-study.md; default clocks, `GOW_PERF_DIAG=1`, `BENCH_GAME_S=150`; vu1 = VU1
+thread busy ms per 5 s, 90-150; all seed A at frame 60):
+| run | package / env | heavy 10-20 | mid 30-60 | late 90-150 | vu1 |
+|---|---|---|---|---|---|
+| `nv3a1` | update_nv3a (npart lazy MAC + copy-on-write undo, loop-kind cache), `=1` | 28.0 | 35.2 | 37.3 | 3381 |
+| `nv3b1` | update_nv3b (+ merge of agent/natvu1i, skin28 FastOps, UMAXV ok, vector rcpw), `=1` | 27.9 | 35.2 | 37.3 | 3377 |
+| `nv3cp` | update_nv3c (rcpw scalar again) `=1` + `GOW_PC_SAMPLE` (profile) | 28.0 | 35.1 | 37.8 | 3382 |
+| `nv3d1` | update_nv3d (+ canonicalGen), `=1` | 28.3 | 35.2 | 37.6 | 3425 |
+| `nv3d2` | update_nv3d (Switch default mask 0x3) | 28.9 | 35.2 | 37.4 | 3268 |
+| `nv3dp` | update_nv3d `=1` + `GOW_PC_SAMPLE` (profile: tryRun still hashed, fixed in nv3e) | | | | |
+| **`nv3e1`** | **update_nv3 (= nv3e: + four-generation code caches; default mask 0x3)** | **28.8** | **35.1** | **37.5** | 3308 |
+| (`f1`) | update_k11d (installed default, GPU timer on; sw-k11) | 29.3 | 35.1 | 37.7 | 3173 |
+| (`nv2d1`) | update_nv2 (default mask) | 29.0 | 35.3 | 37.6 | 3249 |
+Per run (us, nat for `=1`, rec from nv2m1 / nv3d2): 3d0d1206 3.6 / 4.2, 7ab32108 4.9 / 6.2, 93febeec 9.4 / 7.2-7.4,
+39f38df4 20.0 / 13.3-13.5, 6df5c750 36.0 / 28.0-28.4, misc 47.0 / 44.4-45.2. update_nv3 does not beat update_k11d at the
+default clocks (GPU-bound there): not installed, k11d's exefs pushed back to the console after the runs.

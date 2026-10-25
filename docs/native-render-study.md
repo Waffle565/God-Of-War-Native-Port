@@ -1,5 +1,36 @@
 # Native rendering instead of the recreated VU1: study and migration plan (2026-10-24)
 
+## Handoff (2026-10-25 night, nat-vu1j stopped here: ext agent/natvu1 head a3af967, packages update_nv3 / nv3c-e)
+Details in "Progress: A57 speed-ups (nat-vu1j)" (end of this file); bench rows in docs/benchmark.md "nat-vu1j".
+- **agent/natvu1i merged** (6b8b454; nat-vu1i e023fd4: census entries, nwind, npart snippets, nat-vu1h's clipper):
+  natcheck as nvi4 on the 8 recordings (100 % covered; registers differ only where nvi4 does: pcwalk 2, pcathn02 1,
+  pccliff2 8, pcolymp 24, the known CLIP seeding artifacts). Its console bench: nv3b1 / nv3d1.
+- **Speed-ups (same bits)**: nmisc::loop kind cache; npart lazy MAC flags + copy-on-write undo (no 16 KB snapshot);
+  FastOps::ok one UMAXV; skin28Loop on FastOps; `canonicalGen` (the hash caches survive the particle / main program MPG
+  swaps). Tried and reverted: rcpw in vector lanes (slower: the 4-lane FDIV).
+- **Console, per run, all families native (`=1`, default clocks) vs recompiled (nv2m1 `=m`)**: 3d0d1206 3.6 vs 4.2 us,
+  7ab32108 4.9 vs 6.2 us (now incl. the clipper runs that used to fall back at ~200 us), 93febeec 9.4 vs 7.2, 39f38df4
+  20.0 vs 13.3, 6df5c750 **39.9 -> 36.0** vs 28.0, misc (npart + nmisc) **57.4 (nv2ap) -> 44.5 (nv3a, before the merge)
+  / 47.0 (nv3d, with nat-vu1i's newly native entries)** vs 44.4. So the Switch mask stays **0x3** (only 3d0d / 7ab win).
+  All-native fps (nv3d1, heavy / mid / late) 28.3 / 35.2 / 37.6 vs nv1's 25.8 / 35.7 / 37.2.
+- **update_nv3** (= nv3e, ext a3af967, default mask 0x3; ELF `/root/elf_nv3e.elf`, built in `/root/gow-switch-nv2`
+  from `/root/src-nv2` = the worktree's VU sources copied over) bench nv3e1 28.8 / 35.1 / 37.5 fps (nv3d2 28.9 / 35.2 /
+  37.4) vs update_k11d (f1) 29.3 / 35.1 / 37.7 at the default clocks (GPU-bound): no gain, **not installed** (k11d's
+  exefs pushed back). Its VU1 thread is busier than k11d's (3268-3308 vs 3173 ms per 5 s) although 3d0d / 7ab run
+  natively: worth a look (tryRun's per-run classification of the runs it hands back, a different base than k11d's).
+- **Frame-120 signature split: not ours** (rand calls moving across a frame boundary with timing; positions equal; the
+  A / B start states are the same effect, B = A + 7 calls). `tools/bench_report.py --ref` prints the LCG distance.
+- **Bench tooling**: tools/switch_bench.sh now deletes the sampler's pcs_*.txt before a run (the sampler appends: a
+  profile could hold an earlier run's samples, nv3cp held nv2ap's). Never edit switch_bench.sh while a bench runs (bash
+  reads it as it goes: nv3d1's first attempt died that way).
+- **Next**: (1) lit / skin: the loops are spill-bound (more live vectors than the 32 NEON registers: `ldr q, [sp]` is
+  the hottest litLoop PC now) and the run set-up through `Op` / VU1State costs about as much as the loop: registers in
+  locals for runLit's batch code, or a pass split to fit the register file; (2) npart in locals (R() / W() / WA() go
+  through VU1State on every op; ACC stores are go()'s hottest PCs); (3) memmove is 4.8 % of the VU1 thread: the packet
+  vector (kick copies, submitGifPacket copies again) and the 16 KB snapshots left (7ab's clip path, ~21 % of its runs;
+  nmisc entries); (4) a profile of nv3e (port/switch/logs/env_nvonp.txt) to confirm tryRun's FNV loops are gone (nv3dp
+  still had them: codeInfoFor / isProgram held one generation, fixed in a3af967).
+
 ## Handoff (2026-10-25 night, nat-vu1g stopped here: ext agent/natvu1 head 86235f2, packages update_nv2a / update_nv2)
 Details in "Progress: console bench + faster lit loops (nat-vu1g)" (end of this file).
 - **Console verdict: native wins only for 3d0d1206 / 7ab32108**, so the Switch default (86235f2, package
@@ -1091,3 +1122,34 @@ background processes die with the session before they start.
 the slower families recompiled there); (2) a longer census play-through (above) until it shows zero
 `[vu1nat-unknown]`; (3) then removal plan step 3 (`PS2X_VU1_ORACLE`, fallback = skip + undo restore) and step 4;
 (4) step 7 (direct draws).
+
+### Progress: A57 speed-ups (2026-10-25 night, nat-vu1j, ext branch agent/natvu1)
+Found with instruction-level console profiles (`GOW_PC_SAMPLE` histogram + objdump of the ELF: the hottest PCs of
+nv2a's runLit / litLoop / skinLoop / npart), all same bits (natcheck on the 8 recordings, as nat-vu1i's nvi4):
+- **nmisc::loop** classified every loop call by up to ~1.2 KB of byte-wise FNV (texDiv, litSt, the nwind loops, colDiv,
+  wind, unlitAb, posAb in turn; ~5 us on the A57, 2.3 % of the VU1 thread in nv2ap as a runLit lambda): the kind is now
+  cached per micro memory generation and loop address (`nrun::runGen()`, set by runNativeBody; 0 = hash every call).
+- **npart**: MAC flags only for the op FMAND reads (`addF`, 0x02a0); the others only clamp (macBitsNeon after every
+  FMAC was ~15 instructions with a NEON -> GPR move). No 16 KB snapshot: `Undo::touch` saves a qword's old value at its
+  first store (bitmap + list, restored before the older log entries); checked with `GOW_VU1NAT_PART_DECLINE=1` (every
+  finished particle run declines): memory restored in all runs (pcwalk, pcdesert, pcfight, pcolymp).
+- **FastOps::ok** (lit / skin pass test): one UMAXV on aarch64 instead of sse2neon's `_mm_movemask_epi8` (two ADDVs, two
+  GPR moves): the hottest litLoop / skinLoop PC.
+- **rcpw** (DIV 1 / w per vertex) in vector lanes (lane-wise qnorm / qfinish, no scalar exponent tests): tried in
+  nv3b, slower (lit 9.5 -> 10.1 us per run), reverted in nv3c: the sample after the scalar FDIV is its latency, not
+  the tests (sampled PCs land on the instruction that waits).
+- **canonicalGen** (tryRun): the game swaps the particle program and the main program by MPG several times a frame,
+  each upload a new generation, so every per-generation cache (fixed-code / clip hashes, entry / loop kinds,
+  npart::isProgram) re-hashed KBs of code byte-wise after every swap (tryRun's hottest PCs, ~1.5 % of the VU1 thread in
+  nv3cp). A generation now maps to the first one seen with the same 16 KB (memcmp against four saved images, heap),
+  and codeInfoFor / npart::isProgram keep four generations (one slot each before: with the two programs alternating
+  they still re-hashed on every swap, nv3dp; fixed in a3af967, package update_nv3e).
+- **skin28Loop** (6df5c750) on the skinLoop scheme: invariants and the three ADDA-with-vf0 rows hoisted, f1 / f2 / f6 /
+  f8 normalised at entry, FastOps with one test per pass and the exact redo; checked with the redo forced on every pass.
+- **The frame-120 split of nv2's bench signatures is not ours.** Counting LCG steps between the seeds
+  (`tools/bench_report.py --ref` now prints them): every pair of runs differs only by a few rand calls that land on the
+  other side of a frame boundary, positions equal: nv2xd vs nv2d1 +4 / -62 / +4 / -8 / +4 / -156 calls at frames 120-420,
+  the running total equal again afterwards; the two start states are the same thing (B = A + 7 calls at frame 60, nv2ap's
+  4b2b0cc2 = A + 8), and the A / B states predate the native runs (sw-k9's recompiled-only k9 runs). Some rand caller is not
+  locked to the frame counter (an EE thread scheduled by timing), so any VU1 speed change moves those calls; the game
+  state is the same until the known ~64 s divergence. Equal signatures need equal timing, not just equal VU1 output.

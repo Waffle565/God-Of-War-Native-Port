@@ -19,6 +19,8 @@ mkdir -p "$D" "$S"
 sw_transfer
 sw_ready "$S" || exit 1
 sw_push_update "$UPDATE" || exit 1
+# the PC sampler appends to its files: a run's pcs_*.txt must not carry an earlier run's samples
+for t in GSWorker GameThread GSStage GSThread; do F rm switch/gow/pcs_$t.txt >/dev/null 2>&1; done
 python -I tools/bench_script.py ${BENCH_GAME_S:-240} ${BENCH_MENU_S:-30} > "$D/bench.txt"
 F put "$D/bench.txt" switch/gow || exit 1
 mkdir -p "$D/envdir"
