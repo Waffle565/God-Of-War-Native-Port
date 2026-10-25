@@ -148,6 +148,36 @@ Per frame the game sends one batch (cmd 0x4D) of: 4c SMPD fn 1a (x2), 42, 4c SMP
   predicted natively at its entry and checked at its return (same run): result, the status block in IOP RAM (and the
   0x40 bytes after it), the copy in EE RAM, the stored argument and the IOP cycles. `[smpd-shadow]` lines on stderr:
   a total every 2000 calls, the first 20 mismatches.
+- A call that took more cycles than SMPD's code with everything else equal is counted as `interrupted` (an interrupt
+  ran inside it: seen once in ~11k fn 02 calls), not as a mismatch.
+
+## 989snd status commands (native, nat-iop4, ps2xIOP/src/native/iop_native_snd989.cpp)
+- The per-frame commands 0x41 / 0x42 / 0x4a / 0x4b (decoded above) are native: the C++ replaces each command's
+  wrapper (989NOMID 0x118c / 0x11b4 / 0x1370 / 0x1398, reached with jalr from the main server 0x1878 and the batch
+  0x177c through the handler table .data 0x1de88) and writes the result through the reply pointer [0x1de80], as the
+  wrapper does. The wrappers are stubs in the compiled 989snd code (tools/iop/native_overrides.txt, regenerated with
+  tools/iop/iopn_gen.py: only those entries change), so every entry reaches the IOP dispatcher.
+- Cmd **0x4c** (plugin call, wrapper 0x13c0 -> 0x18c, lookup 0x148 in the descriptor list [0x1de84]) is native when
+  it reaches a native SMPD function (fn 02 / fn 1a, the per-frame ones): the C++ finds the plugin, runs the SMPD
+  function natively (`iopNativeSmpdRun`, its own writes and SIF transfer) and stores its result. Any other target
+  (the loads' fn 13 / 06 / 07 / 0c, unknown plugin, bad index) or `GOW_NATIVE_SMPD=0` declines. Cycles 69 + 8 per
+  plugin before the match + the SMPD function's. Not reproduced: the wrapper's dead stack stores below $sp.
+  Cmd 0x68 (plugin call with an argument block: the per-frame fn 0b) stays IRX code until fn 0b is native.
+- 0x4a / 0x4b run under 989snd's recursive lock (0xfbb0 / 0xfc0c: semaphore [0x1ee5c], owner thread [0x1ee60],
+  depth [0x1ee64]). The native call serves the two cases without a wait and without a net change: lock free (depth 0,
+  owner not the caller, semaphore count > 0: owner ends -1) or held by the calling thread (depth > 0). Otherwise it
+  sets `IopNativeCall::declined` (new) and the dispatcher runs the IRX code. The kernel state comes from two new
+  services (`currentThreadId` = GetThreadId's result, `semaphoreCount`).
+- IOP clock: the instructions the IRX code runs, per path: 0x41 14; 0x42 430 + 4 per voice in use; 0x4a / 0x4b 27 +
+  the loop (129 entries: 7 unused, 10 used for 0x4a; 12 / 13 for 0x4b when not / when a new maximum) + lock 56 (free)
+  or 42 (held by the caller); one cycle per kernel import.
+- `GOW_NATIVE_SND989=0` runs the IRX (the oracle); with `GOW_SND989_SHADOW=1` every call is predicted at the
+  wrapper's entry and checked at its return: v0, the reply word, the lock words, the cycles (`[snd989-shadow]`
+  lines: calls / mismatches / interrupted / declined per command every 4000 calls, the first 20 mismatches). While a
+  call is checked the dispatcher interprets it (the wrapper returns inside 989snd, where compiled code would not come
+  back to the dispatcher), so the return is seen.
+- First check (slot 1, 20261025_155119): 6400 calls of 0x41 / 0x4a / 0x4b and 12800 of 0x42, 0 mismatches (cycles
+  included), none interrupted or declined.
 
 ### Handoff (nat-iop3, 2026-10-25, paused by the user's 2-agent limit)
 - ext `agent/natiop2` (worktree ext/PS2Recomp-kl-natiop2): 569d093 (nat-iop2: LIBSD native) + **d0f65aa** (WIP, SMPD

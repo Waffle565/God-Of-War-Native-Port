@@ -27,3 +27,8 @@ libsd_irx 0984 sceSdSetEffectWorkArea
 sio2man_irx 0000 ctrl_set
 sio2man_irx 0014 ctrl_get
 libsd_irx 1560 bus_setup
+989nomid_irx 118c snd_cmd41_status_word
+989nomid_irx 11b4 snd_cmd42_voices_in_use
+989nomid_irx 1370 snd_cmd4a_sound_ram_used
+989nomid_irx 1398 snd_cmd4b_largest_allocation
+989nomid_irx 13c0 snd_cmd4c_plugin_call

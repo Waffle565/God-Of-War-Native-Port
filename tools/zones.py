@@ -162,7 +162,13 @@ def run_zone(slot, args, outdir):
     log_path = os.path.join(zone, 'log.txt')
     start = time.time()
     with open(log_path, 'wb') as log:
-        proc = subprocess.Popen([EXE, ELF], cwd=EXE_DIR, env=env, stdout=log, stderr=subprocess.STDOUT)
+        # never take the focus (user 2026-10-25): the runner opens its window hidden + minimized without activation
+        # (GOW_WINDOW_BACKGROUND=1); the startup info asks the same of builds without that option
+        env.setdefault('GOW_WINDOW_BACKGROUND', '1')
+        si = subprocess.STARTUPINFO()
+        si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        si.wShowWindow = 7  # SW_SHOWMINNOACTIVE
+        proc = subprocess.Popen([EXE, ELF], cwd=EXE_DIR, env=env, stdout=log, stderr=subprocess.STDOUT, startupinfo=si)
         while time.time() - start < args.secs and proc.poll() is None:
             time.sleep(1)
         died = proc.poll() is not None

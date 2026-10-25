@@ -76,6 +76,13 @@ player gets, laid out like a shipped PC game:
   directory. Languages: `[Game] Text, Voice` (en fr de it es) in the same window and file; the launcher sets
   `PS2X_DISC_OVERLAY=lang\<text>_<voice>.layout`, made by the script with tools/lang_pack.py in `data\lang\`
   (always: the save wording; with the European disc extracted in `disc\`: the other languages). docs/settings.md.
+- Runner: `GOW_WINDOW_BACKGROUND=1` creates the window hidden and unfocused and shows it minimized without activation
+  (SW_SHOWMINNOACTIVE, with raylib's ALWAYS_RUN so it keeps drawing); `=2` shows it at normal size behind every other
+  window instead. A test run then never takes the focus (user rule 2026-10-25: test runs must not disturb the PC);
+  tools/zones.py sets 1 for every run unless the variable is already set (and asks the same through the process
+  startup info). Captures and fps work in both modes (slot 3: 60 fps, upload ~25 ms in each); runs while the PC is
+  busy can still drop (one gate had uploads of 1-4.6 s per 5 s window and a crash 0xC0000409 in the oracle and the
+  native run alike). ext agent/natiop2.
 - Runner (ext ps2_runtime.cpp): `GOW_FULLSCREEN=1` starts in exclusive fullscreen at the `GOW_WINDOW` size; F11
   switches window/fullscreen at run time; Esc no longer quits (raylib's default exit key; Esc is the pad's circle).
   The window title is the game's name from games_database.cpp ("God of War" for SCUS-97399).
