@@ -14,7 +14,7 @@ file); bench rows in docs/benchmark.md "nat-vu1s".
 - **Changes** (all natcheck-identical to adcb308 on the 40 recordings, x86 + a64, plain + FORCE_DECLINE): hashes memoised
   by content (fnv was ~17 s of the VU1 thread), set-up FMAC groups on locals and in the loops' fast form, the prime +
   main loop calls of a tag fused (lit / skin / skin28), just-loaded rows from registers, MINI as FMIN.
-- **Next**: installing a native default (nv7f with mask 0x3F or the OFF package) is the user's / coordinator's call.
+- **Next**: done 2026-10-25 evening (nat-def): update_nv7foff + FAILGT is the console default (docs/status.md).
 
 ## Handoff (2026-10-25 morning, nat-vu1r stopped here: ext agent/natvu1 head adcb308, package update_nv6a)
 Details in "Progress: the divide fast path, non-aliasing MAC / undo stores (nat-vu1r)" (end of this file); bench rows in

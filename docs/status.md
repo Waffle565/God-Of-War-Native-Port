@@ -960,3 +960,8 @@ Run: `python -I tools/zones.py --slots 1,2,3,4` (scale: `PS2X_GS_HW_SCALE`); sav
   sdmc:/switch/gow/env.txt; benches / cycles replace both, so every console run ends with that script. Bench `nv5kdg`
   (default clocks, 150 s script): 46.8 / 47.1 / 45.8 / 46.4 / 47.2 / 47.5 fps at 0-30 ... 150-180; boot to the title
   menu checked. ext agent/natvu1: FAILGT is on by default in Switch (PS2X_DK) builds from now on (`=0` turns it off).
+- 2026-10-25 evening (nat-def, user decision): the console default is now **update_nv7foff + `GOW_GS_HW_FAILGT=1`**
+  (fully native VU1, `PS2X_VU1_ORACLE=OFF`; was update_nv5k): `tools/switch_default.sh` pushes nv7foff. Bench `nv7foffg`
+  (same settings as nv5kdg) 47.7 / 46.4 / 45.9 / 46.4 / 47.2 fps = nv5kdg within noise, VU1 thread -5 %; title menu
+  checked; normal play: 60 Hz VBlank, speed 1.00 at 57-60 fps, ~0.9 in the heavy ship fight at 46-48 fps (as nv5k).
+  docs/benchmark.md "nat-vu1s".

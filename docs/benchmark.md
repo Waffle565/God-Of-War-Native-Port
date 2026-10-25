@@ -228,6 +228,15 @@ nat-vu1s (ext agent/natvu1 aa491fe .. 86177ca, docs/native-render-study.md; same
 | `nv7fm` | update_nv7f `=m` | 42.2 | 43.3 | 43.0 | 42.9 | 4005-4055 | 4.33 / 6.36 / 7.68 / 13.60 / 28.48 / 45.28 (rec) |
 | **`nv7foffo`** | **update_nv7foff (nv7f, `PS2X_VU1_ORACLE=OFF`)** | 44.8 | 42.4 | 43.8 | 44.0 | 3306-3352 | 3.20 / 4.03 / 6.98 / 12.43 / 27.66 / 35.58 |
 
+Console default from 2026-10-25 evening (user decision, nat-def): **update_nv7foff + `GOW_GS_HW_FAILGT=1`** (the nv7foff ELF
+has the env switch, gs_hw_backend.cpp of /root/src-nv2). Bench `nv7foffg`, same settings as `nv5kdg` (`BENCH_GAME_S` 150,
+240 s, `GOW_PERF_DIAG=1`, `GOW_DK_GPU_TIME=1`, FAILGT, default clocks): 0-30 47.7, 30-60 46.4, 60-90 45.9, 90-120 46.4,
+120-150 47.2 fps (nv5kdg 46.8 / 47.1 / 45.8 / 46.4 / 47.2: mean 46.7 both, equal within noise); vu1 3521-3652 ms per
+5 s (nv5kdg 3754-3833), gpu 4882-4893; boot to the title menu checked. Normal play `nv7foffplay` (`NOBENCH=1`,
+`GOW_DELTA_DIAG=1`, `GOW_PERF_FRAME_PC=0x001837B8`): `[vblank-diag]` 60.2 Hz, speed 1.00 at 57-60 fps, 0.88-0.94 in the
+ship fight at 46-48 fps (nv5kplay shows the same 0.89-0.96 at 45-51 fps; its later windows are a lighter scene, the
+wall-timed pad script diverges, so the whole-run means 1.003 / 0.907 are not comparable).
+
 Profiles (`GOW_PC_SAMPLE=1000`, `GOW_VU1_NATIVE_FAMS=8`: only skin native): `nv7as` (nv7a, skin 16.06), `nv7bs` (nv7b,
 15.77), `nv7es` (nv7e, 13.93). **Every family's native run beats the recompiled one from nv7f on** (lit -9 %, skin -9 %,
 skin28 -3 %, misc -22 %, 3d0d -28 %, 7ab -37 %); the ORACLE=OFF package has no skipped run (0 `[vu1nat-skip]`) and the
