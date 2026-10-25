@@ -12,3 +12,52 @@ index a217ce1..b4d7552 100644
      cnmt_ctx->cnmt_header.content_entry_count = 0x2;
      if (settings->htmldoc_romfs_dir.valid == VALIDITY_VALID)
          cnmt_ctx->cnmt_header.content_entry_count += 0x1;
+diff --git a/nca.c b/nca.c
+index 09dd4d9..8682a55 100644
+--- a/nca.c
++++ b/nca.c
+@@ -443,6 +443,36 @@ void nca_create_manual_legalinfo(hbp_settings_t *settings, cnmt_ctx_t *cnmt_ctx)
+ void nca_create_program(hbp_settings_t *settings, cnmt_ctx_t *cnmt_ctx)
+ {
+     printf("----> Creating Program NCA:\n");
++    /* gow port: HBP_REUSE_PROGRAM=<sha256 hex>:<size> lists an already installed program NCA in the content meta
++       instead of building one; the NSP gets a 0-byte placeholder of that name (an installer that skips contents
++       already present, e.g. sphaira with skip_if_already_installed, never reads it) */
++    const char *reuse = getenv("HBP_REUSE_PROGRAM");
++    if (reuse != NULL && strlen(reuse) > 65 && reuse[64] == ':')
++    {
++        for (int i = 0; i < 0x20; i++)
++        {
++            unsigned int byte;
++            sscanf(reuse + i * 2, "%2x", &byte);
++            cnmt_ctx->cnmt_content_records[0].hash[i] = (unsigned char)byte;
++        }
++        memcpy(cnmt_ctx->cnmt_content_records[0].ncaid, cnmt_ctx->cnmt_content_records[0].hash, 0x10);
++        uint64_t reuse_size = strtoull(reuse + 65, NULL, 10);
++        memcpy(cnmt_ctx->cnmt_content_records[0].size, &reuse_size, 0x6);
++        char reuse_name[37];
++        hexBinaryString(cnmt_ctx->cnmt_content_records[0].ncaid, 16, reuse_name, 33);
++        strcat(reuse_name, ".nca");
++        reuse_name[36] = '\0';
++        filepath_t reuse_path;
++        filepath_init(&reuse_path);
++        filepath_copy(&reuse_path, &settings->nca_dir);
++        filepath_append(&reuse_path, "%s", reuse_name);
++        FILE *placeholder = os_fopen(reuse_path.os_path, OS_MODE_WRITE);
++        if (placeholder != NULL)
++            fclose(placeholder);
++        printf("Reusing installed program NCA %s (%" PRIu64 " bytes), placeholder written\n", reuse_name, reuse_size);
++        return;
++    }
++
+     printf("===> Creating NCA header\n");
+     nca_header_t nca_header;
+     memset(&nca_header, 0, sizeof(nca_header));
+@@ -1029,4 +1059,4 @@ void nca_set_keygen(nca_header_t *nca_header, hbp_settings_t *settings)
+             nca_header->crypto_type2 = settings->keygeneration;
+         }
+     }
+-}
+\ No newline at end of file
++}
+\ No newline at end of file

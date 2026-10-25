@@ -106,8 +106,15 @@ The PAKs are 4 GB each: the SD card must be exFAT (FAT32 has a 4 GB file limit).
   (`port/switch/nsp/hacbrewpack_version.patch`, env `HBP_TITLE_VERSION` -> content meta version) and
   `build_nsp.sh` takes `VERSION=<n>`: every full NSP whose icon or name changes must use a version above the installed
   one (multiples of 65536: 65536, 131072, ...). Nothing has to be deleted on the console.
-- `build_nsp.sh` also takes `TITLE`, `NAME`, `ROMFS` (+ `ROMFS_ANY=1` for a folder without `disc-usa/`) and `OUT`
-  for small test packages.
+- `build_nsp.sh` also takes `TITLE`, `APP_NAME` (not `NAME`: WSL sets that to the host name), `ICON`, `ROMFS` and
+  `OUT` for small test packages.
+- **Control-only package** (new icon or name, ~0.5 MB instead of 8.5 GB): `REUSE_NSP=<the installed NSP>
+  VERSION=<above the installed one> build_nsp.sh <keys>`. The content meta lists the installed NSP's program NCA (record
+  read from its cnmt with hactool, `HBP_REUSE_PROGRAM` in the patched hacBrewPack) plus the new control NCA; the package
+  carries a 0-byte placeholder under the program's name, so it needs sphaira with "skip if already installed" on
+  (sphaira's installer checks `ncmContentStorageHas` and skips that NCA; with the option off it would install the empty
+  file). `port/switch/nsp/pfs0.py` lists / extracts an NSP's small entries. The 10-18 NSP (program
+  f9795578e30c19d3f6422d18e299026b, 8.57 GB) is kept as `out/base_20261018_v0.nsp` for this.
 - Installing an NSP without USB: copy it to `sdmc:/nsp/` over FTP (`tools/switch_ftp.py put <nsp> nsp`), then in
   sphaira (the hbmenu tile) L = file browser -> `nsp` -> the file -> "Install Selected files?" Sì (installs to the SD
   card, ~14 MB/s). DBI started from sphaira crashes ("Il software è stato chiuso a causa di un errore"). sphaira's
