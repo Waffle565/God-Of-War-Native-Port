@@ -980,3 +980,15 @@ Run: `python -I tools/zones.py --slots 1,2,3,4` (scale: `PS2X_GS_HW_SCALE`); sav
   change turned off (`GOW_FCLK_CATCHUP=0`), so the gate environment fails for that build lineage now (not looked into;
   port/zones_spd*). natvu1m's exe was left built with the change (sources restored). Details: docs/performance.md
   "Below 60 fps", docs/benchmark.md "nat-spd". Left: the stalls themselves (smoothness).
+
+- 2026-10-25 evening (sw-pkg): **home-menu "?" icon: cause proven, fix in the build**. The installed control data was
+  fine (sphaira's Games list shows name + icon); the HOME menu caches icon/name per title id + version and ignores a
+  reinstall of the same version; every GoW NSP was v0 and the first (10-16) had only icon_AmericanEnglish on an
+  Italian console. Test title 0100D0D0600B0000: fresh install icon ok, same-version reinstall unchanged, v65536
+  reinstall refreshed (port/switch/shots/icon/). hacBrewPack patched (version, reuse of an installed program NCA),
+  build_nsp.sh `VERSION`, `REUSE_NSP` (control-only ~0.5 MB package for sphaira "skip if already installed"),
+  `ICON`, `APP_NAME`. **Languages on the Switch**: system language (it fr de es, else en) or env.txt
+  `GOW_TEXT`/`GOW_VOICE` picks `lang/<t>_<v>.layout` from the RomFS or `sdmc:/switch/gow/lang`
+  (tools/switch_push_lang.sh); /root/src-nv2 + `port/switch/lang_switch.patch` (overlay disc_source from ext e53cfc1 +
+  device-path fix), package `update_lang2`. Test runs pick the local user ClaudeTest (tools/switch_lib.sh).
+  Console checks pending (console in use by the user).
