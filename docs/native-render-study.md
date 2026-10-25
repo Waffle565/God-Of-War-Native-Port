@@ -1,5 +1,21 @@
 # Native rendering instead of the recreated VU1: study and migration plan (2026-10-24)
 
+## Handoff (2026-10-25 afternoon, nat-vu1s stopped here: ext agent/natvu1 head 86177ca, packages update_nv7a-f, update_nv7foff)
+Details in "Progress: hashes by content, fused loop calls, set-up groups on locals in fast form (nat-vu1s)" (end of this
+file); bench rows in docs/benchmark.md "nat-vu1s".
+- **Every family now wins on the console** (update_nv7f, same package, default clocks, us per run nat `nv7f1` vs rec
+  `nv7fm`): 3d0d 3.12 vs 4.33, 7ab 3.98 vs 6.36, lit 93fe **6.99 vs 7.68**, skin 39f3 **12.43 vs 13.60**, skin28 6df5
+  **27.63 vs 28.48**, misc 35.33 vs 45.28. VU1 thread 3270-3294 vs 4005-4055 ms per 5 s; fps 43.8 vs 43.0 (GPU-bound).
+- **`PS2X_VU1_ORACLE=OFF` package update_nv7foff** built and benched (`nv7foffo`): same per-run times, 0 `[vu1nat-skip]`,
+  43.8-44.0 fps, VU1 thread 3306-3352; main 28.3 MB. **Not installed.**
+- **Console default** (user decision, 2026-10-25): update_nv5k + `GOW_GS_HW_FAILGT=1` via env.txt, restored after every
+  run by `tools/switch_default.sh`; ext agent/natvu1 has FAILGT on by default for Switch builds from aa491fe on (not in
+  the nv7 packages: switch_build.sh syncs only the VU sources). Game speed checked in normal play (`NOBENCH=1`): 1.011.
+- **Changes** (all natcheck-identical to adcb308 on the 40 recordings, x86 + a64, plain + FORCE_DECLINE): hashes memoised
+  by content (fnv was ~17 s of the VU1 thread), set-up FMAC groups on locals and in the loops' fast form, the prime +
+  main loop calls of a tag fused (lit / skin / skin28), just-loaded rows from registers, MINI as FMIN.
+- **Next**: installing a native default (nv7f with mask 0x3F or the OFF package) is the user's / coordinator's call.
+
 ## Handoff (2026-10-25 morning, nat-vu1r stopped here: ext agent/natvu1 head adcb308, package update_nv6a)
 Details in "Progress: the divide fast path, non-aliasing MAC / undo stores (nat-vu1r)" (end of this file); bench rows in
 docs/benchmark.md "nat-vu1r".
@@ -1692,3 +1708,47 @@ is not modelled anywhere.
   register file lives in VU1State across the out-of-line calls). skinLoop 4.2 % of the thread: qnorm / qfinish gone,
   rcpv's FDIV ~7 % of the loop, the rest NEON FMAC + FastOps tracking. For skin the remaining lever is its set-up in runLit
   (per-run register traffic through VU1State), not the loop.
+
+### Progress: hashes by content, fused loop calls, set-up groups on locals in fast form (2026-10-25, nat-vu1s, ext agent/natvu1 86177ca)
+- **Hashes memoised by content** (aa491fe; nrun::RangeMemo / KindMemo, ps2_vu1_nat_run.inl): the micro memory changes
+  generation several hundred times a second on the console (modules uploaded into the slots; more distinct images
+  than canonicalGen's four), and every generation miss re-ran byte-wise FNV: nlit::fixedHash (~4.5 KB, inside a native
+  run's time, runNativeBody), npart::codeHash (~5.6 KB), coveredHash / clipHash, the entry kinds (kindOf) and nmisc::loop's
+  loop kinds. nv6ap profile: `vu1nat::fnv` ~17 s of the GSWorker samples (`tools/vu1_nat/inl.sh` gives each hot address
+  its inline chain). Now a miss compares the hashed ranges (or a 504-byte window around an entry / loop address) with
+  the last contents seen and hashes only a new content (equal bytes, equal hash). The x86 harness (codeGen 0: hashed on
+  every call) went 465 -> 64 ms on the 8 nrs recordings; console VU1 thread -4 %.
+- **Set-up FMAC groups on locals** (ac83f22, 5283c39): secondMatrix, lightRows3 (vf16-18 / 24-26), scaleRows4 (vf20-23
+  / 12-15) read their operands once, keep ACC in a register and write results, ACC and the last FMAC's MAC state once
+  (the per-op form stored ACC and every result to VU1State and reloaded them: a store-to-load chain per FMAC). The row
+  helpers are always_inline (GCC kept plain lambdas out of line in runLit: nv7bs showed them as functions).
+- **Prime + main loop call fused** (5283c39 skin, 0ef6a68 lit / skin28; `nlit::skinLoopT / litLoopT / skin28LoopT<true>`
+  from runLit's 0x1218 / 0x13f8 through `loopSkinPair`): between the two calls of a tag only vi3 = vi11 and vi5 =
+  vi9 & 0x7fff change, so one call runs both halves; the second starts from the registers as the first call's exit and
+  the second call's entry leave them (the entry normalisations again, ACC raw, the overflow tracking restarted from h0
+  and ACC). The undo logging of both calls comes first (a log taken before the prime pass's stores still holds the run's
+  start values; a restore ends with the oldest entry of each qword). Skin runs have ~6.5 tags and 13 loop calls each
+  (pcwalk trace: 276 runs, 3588 calls, 16558 vertices), so this halves the register-file round trips. Console: skin
+  15.27 -> 13.78 (nv7c), lit 7.42 -> 7.08 (nv7d; `GOW_VU1NAT_PAIR=6`, lit unfused: 7.30). `GOW_VU1NAT_PAIR=<mask>` (bit 0
+  lit, 1 skin, 2 skin28, default 7) for A/B.
+- **Just-loaded rows from registers** (6f65179): 0x0e30 runs its own copy of the 0x0e60 header case on the matrix rows it
+  loaded (erlengV / secondMatrix(rows)); 0x0f20 hands vf4-6 and 0x1030 vf3 / vf6 / vf2 to the groups. The loops' MINI
+  against their positive constant (litLoop p17, skinLoop q21, skin28Loop p21) is one FMIN on aarch64 (`x::minPosC`:
+  minps(a, c) = FMIN(a, c) for a positive finite c and a not NaN, which a FastOps pass that passes its test guarantees).
+- **Set-up groups in the loops' fast form** (86177ca): plain MUL / ADD / SUB with every result tracked (x::FastOps, now
+  with msub and always_inline), one UMAXV test per group, the exact form (vu1n::maddc per FMAC: two BIC, UMAX, UMAXV, a
+  GPR move and a branch each) only when a result exceeds 2^126. Same argument as the loops (operands normalised, every
+  addend a tracked result of the group, RZ). Skin 13.62 -> 12.43, lit 7.21 -> 6.99, skin28 27.79 -> 27.63 (nv7e1 ->
+  nv7f1).
+- **Checked**: every step natcheck-identical to the base nvr2 (adcb308) on all 40 recordings, x86 and a64 (qemu), plain
+  and `GOW_VU1NAT_FORCE_DECLINE=1` (`tools/vu1_nat/cmp.sh`, `dif.sh <base> <new>`); no skin pass redone exactly in
+  pcwalk / pcfight / pcolymp (trace build).
+- **Console** (docs/benchmark.md "nat-vu1s"): update_nv7f `=1` vs `=m`: every family native wins (3d0d 3.12 / 4.33, 7ab
+  3.98 / 6.36, lit 6.99 / 7.68, skin 12.43 / 13.60, skin28 27.63 / 28.48, misc 35.33 / 45.28 us per run), VU1 thread
+  3270-3294 vs 4005-4055 ms per 5 s (-18 %), fps 43.8 vs 43.0 (GPU-bound at default clocks).
+- **`PS2X_VU1_ORACLE=OFF` package** update_nv7foff (the nv7f sources; /root/src-nv2's CMakeLists.txt synced from the
+  worktree for the option, the old one kept as CMakeLists.txt.pre_nvs; the build folder reconfigured back to ON after):
+  main 28.3 MB instead of 43 MB. Bench in docs/benchmark.md. Not installed (the console default stays update_nv5k +
+  FAILGT, the user's decision).
+- **Next**: the console default (an ORACLE=OFF or a mask-0x3F package) is the user's / coordinator's call; skin28's
+  margin is the smallest (-3 %); runLit's first-tag path (0x0480-0x0760) still runs per op through VU1State.

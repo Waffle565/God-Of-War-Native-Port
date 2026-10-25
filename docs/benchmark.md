@@ -207,3 +207,28 @@ Console default from 2026-10-25 (user decision, nat-vu1s): update_nv5k + `GOW_GS
 `tools/switch_default.sh`). Bench `nv5kdg` (`BENCH_GAME_S` 150, `GOW_PERF_DIAG=1`, `GOW_DK_GPU_TIME=1`, default
 clocks; bench_report scenes): 0-30 46.8, 30-60 47.1, 60-90 45.8, 90-120 46.4, 120-150 47.2, 150-180 47.5 fps; vu1
 3754-3833 ms per 5 s, gpu 4874-4905 (nv5lg, nv5l + FAILGT: 46.0 / 47.6 / 46.0 / 47.2 / 47.2 / 47.3).
+
+nat-vu1s (ext agent/natvu1 aa491fe .. 86177ca, docs/native-render-study.md; same settings as nat-vu1r: `GOW_PERF_DIAG=1`,
+`GOW_DK_GPU_TIME=1`, default clocks, default script length; fps per bench_report scene, `vu1` = VU1 thread busy ms per
+5 s at 90-120 / 210-240, us per run run-weighted (`famavg.py`)):
+
+| run | package / env | 0-30 | 30-60 | 90-120 | 210-240 | vu1 | 3d0d / 7ab / 93fe / 39f3 / 6df5 / misc us |
+|---|---|---|---|---|---|---|---|
+| `nv7a1` | update_nv7a (hashes by content) `=1` | 44.9 | 42.2 | 43.0 | 43.6 | 3375-3407 | 3.12 / 3.95 / 7.35 / 15.56 / 29.23 / 35.52 |
+| `nv7am` | update_nv7a `=m` | 42.4 | 43.2 | 43.2 | 42.8 | 3872-3925 | 4.21 / 6.01 / 7.53 / 13.39 / 28.64 / 43.96 (rec) |
+| `nv7b1` | update_nv7b (+ set-up groups on locals) `=1` | | | | | | 3.15 / 3.98 / 7.42 / 15.27 / 28.87 / 35.33 |
+| `nv7bm` | update_nv7b `=m` | | | | | | 4.08 / 6.05 / 7.47 / 13.39 / 28.91 / 43.32 (rec) |
+| `nv7c1` | update_nv7c (+ skin prime + main fused, helpers inline) `=1` | 44.9 | 42.2 | 43.7 | 42.9 | 3348-3358 | 3.32 / 4.09 / 7.40 / 13.78 / 28.89 / 35.46 |
+| `nv7cm` | update_nv7c `=m` | 42.7 | 42.8 | 43.1 | 43.3 | 3833-3888 | 4.20 / 6.10 / 7.40 / 13.31 / 28.92 / 42.97 (rec) |
+| `nv7d1` | update_nv7d (+ lit / skin28 fused) `=1` | 44.8 | 42.3 | 43.0 | 43.7 | | 3.21 / 3.98 / 7.08 / 13.66 / 28.25 / 35.54 |
+| `nv7dm` | update_nv7d `=m` | 42.7 | 42.8 | 43.1 | 43.1 | | 4.04 / 6.06 / 7.36 / 13.31 / 28.59 / 44.82 (rec) |
+| `nv7d6` | update_nv7d `=1` + `GOW_VU1NAT_PAIR=6` (lit unfused) | 44.9 | 42.3 | 42.9 | 43.6 | | 3.28 / 4.04 / 7.30 / 13.70 / 28.36 / 35.66 |
+| `nv7e1` | update_nv7e (+ just-loaded rows, MINI as FMIN) `=1` | 44.9 | 42.2 | 43.8 | 44.2 | 3322-3343 | 3.16 / 3.96 / 7.21 / 13.62 / 27.79 / 35.35 |
+| **`nv7f1`** | **update_nv7f (+ set-up groups in fast form) `=1`** | 45.0 | 42.2 | 43.8 | 43.9 | 3270-3294 | **3.12 / 3.98 / 6.99 / 12.43 / 27.63 / 35.33** |
+| `nv7fm` | update_nv7f `=m` | 42.2 | 43.3 | 43.0 | 42.9 | 4005-4055 | 4.33 / 6.36 / 7.68 / 13.60 / 28.48 / 45.28 (rec) |
+| **`nv7foffo`** | **update_nv7foff (nv7f, `PS2X_VU1_ORACLE=OFF`)** | 44.8 | 42.4 | 43.8 | 44.0 | 3306-3352 | 3.20 / 4.03 / 6.98 / 12.43 / 27.66 / 35.58 |
+
+Profiles (`GOW_PC_SAMPLE=1000`, `GOW_VU1_NATIVE_FAMS=8`: only skin native): `nv7as` (nv7a, skin 16.06), `nv7bs` (nv7b,
+15.77), `nv7es` (nv7e, 13.93). **Every family's native run beats the recompiled one from nv7f on** (lit -9 %, skin -9 %,
+skin28 -3 %, misc -22 %, 3d0d -28 %, 7ab -37 %); the ORACLE=OFF package has no skipped run (0 `[vu1nat-skip]`) and the
+same times. Rec times vary ~±2 % between packages (7.36-7.68 lit, 13.31-13.60 skin): nat vs rec always in one package.
