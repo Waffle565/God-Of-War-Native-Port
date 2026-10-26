@@ -9,7 +9,7 @@ screen) are a body plus a text label.
 This tool rewrites a WAD so the face buttons show the Switch letters (Cross = A, Circle = B, Square = X,
 Triangle = Y, the layout of docs/switch.md "Controls") and the shoulder labels read L, R, ZL, ZR (stick clicks LS, RS):
 - four 64x64 letter textures (drawn here: round strokes, white with a dark outline, no outside artwork) are added as
-  GFX_/PAL_/TXR_PAD_<letter> chunks right before the Flash chunk's mesh group;
+  GFX_/TXR_PAD_<letter> chunks plus one shared PAL_PAD right before the Flash chunk's mesh group;
 - each symbol's mesh reference (FLP array 2) gets a full-UV quad part of the same mesh (a centred +-960 quad, the
   QTE coin's) and the letter texture as its material;
 - every key frame that draws a symbol gets a new transformation (appended to the FLP's table): its old one times
@@ -35,6 +35,7 @@ import gow_text  # noqa: E402
 
 LETTER = {'XButton': 'A', 'CircleButton': 'B', 'SquareButton': 'X', 'TriangleButton': 'Y'}
 LABELS = [('L1', 'L'), ('R1', 'R'), ('L2', 'ZL'), ('R2', 'ZR'), ('L3', 'LS'), ('R3', 'RS')]
+FLP_GROWTH_MAX = 608  # bytes the FLP may grow: the Italian FLP_HUD loads at +608, breaks the game at +640 (docs/settings.md)
 SIZE = 64          # texture size (the Switch renders the HUD at the PS2 resolution, a button is ~54 pixels)
 GLYPH = 0.58       # letter box / texture (the PS2 symbol covers ~60 % of the disc, ~56 % of the coin)
 STROKE = 0.18      # stroke width / letter box
@@ -100,8 +101,8 @@ def palette():
     return pal
 
 
-def letter_indices(ch):
-    return bytes(min(e, 15) * 16 + min(f, e) for f, e in letter_pixels(ch))
+def letter_indices(ch, size=SIZE):
+    return bytes(min(e, 15) * 16 + min(f, e) for f, e in letter_pixels(ch, size))
 
 
 def png(path, w, h, rgba):
@@ -129,20 +130,25 @@ def chunk(tag, name, body):
     return head + body + b'\0' * (-len(body) % 16)
 
 
-def texture_chunks(ch, gfx_format, txr_tail):
-    name = f'PAD_{ch}'
-    idx = letter_indices(ch)
-    if gfx_format == 0:
-        idx = swizzle8(idx, SIZE, SIZE)
-    gfx = struct.pack('<6I', 12, SIZE, SIZE, gfx_format, 8, 1) + idx
+def palette_chunk():
+    """PAL_PAD: the one palette all four letters share (each letter used to carry its own copy: 3 KB more, and the
+    Italian / French / Spanish R_PERM then outgrew the game's load buffer, docs/settings.md "Button icons")"""
     pal = palette()
     stored = [None] * 256
     for i in range(256):  # CSM1: entries 8-15 and 16-23 of every 32 swap places
         stored[(i & 0xE7) | ((i & 8) << 1) | ((i & 16) >> 1)] = pal[i]
-    palb = struct.pack('<6I', 12, 16, 16, 0, 32, 1) + b''.join(bytes(c) for c in stored)
-    txr = struct.pack('<I', 7) + f'GFX_{name}'.encode().ljust(24, b'\0') + f'PAL_{name}'.encode().ljust(24, b'\0')
+    return chunk(0x3001e, 'PAL_PAD', struct.pack('<6I', 12, 16, 16, 0, 32, 1) + b''.join(bytes(c) for c in stored))
+
+
+def texture_chunks(ch, gfx_format, txr_tail, size=SIZE):
+    name = f'PAD_{ch}'
+    idx = letter_indices(ch, size)
+    if gfx_format == 0:
+        idx = swizzle8(idx, size, size)
+    gfx = struct.pack('<6I', 12, size, size, gfx_format, 8, 1) + idx
+    txr = struct.pack('<I', 7) + f'GFX_{name}'.encode().ljust(24, b'\0') + b'PAL_PAD'.ljust(24, b'\0')
     txr += txr_tail
-    return (chunk(0x3001e, f'GFX_{name}', gfx) + chunk(0x3001e, f'PAL_{name}', palb) + chunk(0x1e, f'TXR_{name}', txr))
+    return chunk(0x3001e, f'GFX_{name}', gfx) + chunk(0x1e, f'TXR_{name}', txr)
 
 
 # ---- mesh -------------------------------------------------------------------------------------------------------
@@ -386,8 +392,14 @@ def patch_flp(data, mesh):
         r, mats = f.meshrefs[i]
         struct.pack_into('<h', out, r, qpart)
         struct.pack_into('<II', out, mats[0], 0xffffffff, names[ch])
+    # every transformation is stored once: a new one that equals an entry of the table (or another new one) reuses
+    # it. The FLP must grow as little as possible: the Italian FLP_HUD broke the game (null jump at 0x23a9ac on the
+    # legal screen) once it grew by 640 bytes (30 new entries + names), 600 still loaded (docs/settings.md)
     new = []
     index = {}
+    by_value = {}
+    for i in range(f.ntrans):
+        by_value.setdefault(d[f.trans + 0x14 * i:f.trans + 0x14 * (i + 1)], i)
     drawn = 0
     for k in f.keyframes():
         t = f.target(k)
@@ -395,8 +407,11 @@ def patch_flp(data, mesh):
             continue
         key = (U16(d, k + 4), t[1])
         if key not in index:
-            index[key] = f.ntrans + len(new)
-            new.append(pack_transform(compose(f.transform(key[0]), symbols[t[1]][1])))
+            packed = pack_transform(compose(f.transform(key[0]), symbols[t[1]][1]))
+            if packed not in by_value:
+                by_value[packed] = f.ntrans + len(new)
+                new.append(packed)
+            index[key] = by_value[packed]
         struct.pack_into('<H', out, k + 4, index[key])
         drawn += 1
     if f.ntrans + len(new) > 0xffff:
@@ -430,11 +445,13 @@ def apply(wad, verbose=False):
     ref = next(c for c in chunks if c[1] == 0x1e and c[3].startswith('TXR_') and c[2] == 88
                and U32(wad, c[0] + 32) == 7 and U32(wad, c[0] + 32 + 4 + 24 + 24 + 24) & 0xff == 0x81)
     tail = wad[ref[0] + 32 + 52:ref[0] + 32 + 88]  # the LOD fields of a 64x64 texture
-    textures = b''.join(texture_chunks(ch, gfx_format, tail) for ch in letters)
+    textures = palette_chunk() + b''.join(texture_chunks(ch, gfx_format, tail) for ch in letters)
     gpos = chunks[gi][0]
     flp_chunk = chunk(ftag, fname, body)
     end = fpos + 32 + ((fsize + 15) & ~15)
     out = wad[:gpos] + textures + wad[gpos:fpos] + flp_chunk + wad[end:]
+    if len(flp_chunk) - (32 + ((fsize + 15) & ~15)) > FLP_GROWTH_MAX:
+        raise ValueError(f'{fname} would grow by {len(flp_chunk) - 32 - ((fsize + 15) & ~15)} bytes (> {FLP_GROWTH_MAX})')
     if verbose:
         print(f'{fname}: labels {dict(done)}, {report}, textures {letters}, {len(wad)} -> {len(out)} bytes')
     return out

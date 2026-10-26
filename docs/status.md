@@ -1032,3 +1032,11 @@ Run: `python -I tools/zones.py --slots 1,2,3,4` (scale: `PS2X_GS_HW_SCALE`); sav
   FRAMES change runs normally there). it_it_nx (the user's language): hang on the legal screen, null JALR at 0x23a9ac
   after text_it_nx.bin (docs/settings.md "Button icons"). Default restored: update_swfix3 + FAILGT, exefs md5
   2927479c checked. lang_pack.py `_nx` only with `--nx` (PC output unchanged, PC keeps PlayStation icons).
+- 2026-10-26 (sw-lag, on the console): **console default is now update_icons1 + FAILGT** (exefs md5 4199caa6;
+  = swfix3 sources + `GOW_DK_FRAMES=3` + the Switch `_nx` language overlays with A/B/X/Y icons). Steps: update_sws5
+  installed first (the seconds of input lag: GS thread ~170 frames ahead of the GPU, docs/performance.md); measured
+  with tools/switch_lag/ (bot press + timed pixelPeek, docs/performance.md "Input lag"): the upgrade menu reacts in
+  the first screenshot taken 33 ms after the press. Italian with icons no longer hangs on the legal screen (cause: the
+  FLP_HUD grew too much, tools/gow_pad_icons.py now reuses equal transformations, docs/settings.md "Button icons");
+  console run lag_icons3: Italian title "A = Seleziona", power-up menu A/Y and L/R, gameplay, fps = sws5 (51.7 vs
+  52.0 over the same 150 s path). The 60 `_nx` files on sdmc:/switch/gow/lang are the regenerated ones.

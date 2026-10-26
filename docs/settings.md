@@ -145,7 +145,7 @@ Text format (FLP_HUD in R_PERM.WAD, FLP_Shell in R_SHELL.WAD; `python -I tools/g
   is streamed).
 - `tools/savetest.py --elf <disc>/SCUS_973.99` runs on another disc folder (used for test discs).
 
-## Button icons (tools/gow_pad_icons.py, 2026-10-26, sw-icons; WIP)
+## Button icons (tools/gow_pad_icons.py, 2026-10-26, sw-icons, sw-lag)
 Where the PS2 symbols live: the button prompts are Flash sprites in FLP_HUD (R_PERM.WAD) and FLP_Shell (R_SHELL.WAD):
 XButton, CircleButton, SquareButton, TriangleButton, their *Greek variants (the QTE coin above enemies), XButtonPress,
 L1/L2/R1/R2Button, Start/SelectButton, Joystick, Dpad. The message table writes them as `[XButton]` tags, and the
@@ -177,12 +177,22 @@ files only with `--nx` (the PC folder run has no `--nx`, its output is unchanged
 package `update_icons1`, ELF /root/elf_icons1.elf): pickLanguage() tries `lang/<t>_<v>_nx.layout` first unless
 env.txt `GOW_PAD_ICONS=ps`; the same package carries sw-stall's `GOW_DK_FRAMES` (default 3) from gs_dk.cpp. The 60
 `_nx` files (`lang_pack.py disc-usa disc --nx --out port/switch/nsp/out/lang_nx`) are on sdmc:/switch/gow/lang.
-Console result: **en_en_nx runs** (title reached, 59-60 fps on the title), **it_it_nx hangs on the legal screen**:
-right after `text_it_nx.bin` is read, `[guest-branch:missing-target] JALR target=0 source=0x23a9ac` (log
-port/switch/logs/run_icons1/log.txt). So the European R_PERM with icons breaks the game; the USA one does not. Seen
-difference: gow_pad_icons finds two more symbols in the Italian HUD (meshrefs 139 Y, 140 A, by colour only) and the
-quad part is 142 (en 93). Default stays update_swfix3. Next: reproduce on PC with it_it_nx, bisect the symbols
-(colour-only ones first), then retry the console.
+Console result (sw-icons2): en_en_nx ran, **it_it_nx hung on the legal screen** right after `text_it_nx.bin` was read
+(`[guest-branch:missing-target] JALR target=0 source=0x23a9ac`, port/switch/logs/run_icons1/log.txt; same on the PC).
+**Cause and fix (sw-lag, 2026-10-26)**: the size of the Italian FLP_HUD. Bisected on the PC (dist runner, it_it_nx,
+hidden window): leaving out any two or more of the 30 new transformations loads, dropping the meshref/material patch
+of the two extra Italian symbols (meshrefs 139/140, real buttons: Status5, XPowerUp, XButton, TriangleButton) does not
+help, padding the string table by 200 bytes with 25 transformations hangs again; total R_PERM size is not it (a 32x32
+variant 15 KB smaller still crashed). So the game breaks once the Italian FLP_HUD grows by 640 bytes (30 x 0x14 +
+the 4 texture names); +608 still loads (English takes +640; the slack is per language, the reason was not found).
+gow_pad_icons.py now stores each transformation once (a new one equal to an existing entry or to another new one
+reuses its index: 24-25 new instead of 30, growth ~520 bytes) and refuses an FLP growth over `FLP_GROWTH_MAX` = 608;
+the four letters also share one palette `PAL_PAD` (3 KB less). PC check: it, fr, es, de reach gameplay; Italian
+title "A = Seleziona", "Premi A per fondere", "A = Continua", "A = Potenz.", "Y = Indietro", L/R
+(port/switch/shots/pad_icons/pc_it_title_popup_menu.jpg). Console (run port/switch/logs/lag_icons3, update_icons1):
+same screens in Italian, gameplay, fps as update_sws5. **update_icons1 is the console default** (it carries
+`GOW_DK_FRAMES=3`); the regenerated 60 `_nx` files are on sdmc:/switch/gow/lang (they are not in the NSP's RomFS yet).
+Not seen yet: a QTE coin prompt on the console. Refresh dist/data/lang only with make_pc_folder.ps1 (no `--nx`).
 
 ## In-game settings panel
 

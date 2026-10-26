@@ -1,5 +1,9 @@
 # Performance (USA build on the KIexster stack)
 
+> **sw-lag (2026-10-26)**: `GOW_DK_FRAMES=3` is now on the console: default update_icons1 (= update_sws5 + Switch
+> button icons, docs/status.md). Input lag measured below ("Input lag"); the sw-stall handoff that follows still holds
+> for the open fps work (GOW_DK_FRAMES=5/8, GPU draw cost).
+
 > **Handoff sw-stall (2026-10-26 ~00:30, stopped: user out of tokens).** Ship-fight stalls found and fixed in
 > update_sws5 (ext agent/swstall 7519883 on agent/natspd; = the swfix3 default sources + `GOW_DK_FRAMES` default 3):
 > the GS thread ran ~170 frames ahead of the GPU and stalled 70-230 ms whenever deko3d's queue ring filled ("The
@@ -274,6 +278,20 @@ Gains per lever above are estimates from the Gemini review (gemini-work/results/
   Fixed-step bench (`BENCH_GAME_S=150`, same session): `sws2b0` (no limit) 47.5 / 47.3 / 46.4 / 47.7 / 47.8,
   `sws2bf2` 44.7 / 47.0 / 47.5 / 48.6, `sws2bf3` 44.8 / 46.8 / 47.5 / 48.5 (the bench's 0-30 scene loses ~3 fps with a
   limit, the fight scenes gain up to 1).
+
+## Input lag (sw-lag, 2026-10-26, tools/switch_lag/)
+- Tool: `tools/switch_lag/lag_run.sh <name> [extra env]` (UPDATE=<pkg>): default env + SKIP_FMV + god mode, the bot
+  starts a new game (bench menu path), then `lag_probe.py`: per trial a reference pixelPeek, `press <button>`, wait
+  d ms, pixelPeek, release. pixelPeek takes 90-200 ms and seems to capture at its start (the d=0 and d=33 shots,
+  whose windows overlap, differ), so the reaction time is bounded by d. Ends with the console default.
+- Result update_sws5 / update_icons1 (`GOW_DK_FRAMES=3`, runs port/switch/logs/lag_sws5c, lag_icons3): in the
+  upgrade menu (START in gameplay) D-pad down/up shows the new item already in the shot taken 33 ms after the press
+  (cross-fade under way), not in the d=0 shot: the game reacts within ~2-4 frames, as on the PS2. The jump probe in
+  the fight is not readable (enemies move between the shots). Before (swfix3, no limit): ~170 frames (~3.5 s)
+  queued on the GPU (sw-stall measurement above), i.e. seconds.
+- Queues left between the pad and the picture: the EE frame itself, the GS stage ring (4 MB, ~2 frames of GIF data
+  when full), the GS frontend queue (8 x 64 KB chunks, under one frame), at most 3 presented frames on the GPU.
+  `GOW_DK_FRAMES=2` would take one frame (~20 ms) off; the fight bench is the same with 2 or 3 (sw-stall), not changed.
 
 ## Presentation without readback (zero-copy, branch agent/present in ext/PS2Recomp-kl-present)
 - **Before**: GSHwBackend::Present composed the CRTC circuits into presentTex, then glReadPixels into
