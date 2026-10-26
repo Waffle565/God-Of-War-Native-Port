@@ -195,8 +195,9 @@ def judge_movies(text, item, r, sizes):
         row['pictures'] = frames
         pps = (sync[-1][0] - sync[0][0]) / max(0.001, (sync[-1][1] - sync[0][1]) / 1000)
         row['pps'] = round(pps, 1)
-        if exp and frames < 0.8 * exp - 60:
-            row['fail'].append(f'cut short: {frames} of ~{exp:.0f} pictures')
+        # played to the end: the decoder saw the sequence end code after the stream was read to its size
+        if not re.search(r'\[MPEG:wait\].*?ended=1.*?seqEnd=1', seg):
+            row['fail'].append(f'did not end (no sequence end, {frames} of ~{exp:.0f} pictures)')
         if pps < 28:
             row['slow'].append(f'{pps:.1f} pictures/s')
     r['movies'] = rows
@@ -248,8 +249,9 @@ def run_item(item, outdir, args, sizes):
         sh(f'sw_home_close "{sd}"', timeout=200)
         return r
     t0 = time.time()
-    live = os.path.join(d, 'log_live.txt')
-    last_md5, same, last_pull, last_len, stall_since, k = None, 0, 0, -1, None, 0
+    # the log cannot be read while the game runs (sys-ftpd gets no access to a file open for writing): runs end by
+    # time budget, hangs are judged from the pulled log
+    last_md5, same, last_pull, k = None, 0, time.time(), 0
     gone = False
     while time.time() - t0 < budget:
         time.sleep(max(0, args.shot_every - (time.time() - t0) % args.shot_every))
@@ -259,32 +261,22 @@ def run_item(item, outdir, args, sizes):
             h = hashlib.md5(open(shot, 'rb').read()).hexdigest()
             same = same + 1 if h == last_md5 else 0
             last_md5 = h
-            if same == 2 and time.time() - t0 > 45:
+            el = time.time() - t0
+            # not for movies: the title menu between and after them shows still pictures; the decoder lines judge them
+            if same == 2 and el > 45 and item['kind'] != 'movies':
                 r['fail'].append(f'frozen screen at {int(time.time() - t0)} s (3 identical screenshots)')
         title = bot('title')
         if title is not None and title.upper() != GAME_TID:
             gone = True
             r['fail'].append(f'game gone at {int(time.time() - t0)} s (title "{title}")')
             break
-        if time.time() - last_pull >= 30:
+        if time.time() - last_pull >= 120:
+            # keep the console awake: Auto-Sleep counts only HID input (the runner's pad script is not), and the game
+            # does not report media playback; a right-stick nudge below the roll threshold resets the idle timer
             last_pull = time.time()
-            if ftp('get', 'switch/gow/log.txt', live, timeout=120)[0] == 0:
-                text = open(live, encoding='utf-8', errors='replace').read()
-                if len(text) == last_len:
-                    stall_since = stall_since or time.time()
-                    if time.time() - stall_since > 75:
-                        r['fail'].append(f'hang: log stopped growing at {int(stall_since - t0)} s')
-                        break
-                else:
-                    stall_since = None
-                last_len = len(text)
-                if item['kind'] != 'movies' and '[gow-warp] done' in text:
-                    break
-                if item['kind'] == 'movies':
-                    n = text.count('[gow-fmv] override ')
-                    last = text.rfind('[gow-fmv] override ')
-                    if n >= len(item['list']) and re.search(r'menu sees movie state \d+ -> 0', text[last:]):
-                        break
+            bot('cmd', 'setStick', 'RIGHT', '0x600', '0x0')
+            time.sleep(0.3)
+            bot('cmd', 'setStick', 'RIGHT', '0x0', '0x0')
     r['run_s'] = int(time.time() - t0)
     if not gone:
         sh(f'sw_home_close "{sd}"', timeout=200)
@@ -295,7 +287,7 @@ def run_item(item, outdir, args, sizes):
     log = os.path.join(d, 'log.txt')
     if ftp('get', 'switch/gow/log.txt', log, timeout=300)[0]:
         r['fail'].append('log not pulled')
-        log = live if os.path.exists(live) else None
+        log = None
     new = [c for c in set(ls_names('atmosphere/crash_reports')) - crash0 if GAME_TID.lower() in c.lower()]
     for c in new:
         ftp('get', 'atmosphere/crash_reports/' + c, os.path.join(d, c))
@@ -369,6 +361,30 @@ def write_report(outdir, results):
     json.dump(results, open(os.path.join(outdir, 'results.json'), 'w'), indent=1)
 
 
+def rejudge(outdir, todo):
+    rj = os.path.join(outdir, 'results.json')
+    byname = {it['name']: it for it in todo}
+    sizes = movies.movie_list()
+    out = []
+    for r in json.load(open(rj)):
+        it = byname.get(r['name'])
+        log = os.path.join(outdir, r['name'], 'log.txt')
+        if it and os.path.exists(log):
+            keep = [f for f in r['fail'] if f.startswith(('CRASH', 'game gone', 'launch', 'black', 'env', 'pad', 'log'))]
+            for f in r['fail']:
+                m = re.match(r'frozen screen at (\d+) s', f)
+                if m and it['kind'] != 'movies':
+                    keep.append(f)
+            r.update({'fail': keep, 'slow': [], 'warn': []})
+            r.pop('movies', None)
+            text = open(log, encoding='utf-8', errors='replace').read()
+            judge_common(text, r)
+            (judge_movies(text, it, r, sizes) if it['kind'] == 'movies' else judge_level(text, it, r))
+        out.append(r)
+    write_report(outdir, out)
+    print('rejudged', len(out), '->', os.path.join(outdir, 'report.md'))
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--movies', action='store_true')
@@ -382,6 +398,7 @@ def main():
     ap.add_argument('--out', default=os.path.join(ROOT, 'port', 'switch', 'sweep'))
     ap.add_argument('--resume', default='')
     ap.add_argument('--dry', action='store_true', help='list the items only')
+    ap.add_argument('--rejudge', default='', help='judge the pulled logs of a run dir again (no console)')
     args = ap.parse_args()
     if not (args.movies or args.levels or args.fights):
         args.movies = args.levels = args.fights = True
@@ -389,6 +406,9 @@ def main():
     if args.dry:
         for it in todo:
             print(it['name'], it.get('list', ''), round(it.get('secs', it.get('stay', 0))))
+        return
+    if args.rejudge:
+        rejudge(args.rejudge, todo)
         return
     outdir = args.resume or os.path.join(args.out, datetime.datetime.now().strftime('%Y%m%d_%H%M'))
     os.makedirs(outdir, exist_ok=True)
