@@ -213,6 +213,13 @@ The PAKs are 4 GB each: the SD card must be exFAT (FAT32 has a 4 GB file limit).
     homebrew). That is a port of `gs_hw_backend.cpp`'s GL calls (render targets, textures, samplers, the draw,
     present, CLUT, shuffle and pack shaders through uam, texture barriers, dual-source blend, compute) to deko3d
     command buffers, with CPU-visible memory replacing the readbacks.
+  - **Image memory** (gs_dk.cpp `imageAlloc`): the process can hold only ~1200 DkMemBlocks (measured with
+    `GOW_DK_MEMBLOCK_TEST=6000`: abort 2359-0001 after 1200-1300 blocks of 64 KiB, so a count limit, not memory).
+    One block per texture crashed the first Hydra fight on the ship (~1220 live textures, dkMemBlockCreate ->
+    RaiseError -> abort from `allocImage` <- `indexTextureFor`). Images up to 8 MiB now share 32 MiB chunks (first
+    fit, aligned to `dkImageLayoutGetAlignment`, freed ranges return to the chunk after the GPU is done, coalesced);
+    bigger ones keep their own block. `GOW_PERF_DIAG=1` logs `[gs-dk-img] chunks= used_kb= dedicated= garbage=`
+    (ship: 2 chunks, ~50 MB, 2220 textures).
   - Tools: `port/switch/nsp/make_update_to.sh <elf> <out dir>` packages any build's ExeFS without touching
     `out/update` (v15's package is kept in `out/update_v15`).
 - Remote testing (2026-10-18), USB cable + home Wi-Fi:

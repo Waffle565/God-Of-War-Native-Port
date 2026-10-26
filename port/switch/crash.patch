@@ -1,0 +1,219 @@
+--- a/ps2xRuntime/src/lib/gs/gpu/gs_dk.cpp	2026-10-26 00:08:14.354843726 +0100
++++ b/ps2xRuntime/src/lib/gs/gpu/gs_dk.cpp	2026-10-26 02:08:30.102403600 +0100
+@@ -24,6 +24,7 @@
+ #include <cstdlib>
+ #include <cstring>
+ #include <deque>
++#include <map>
+ #include <string>
+ #include <unordered_map>
+ #include <vector>
+@@ -71,7 +72,9 @@
+ 
+     struct Texture
+     {
+-        DkMemBlock mem = nullptr;
++        DkMemBlock mem = nullptr; // a dedicated block (big images), or null when the image lives in an image chunk
++        int32_t chunk = -1;       // GOW-Port: index into State::imageChunks, -1 = none / dedicated
++        uint32_t off = 0, len = 0;
+         DkImage image{};
+         DkImageView view{};
+         DkImageFormat format = DkImageFormat_None;
+@@ -145,6 +148,8 @@
+         uint64_t serial;
+         DkMemBlock mem;
+         bool pool = false; // a buffer's storage: kept for reuse (bufferPool) instead of destroyed
++        int32_t chunk = -1; // an image chunk range (mem null): returned to the chunk's free list
++        uint32_t off = 0, len = 0;
+     };
+ 
+     struct State
+@@ -191,6 +196,18 @@
+         std::vector<Vao> vaos{1};
+         std::vector<Fbo> fbos{1};
+         std::deque<Garbage> garbage;
++        // GOW-Port: image memory. One DkMemBlock per texture made the process run out of memory blocks after ~1200
++        // live textures (dkMemBlockCreate -> RaiseError -> abort, the first Hydra fight on the ship): images up to
++        // kImageDedicated share 32 MiB chunks (first fit, free ranges coalesced), bigger ones keep their own block.
++        struct ImageChunk
++        {
++            DkMemBlock mem = nullptr;
++            uint32_t size = 0, used = 0;
++            std::map<uint32_t, uint32_t> free; // offset -> length
++        };
++        std::vector<ImageChunk> imageChunks;
++        uint64_t dedicatedBytes = 0;
++        uint32_t dedicatedCount = 0;
+         std::vector<DkMemBlock> bufferPool;
+         uint64_t poolReuses = 0, poolCreates = 0; // [gs-dk-pool] // retired buffer storage of the same flags, reused by storage()
+ 
+@@ -327,6 +344,68 @@
+         s->tsRead = std::max(s->tsRead, end);
+     }
+ 
++    // ---- image chunks (see State::imageChunks) ----------------------------------------------------------------------
++    static constexpr uint32_t kImageChunk = 32u << 20, kImageDedicated = 8u << 20;
++
++    bool imageAlloc(uint32_t size, uint32_t alignment, int32_t &chunk, uint32_t &off)
++    {
++        alignment = std::max(alignment, 256u);
++        for (size_t c = 0; c <= s->imageChunks.size(); ++c)
++        {
++            if (c == s->imageChunks.size())
++            {
++                State::ImageChunk n;
++                n.mem = makeMem(kImageChunk, DkMemBlockFlags_GpuCached | DkMemBlockFlags_Image);
++                if (!n.mem)
++                    return false;
++                n.size = kImageChunk;
++                n.free[0] = kImageChunk;
++                s->imageChunks.push_back(std::move(n));
++            }
++            State::ImageChunk &ch = s->imageChunks[c];
++            if (ch.size - ch.used < size)
++                continue;
++            for (auto it = ch.free.begin(); it != ch.free.end(); ++it)
++            {
++                const uint32_t lo = it->first, hi = it->first + it->second, at = align(lo, alignment);
++                if (at > hi || hi - at < size)
++                    continue;
++                ch.free.erase(it);
++                if (at > lo)
++                    ch.free[lo] = at - lo;
++                if (at + size < hi)
++                    ch.free[at + size] = hi - (at + size);
++                ch.used += size;
++                chunk = static_cast<int32_t>(c);
++                off = at;
++                return true;
++            }
++        }
++        return false;
++    }
++
++    void imageFree(int32_t chunk, uint32_t off, uint32_t len)
++    {
++        State::ImageChunk &ch = s->imageChunks[static_cast<size_t>(chunk)];
++        ch.used -= len;
++        auto it = ch.free.emplace(off, len).first;
++        auto next = std::next(it);
++        if (next != ch.free.end() && it->first + it->second == next->first)
++        {
++            it->second += next->second;
++            ch.free.erase(next);
++        }
++        if (it != ch.free.begin())
++        {
++            auto prev = std::prev(it);
++            if (prev->first + prev->second == it->first)
++            {
++                prev->second += it->second;
++                ch.free.erase(it);
++            }
++        }
++    }
++
+     // ---- submission and completion -------------------------------------------------------------------------------
+     void retire()
+     {
+@@ -340,7 +419,9 @@
+         while (!s->garbage.empty() && s->garbage.front().serial <= s->doneSerial)
+         {
+             const Garbage &g = s->garbage.front();
+-            if (g.pool && s->bufferPool.size() < 4u)
++            if (g.chunk >= 0)
++                imageFree(g.chunk, g.off, g.len);
++            else if (g.pool && s->bufferPool.size() < 4u)
+                 s->bufferPool.push_back(g.mem);
+             else
+                 dkMemBlockDestroy(g.mem);
+@@ -525,8 +606,16 @@
+     void releaseImage(Texture &t)
+     {
+         if (t.mem)
++        {
+             s->garbage.push_back({s->nextSerial, t.mem}); // freed after the open list (which may use it) finishes
++            s->dedicatedBytes -= dkMemBlockGetSize(t.mem);
++            --s->dedicatedCount;
++        }
++        else if (t.chunk >= 0)
++            s->garbage.push_back({s->nextSerial, nullptr, false, t.chunk, t.off, t.len});
+         t.mem = nullptr;
++        t.chunk = -1;
++        t.off = t.len = 0;
+         t.valid = false;
+     }
+ 
+@@ -561,13 +650,24 @@
+         maker.dimensions[1] = std::max(h, 1u);
+         DkImageLayout layout;
+         dkImageLayoutInitialize(&layout, &maker);
+-        t.mem = makeMem(static_cast<uint32_t>(dkImageLayoutGetSize(&layout)), DkMemBlockFlags_GpuCached | DkMemBlockFlags_Image);
+-        if (!t.mem)
++        const uint32_t size = align(static_cast<uint32_t>(dkImageLayoutGetSize(&layout)), 256u);
++        if (size <= kImageDedicated && imageAlloc(size, dkImageLayoutGetAlignment(&layout), t.chunk, t.off))
+         {
+-            fail("image memory allocation failed");
+-            return;
++            t.len = size;
++            dkImageInitialize(&t.image, &layout, s->imageChunks[static_cast<size_t>(t.chunk)].mem, t.off);
++        }
++        else
++        {
++            t.mem = makeMem(size, DkMemBlockFlags_GpuCached | DkMemBlockFlags_Image);
++            if (!t.mem)
++            {
++                fail("image memory allocation failed");
++                return;
++            }
++            s->dedicatedBytes += dkMemBlockGetSize(t.mem);
++            ++s->dedicatedCount;
++            dkImageInitialize(&t.image, &layout, t.mem, 0);
+         }
+-        dkImageInitialize(&t.image, &layout, t.mem, 0);
+         dkImageViewDefaults(&t.view, &t.image);
+         t.format = f.dk;
+         t.width = std::max(w, 1u);
+@@ -921,6 +1021,14 @@
+                      s->presentSubmitNanos * 1e-6, s->submitNanos * 1e-6, (unsigned long long)s->poolCreates,
+                      (unsigned long long)s->poolReuses);
+         s->poolCreates = s->poolReuses = 0;
++        {
++            uint64_t used = 0;
++            for (const auto &c : s->imageChunks)
++                used += c.used;
++            std::fprintf(stderr, "[gs-dk-img] chunks=%zu chunk_mb=%zu used_kb=%llu dedicated=%u dedicated_kb=%llu garbage=%zu\n",
++                         s->imageChunks.size(), s->imageChunks.size() * (kImageChunk >> 20), (unsigned long long)(used >> 10),
++                         s->dedicatedCount, (unsigned long long)(s->dedicatedBytes >> 10), s->garbage.size());
++        }
+         if (s->gpuTime)
+         {
+             // per kind: the kCat* kinds by name, draw programs summed per family, and the 8 programs with the most time
+@@ -2078,6 +2186,27 @@
+         for (unsigned i = 0; i < GSDK::kShaderCount; ++i)
+             s->binaries[GSDK::kShaders[i].hash] = &GSDK::kShaders[i];
+ 
++        // GOW_DK_MEMBLOCK_TEST=<n>: create up to n small image memory blocks and log the count every 100 (a failing
++        // dkMemBlockCreate aborts the process: the last logged count is the limit); then destroy them
++        if (const char *mt = std::getenv("GOW_DK_MEMBLOCK_TEST"))
++        {
++            std::vector<DkMemBlock> blocks;
++            const int n = std::atoi(mt);
++            for (int i = 0; i < n; ++i)
++            {
++                if (i % 100 == 0)
++                {
++                    std::fprintf(stderr, "[gs-dk] memblock test: %d blocks\n", i);
++                    std::fflush(stderr);
++                }
++                blocks.push_back(makeMem(64u << 10, DkMemBlockFlags_GpuCached | DkMemBlockFlags_Image));
++            }
++            std::fprintf(stderr, "[gs-dk] memblock test: %d blocks created\n", n);
++            for (DkMemBlock b : blocks)
++                if (b)
++                    dkMemBlockDestroy(b);
++        }
++
+         step("dummy texture");
+         // texture 0: a 1x1 dummy for unbound samplers
+         Format f{DkImageFormat_RGBA8_Unorm, 4, false, false};

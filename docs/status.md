@@ -1040,3 +1040,11 @@ Run: `python -I tools/zones.py --slots 1,2,3,4` (scale: `PS2X_GS_HW_SCALE`); sav
   FLP_HUD grew too much, tools/gow_pad_icons.py now reuses equal transformations, docs/settings.md "Button icons");
   console run lag_icons3: Italian title "A = Seleziona", power-up menu A/Y and L/R, gameplay, fps = sws5 (51.7 vs
   52.0 over the same 150 s path). The 60 `_nx` files on sdmc:/switch/gow/lang are the regenerated ones.
+- 2026-10-26 (sw-crash, on the console): **crash in the first Hydra fight fixed; console default is now update_crash1
+  + FAILGT** (exefs md5 6bfcb76e; = update_icons1 + port/switch/crash.patch on gs_dk.cpp, tree /root/src-crash, build
+  /root/gow-switch-crash, ELF /root/elf_crash1.elf). User log + Atmosphère report (port/switch/logs/20261026_hydra):
+  abort 2359-0001 in dkMemBlockCreate from allocImage (GS thread), 205 s after new game, ~1220 live textures; not the
+  icons, VU1 or FAILGT. Cause: one DkMemBlock per texture, the process limit is ~1200 blocks (GOW_DK_MEMBLOCK_TEST).
+  Fix: image sub-allocation in 32 MiB chunks (docs/switch.md "Image memory"). Runs crash_ship1 (470 s, 1150 textures)
+  and crash_hydra1 (GOW_WARP=ATHN01D, 455 s, 2220 textures, 43.5 fps): no crash, 2 chunks. No play.mcd existed on
+  the SD card (the user had not saved).
