@@ -1,0 +1,1743 @@
+[
+ {
+  "name": "movies_BONUS03",
+  "kind": "movies",
+  "fail": [],
+  "slow": [],
+  "warn": [],
+  "shots": [
+   "movies_BONUS03\\shots\\s030_450.jpg",
+   "movies_BONUS03\\shots\\s059_885.jpg",
+   "movies_BONUS03\\shots\\s088_1320.jpg"
+  ],
+  "run_s": 1335,
+  "movies": [
+   {
+    "movie": "BONUS03",
+    "fail": [],
+    "slow": [],
+    "pictures": 24390,
+    "pps": 30.0
+   },
+   {
+    "movie": "BONUS06",
+    "fail": [],
+    "slow": [],
+    "pictures": 13110,
+    "pps": 30.0
+   }
+  ]
+ },
+ {
+  "name": "movies_BONUS10",
+  "kind": "movies",
+  "fail": [],
+  "slow": [],
+  "warn": [],
+  "shots": [
+   "movies_BONUS10\\shots\\s026_390.jpg",
+   "movies_BONUS10\\shots\\s051_765.jpg"
+  ],
+  "run_s": 1125,
+  "movies": [
+   {
+    "movie": "BONUS10",
+    "fail": [],
+    "slow": [],
+    "pictures": 4560,
+    "pps": 30.0
+   },
+   {
+    "movie": "BONUS12",
+    "fail": [],
+    "slow": [],
+    "pictures": 7440,
+    "pps": 30.0
+   },
+   {
+    "movie": "BONUS14",
+    "fail": [],
+    "slow": [],
+    "pictures": 7170,
+    "pps": 30.0
+   },
+   {
+    "movie": "BONUS16",
+    "fail": [],
+    "slow": [],
+    "pictures": 2520,
+    "pps": 30.0
+   },
+   {
+    "movie": "BONUS17",
+    "fail": [],
+    "slow": [],
+    "pictures": 4470,
+    "pps": 30.0
+   }
+  ]
+ },
+ {
+  "name": "movies_BONUS18",
+  "kind": "movies",
+  "fail": [],
+  "slow": [],
+  "warn": [],
+  "shots": [
+   "movies_BONUS18\\shots\\s036_540.jpg",
+   "movies_BONUS18\\shots\\s071_1065.jpg",
+   "movies_BONUS18\\shots\\s106_1590.jpg"
+  ],
+  "run_s": 1590,
+  "movies": [
+   {
+    "movie": "BONUS18",
+    "fail": [],
+    "slow": [],
+    "pictures": 1800,
+    "pps": 30.0
+   },
+   {
+    "movie": "BONUS24",
+    "fail": [],
+    "slow": [],
+    "pictures": 810,
+    "pps": 29.9
+   },
+   {
+    "movie": "BONUS25",
+    "fail": [],
+    "slow": [],
+    "pictures": 2910,
+    "pps": 30.0
+   },
+   {
+    "movie": "SEMO01",
+    "fail": [],
+    "slow": [],
+    "pictures": 1410,
+    "pps": 30.0
+   },
+   {
+    "movie": "A01MP05",
+    "fail": [],
+    "slow": [],
+    "pictures": 240,
+    "pps": 29.7
+   },
+   {
+    "movie": "A01MP02",
+    "fail": [],
+    "slow": [],
+    "pictures": 990,
+    "pps": 30.0
+   },
+   {
+    "movie": "MA360",
+    "fail": [],
+    "slow": [],
+    "pictures": 990,
+    "pps": 29.9
+   },
+   {
+    "movie": "A01MP03",
+    "fail": [],
+    "slow": [],
+    "pictures": 1530,
+    "pps": 30.0
+   },
+   {
+    "movie": "A01MP01",
+    "fail": [],
+    "slow": [],
+    "pictures": 780,
+    "pps": 29.9
+   },
+   {
+    "movie": "A01MP04",
+    "fail": [],
+    "slow": [],
+    "pictures": 600,
+    "pps": 30.0
+   },
+   {
+    "movie": "SEMO02",
+    "fail": [],
+    "slow": [],
+    "pictures": 4200,
+    "pps": 30.0
+   },
+   {
+    "movie": "A02MP02",
+    "fail": [],
+    "slow": [],
+    "pictures": 750,
+    "pps": 30.0
+   },
+   {
+    "movie": "A03MP02",
+    "fail": [],
+    "slow": [],
+    "pictures": 870,
+    "pps": 29.9
+   },
+   {
+    "movie": "MEWINTRO",
+    "fail": [],
+    "slow": [],
+    "pictures": 1500,
+    "pps": 30.0
+   },
+   {
+    "movie": "A03MP01",
+    "fail": [],
+    "slow": [],
+    "pictures": 870,
+    "pps": 29.9
+   },
+   {
+    "movie": "A04MP01",
+    "fail": [],
+    "slow": [],
+    "pictures": 780,
+    "pps": 29.9
+   },
+   {
+    "movie": "A04MP04",
+    "fail": [],
+    "slow": [],
+    "pictures": 480,
+    "pps": 29.9
+   },
+   {
+    "movie": "MATBOLT",
+    "fail": [],
+    "slow": [],
+    "pictures": 990,
+    "pps": 29.9
+   },
+   {
+    "movie": "SKDINTRO",
+    "fail": [],
+    "slow": [],
+    "pictures": 720,
+    "pps": 29.9
+   },
+   {
+    "movie": "A06MP01",
+    "fail": [],
+    "slow": [],
+    "pictures": 690,
+    "pps": 29.9
+   }
+  ]
+ },
+ {
+  "name": "movies_A06MP04",
+  "kind": "movies",
+  "fail": [],
+  "slow": [],
+  "warn": [],
+  "shots": [
+   "movies_A06MP04\\shots\\s030_450.jpg",
+   "movies_A06MP04\\shots\\s059_885.jpg",
+   "movies_A06MP04\\shots\\s088_1320.jpg"
+  ],
+  "run_s": 1335,
+  "movies": [
+   {
+    "movie": "A06MP04",
+    "fail": [],
+    "slow": [],
+    "pictures": 1770,
+    "pps": 30.0
+   },
+   {
+    "movie": "SEMO03",
+    "fail": [],
+    "slow": [],
+    "pictures": 3600,
+    "pps": 30.0
+   },
+   {
+    "movie": "A06MP03",
+    "fail": [],
+    "slow": [],
+    "pictures": 750,
+    "pps": 29.9
+   },
+   {
+    "movie": "A06MP02",
+    "fail": [],
+    "slow": [],
+    "pictures": 450,
+    "pps": 29.8
+   },
+   {
+    "movie": "A06MP05B",
+    "fail": [],
+    "slow": [],
+    "pictures": 420,
+    "pps": 29.9
+   },
+   {
+    "movie": "SEMO04",
+    "fail": [],
+    "slow": [],
+    "pictures": 2310,
+    "pps": 30.0
+   },
+   {
+    "movie": "D01MP01",
+    "fail": [],
+    "slow": [],
+    "pictures": 960,
+    "pps": 29.9
+   },
+   {
+    "movie": "D01MP03",
+    "fail": [],
+    "slow": [],
+    "pictures": 270,
+    "pps": 29.8
+   },
+   {
+    "movie": "D01MP02",
+    "fail": [],
+    "slow": [],
+    "pictures": 3180,
+    "pps": 30.0
+   },
+   {
+    "movie": "BONUS21",
+    "fail": [],
+    "slow": [],
+    "pictures": 1620,
+    "pps": 30.0
+   },
+   {
+    "movie": "BONUS20",
+    "fail": [],
+    "slow": [],
+    "pictures": 6270,
+    "pps": 30.0
+   },
+   {
+    "movie": "BONUS19",
+    "fail": [],
+    "slow": [],
+    "pictures": 450,
+    "pps": 29.8
+   },
+   {
+    "movie": "BONUS01",
+    "fail": [],
+    "slow": [],
+    "pictures": 480,
+    "pps": 29.9
+   },
+   {
+    "movie": "SEMO13",
+    "fail": [],
+    "slow": [],
+    "pictures": 870,
+    "pps": 30.0
+   }
+  ]
+ },
+ {
+  "name": "movies_A07MP05",
+  "kind": "movies",
+  "fail": [],
+  "slow": [],
+  "warn": [],
+  "shots": [
+   "movies_A07MP05\\shots\\s022_330.jpg",
+   "movies_A07MP05\\shots\\s043_645.jpg",
+   "movies_A07MP05\\shots\\s064_960.jpg"
+  ],
+  "run_s": 960,
+  "movies": [
+   {
+    "movie": "A07MP05",
+    "fail": [],
+    "slow": [],
+    "pictures": 2460,
+    "pps": 30.0
+   },
+   {
+    "movie": "A07MP04",
+    "fail": [],
+    "slow": [],
+    "pictures": 270,
+    "pps": 29.9
+   },
+   {
+    "movie": "SEMO10",
+    "fail": [],
+    "slow": [],
+    "pictures": 6720,
+    "pps": 30.0
+   },
+   {
+    "movie": "A07MP01",
+    "fail": [],
+    "slow": [],
+    "pictures": 2730,
+    "pps": 30.0
+   },
+   {
+    "movie": "SEMO09",
+    "fail": [],
+    "slow": [],
+    "pictures": 3240,
+    "pps": 30.0
+   },
+   {
+    "movie": "A06MP05",
+    "fail": [],
+    "slow": [],
+    "pictures": 1050,
+    "pps": 29.9
+   },
+   {
+    "movie": "H01MP03",
+    "fail": [],
+    "slow": [],
+    "pictures": 300,
+    "pps": 29.8
+   }
+  ]
+ },
+ {
+  "name": "movies_SEMO08",
+  "kind": "movies",
+  "fail": [],
+  "slow": [],
+  "warn": [],
+  "shots": [
+   "movies_SEMO08\\shots\\s030_450.jpg",
+   "movies_SEMO08\\shots\\s059_885.jpg",
+   "movies_SEMO08\\shots\\s088_1320.jpg"
+  ],
+  "run_s": 1335,
+  "movies": [
+   {
+    "movie": "SEMO08",
+    "fail": [],
+    "slow": [],
+    "pictures": 6330,
+    "pps": 30.0
+   },
+   {
+    "movie": "P06MP01",
+    "fail": [],
+    "slow": [],
+    "pictures": 1080,
+    "pps": 29.9
+   },
+   {
+    "movie": "SATINTRO",
+    "fail": [],
+    "slow": [],
+    "pictures": 510,
+    "pps": 29.9
+   },
+   {
+    "movie": "SEMO07",
+    "fail": [],
+    "slow": [],
+    "pictures": 4860,
+    "pps": 30.0
+   },
+   {
+    "movie": "P04MP05",
+    "fail": [],
+    "slow": [],
+    "pictures": 720,
+    "pps": 29.9
+   },
+   {
+    "movie": "SEMO06",
+    "fail": [],
+    "slow": [],
+    "pictures": 4950,
+    "pps": 30.0
+   },
+   {
+    "movie": "MAGICRTD",
+    "fail": [],
+    "slow": [],
+    "pictures": 930,
+    "pps": 30.0
+   },
+   {
+    "movie": "P03MP06",
+    "fail": [],
+    "slow": [],
+    "pictures": 630,
+    "pps": 29.9
+   },
+   {
+    "movie": "P03MP07",
+    "fail": [],
+    "slow": [],
+    "pictures": 330,
+    "pps": 29.8
+   },
+   {
+    "movie": "BALLWAY",
+    "fail": [],
+    "slow": [],
+    "pictures": 810,
+    "pps": 30.0
+   },
+   {
+    "movie": "P03MP98",
+    "fail": [],
+    "slow": [],
+    "pictures": 660,
+    "pps": 30.0
+   },
+   {
+    "movie": "P01MP01",
+    "fail": [],
+    "slow": [],
+    "pictures": 330,
+    "pps": 29.8
+   }
+  ]
+ },
+ {
+  "name": "movies_MAGICBZK",
+  "kind": "movies",
+  "fail": [],
+  "slow": [],
+  "warn": [],
+  "shots": [
+   "movies_MAGICBZK\\shots\\s016_240.jpg",
+   "movies_MAGICBZK\\shots\\s031_465.jpg",
+   "movies_MAGICBZK\\shots\\s046_690.jpg"
+  ],
+  "run_s": 690,
+  "movies": [
+   {
+    "movie": "MAGICBZK",
+    "fail": [],
+    "slow": [],
+    "pictures": 930,
+    "pps": 29.9
+   },
+   {
+    "movie": "P00MP03",
+    "fail": [],
+    "slow": [],
+    "pictures": 1980,
+    "pps": 30.0
+   },
+   {
+    "movie": "SEMO05",
+    "fail": [],
+    "slow": [],
+    "pictures": 3330,
+    "pps": 30.0
+   },
+   {
+    "movie": "P00MP04",
+    "fail": [],
+    "slow": [],
+    "pictures": 450,
+    "pps": 29.8
+   },
+   {
+    "movie": "P02MP02",
+    "fail": [],
+    "slow": [],
+    "pictures": 600,
+    "pps": 29.9
+   },
+   {
+    "movie": "P02MP01",
+    "fail": [],
+    "slow": [],
+    "pictures": 780,
+    "pps": 29.9
+   },
+   {
+    "movie": "P00MP02",
+    "fail": [],
+    "slow": [],
+    "pictures": 2130,
+    "pps": 30.0
+   }
+  ]
+ },
+ {
+  "name": "ATHN01A",
+  "kind": "level",
+  "fail": [],
+  "slow": [],
+  "warn": [
+   "fps min 11.8"
+  ],
+  "shots": [
+   "ATHN01A\\gow_warp_1_ATHN01A_1.png",
+   "ATHN01A\\shots\\s004_60.jpg",
+   "ATHN01A\\shots\\s007_105.jpg",
+   "ATHN01A\\shots\\s010_150.jpg"
+  ],
+  "run_s": 150,
+  "load_s": 0.0,
+  "fps": [
+   11.8,
+   43.8
+  ],
+  "speed": 1.041,
+  "zones_seen": [
+   "Athn01A",
+   "Athn01B"
+  ]
+ },
+ {
+  "name": "ATHN01C",
+  "kind": "level",
+  "fail": [],
+  "slow": [],
+  "warn": [
+   "Kratos died after the warp (fall from the warp point)"
+  ],
+  "shots": [
+   "ATHN01C\\gow_warp_1_ATHN01C_0.png",
+   "ATHN01C\\shots\\s004_60.jpg",
+   "ATHN01C\\shots\\s007_105.jpg",
+   "ATHN01C\\shots\\s010_150.jpg"
+  ],
+  "run_s": 150,
+  "load_s": 1.8,
+  "fps": [
+   29.0,
+   57.3
+  ],
+  "speed": 1.015,
+  "zones_seen": [
+   "Athn01A",
+   "Athn01C"
+  ]
+ },
+ {
+  "name": "ATHN01B",
+  "kind": "level",
+  "fail": [
+   "warp timeout ATHN01B at 149.1 s (slot=0 loaded=0 request=1 due=0) zone=Athn01B"
+  ],
+  "slow": [],
+  "warn": [],
+  "shots": [
+   "ATHN01B\\shots\\s004_60.jpg",
+   "ATHN01B\\shots\\s007_105.jpg",
+   "ATHN01B\\shots\\s010_150.jpg"
+  ],
+  "run_s": 150
+ },
+ {
+  "name": "ATHN01D",
+  "kind": "level",
+  "fail": [],
+  "slow": [],
+  "warn": [
+   "fps min 12.8"
+  ],
+  "shots": [
+   "ATHN01D\\gow_warp_1_ATHN01D_0.png",
+   "ATHN01D\\shots\\s004_60.jpg",
+   "ATHN01D\\shots\\s007_105.jpg",
+   "ATHN01D\\shots\\s010_150.jpg"
+  ],
+  "run_s": 150,
+  "load_s": 1.4,
+  "fps": [
+   12.8,
+   33.2
+  ],
+  "speed": 1.05,
+  "zones_seen": [
+   "Athn01A",
+   "Athn01C",
+   "Athn01D"
+  ]
+ },
+ {
+  "name": "ATHN01EE",
+  "kind": "level",
+  "fail": [],
+  "slow": [],
+  "warn": [
+   "fps min 18.4",
+   "Kratos died after the warp (fall from the warp point)"
+  ],
+  "shots": [
+   "ATHN01EE\\gow_warp_1_ATHN01EE_0.png",
+   "ATHN01EE\\shots\\s004_60.jpg",
+   "ATHN01EE\\shots\\s007_105.jpg",
+   "ATHN01EE\\shots\\s010_150.jpg"
+  ],
+  "run_s": 150,
+  "load_s": 0.4,
+  "fps": [
+   18.4,
+   55.3
+  ],
+  "speed": 1.022,
+  "zones_seen": [
+   "?(zone=0)",
+   "Athn01A"
+  ]
+ },
+ {
+  "name": "ATHN01E",
+  "kind": "level",
+  "fail": [],
+  "slow": [],
+  "warn": [],
+  "shots": [
+   "ATHN01E\\shots\\s004_60.jpg",
+   "ATHN01E\\shots\\s007_105.jpg",
+   "ATHN01E\\shots\\s010_150.jpg"
+  ],
+  "run_s": 150,
+  "load_s": 1.9,
+  "fps": [
+   45.2,
+   48.2
+  ],
+  "speed": 1.024,
+  "zones_seen": [
+   "Athn01E"
+  ]
+ },
+ {
+  "name": "ATHN01F",
+  "kind": "level",
+  "fail": [],
+  "slow": [],
+  "warn": [
+   "fps min 18.0"
+  ],
+  "shots": [
+   "ATHN01F\\gow_warp_1_ATHN01F_0.png",
+   "ATHN01F\\shots\\s004_60.jpg",
+   "ATHN01F\\shots\\s007_105.jpg",
+   "ATHN01F\\shots\\s010_150.jpg"
+  ],
+  "run_s": 150,
+  "load_s": 0.8,
+  "fps": [
+   18.0,
+   51.0
+  ],
+  "speed": 1.039,
+  "zones_seen": [
+   "Athn01A",
+   "Athn01F"
+  ]
+ },
+ {
+  "name": "ATHN02B",
+  "kind": "level",
+  "fail": [],
+  "slow": [],
+  "warn": [],
+  "shots": [
+   "ATHN02B\\gow_warp_1_ATHN02B_0.png",
+   "ATHN02B\\shots\\s004_60.jpg",
+   "ATHN02B\\shots\\s007_105.jpg",
+   "ATHN02B\\shots\\s010_150.jpg"
+  ],
+  "run_s": 150,
+  "load_s": 2.8,
+  "fps": [
+   31.6,
+   47.5
+  ],
+  "speed": 1.043,
+  "zones_seen": [
+   "Athn02A",
+   "Athn02B"
+  ]
+ },
+ {
+  "name": "ATHN02D",
+  "kind": "level",
+  "fail": [],
+  "slow": [],
+  "warn": [
+   "fps min 20.4",
+   "Kratos died after the warp (fall from the warp point)"
+  ],
+  "shots": [
+   "ATHN02D\\gow_warp_1_ATHN02D_0.png",
+   "ATHN02D\\shots\\s004_60.jpg",
+   "ATHN02D\\shots\\s007_105.jpg",
+   "ATHN02D\\shots\\s010_150.jpg"
+  ],
+  "run_s": 150,
+  "load_s": 1.1,
+  "fps": [
+   20.4,
+   55.2
+  ],
+  "speed": 1.022,
+  "zones_seen": [
+   "Athn01A",
+   "Athn02D"
+  ]
+ },
+ {
+  "name": "ATHN02A",
+  "kind": "level",
+  "fail": [],
+  "slow": [],
+  "warn": [
+   "fps min 23.2"
+  ],
+  "shots": [
+   "ATHN02A\\gow_warp_1_ATHN02A_0.png",
+   "ATHN02A\\shots\\s004_60.jpg",
+   "ATHN02A\\shots\\s007_105.jpg",
+   "ATHN02A\\shots\\s010_150.jpg"
+  ],
+  "run_s": 150,
+  "load_s": 2.1,
+  "fps": [
+   23.2,
+   39.7
+  ],
+  "speed": 1.02,
+  "zones_seen": [
+   "Athn01F",
+   "Athn02A"
+  ]
+ },
+ {
+  "name": "ATHN02C",
+  "kind": "level",
+  "fail": [],
+  "slow": [],
+  "warn": [],
+  "shots": [
+   "ATHN02C\\gow_warp_1_ATHN02C_0.png",
+   "ATHN02C\\shots\\s004_60.jpg",
+   "ATHN02C\\shots\\s007_105.jpg",
+   "ATHN02C\\shots\\s010_150.jpg"
+  ],
+  "run_s": 150,
+  "load_s": 2.5,
+  "fps": [
+   36.0,
+   57.4
+  ],
+  "speed": 1.029,
+  "zones_seen": [
+   "Athn01A",
+   "Athn02C"
+  ]
+ },
+ {
+  "name": "ATHN03AA",
+  "kind": "level",
+  "fail": [],
+  "slow": [],
+  "warn": [
+   "fps min 14.2"
+  ],
+  "shots": [
+   "ATHN03AA\\gow_warp_1_ATHN03AA_0.png",
+   "ATHN03AA\\shots\\s004_60.jpg",
+   "ATHN03AA\\shots\\s007_105.jpg",
+   "ATHN03AA\\shots\\s010_150.jpg"
+  ],
+  "run_s": 150,
+  "load_s": 0.9,
+  "fps": [
+   14.2,
+   45.6
+  ],
+  "speed": 1.02,
+  "zones_seen": [
+   "Athn02C",
+   "Athn03AA"
+  ]
+ },
+ {
+  "name": "ATHN03A",
+  "kind": "level",
+  "fail": [],
+  "slow": [
+   "game speed 1.066"
+  ],
+  "warn": [],
+  "shots": [
+   "ATHN03A\\gow_warp_1_ATHN03A_0.png",
+   "ATHN03A\\shots\\s004_60.jpg",
+   "ATHN03A\\shots\\s007_105.jpg",
+   "ATHN03A\\shots\\s010_150.jpg"
+  ],
+  "run_s": 150,
+  "load_s": 2.5,
+  "fps": [
+   30.0,
+   49.7
+  ],
+  "speed": 1.066,
+  "zones_seen": [
+   "?(zone=0)",
+   "Athn01A",
+   "Athn03A"
+  ]
+ },
+ {
+  "name": "ATHN03C",
+  "kind": "level",
+  "fail": [],
+  "slow": [],
+  "warn": [
+   "Kratos died after the warp (fall from the warp point)"
+  ],
+  "shots": [
+   "ATHN03C\\gow_warp_1_ATHN03C_0.png",
+   "ATHN03C\\shots\\s004_60.jpg",
+   "ATHN03C\\shots\\s007_105.jpg",
+   "ATHN03C\\shots\\s010_150.jpg"
+  ],
+  "run_s": 150,
+  "load_s": 2.3,
+  "fps": [
+   34.2,
+   57.5
+  ],
+  "speed": 1.016,
+  "zones_seen": [
+   "?(zone=0)",
+   "Athn01A"
+  ]
+ },
+ {
+  "name": "ATHN04B",
+  "kind": "level",
+  "fail": [],
+  "slow": [],
+  "warn": [
+   "Kratos died after the warp (fall from the warp point)"
+  ],
+  "shots": [
+   "ATHN04B\\gow_warp_1_ATHN04B_1.png",
+   "ATHN04B\\shots\\s004_60.jpg",
+   "ATHN04B\\shots\\s007_105.jpg",
+   "ATHN04B\\shots\\s010_150.jpg"
+  ],
+  "run_s": 150,
+  "load_s": 2.2,
+  "fps": [
+   33.0,
+   57.5
+  ],
+  "speed": 1.009,
+  "zones_seen": [
+   "Athn01A",
+   "Athn04B"
+  ]
+ },
+ {
+  "name": "ATHN04A",
+  "kind": "level",
+  "fail": [],
+  "slow": [],
+  "warn": [],
+  "shots": [
+   "ATHN04A\\shots\\s004_60.jpg",
+   "ATHN04A\\shots\\s007_105.jpg",
+   "ATHN04A\\shots\\s010_150.jpg"
+  ],
+  "run_s": 150,
+  "load_s": 2.1,
+  "fps": [
+   58.8,
+   59.6
+  ],
+  "speed": 1.008,
+  "zones_seen": [
+   "Athn01A",
+   "Athn04A"
+  ]
+ },
+ {
+  "name": "ATHN04C",
+  "kind": "level",
+  "fail": [],
+  "slow": [],
+  "warn": [
+   "fps min 13.6"
+  ],
+  "shots": [
+   "ATHN04C\\gow_warp_1_ATHN04C_0.png",
+   "ATHN04C\\shots\\s004_60.jpg",
+   "ATHN04C\\shots\\s007_105.jpg",
+   "ATHN04C\\shots\\s010_150.jpg"
+  ],
+  "run_s": 150,
+  "load_s": 0.6,
+  "fps": [
+   13.6,
+   50.8
+  ],
+  "speed": 1.041,
+  "zones_seen": [
+   "Athn01A",
+   "Athn04C"
+  ]
+ },
+ {
+  "name": "ATHN05A",
+  "kind": "level",
+  "fail": [],
+  "slow": [],
+  "warn": [
+   "Kratos died after the warp (fall from the warp point)"
+  ],
+  "shots": [
+   "ATHN05A\\shots\\s004_60.jpg",
+   "ATHN05A\\shots\\s007_105.jpg",
+   "ATHN05A\\shots\\s010_150.jpg"
+  ],
+  "run_s": 150,
+  "load_s": 2.5,
+  "fps": [
+   59.4,
+   59.9
+  ],
+  "speed": 1.004,
+  "zones_seen": [
+   "Athn01A",
+   "Athn05A"
+  ]
+ },
+ {
+  "name": "ATHN05AA",
+  "kind": "level",
+  "fail": [],
+  "slow": [],
+  "warn": [
+   "fps min 18.6",
+   "Kratos died after the warp (fall from the warp point)"
+  ],
+  "shots": [
+   "ATHN05AA\\gow_warp_1_ATHN05AA_0.png",
+   "ATHN05AA\\shots\\s004_60.jpg",
+   "ATHN05AA\\shots\\s007_105.jpg",
+   "ATHN05AA\\shots\\s010_150.jpg"
+  ],
+  "run_s": 150,
+  "load_s": 0.4,
+  "fps": [
+   18.6,
+   55.3
+  ],
+  "speed": 1.031,
+  "zones_seen": [
+   "?(zone=0)",
+   "Athn01A"
+  ]
+ },
+ {
+  "name": "ATHN05B",
+  "kind": "level",
+  "fail": [],
+  "slow": [
+   "game speed 1.066"
+  ],
+  "warn": [],
+  "shots": [
+   "ATHN05B\\gow_warp_1_ATHN05B_0.png",
+   "ATHN05B\\shots\\s004_60.jpg",
+   "ATHN05B\\shots\\s007_105.jpg",
+   "ATHN05B\\shots\\s010_150.jpg"
+  ],
+  "run_s": 150,
+  "load_s": 2.0,
+  "fps": [
+   31.2,
+   54.8
+  ],
+  "speed": 1.066,
+  "zones_seen": [
+   "Athn01A",
+   "Athn05B"
+  ]
+ },
+ {
+  "name": "ATHN05C",
+  "kind": "level",
+  "fail": [],
+  "slow": [],
+  "warn": [
+   "Kratos died after the warp (fall from the warp point)"
+  ],
+  "shots": [
+   "ATHN05C\\gow_warp_1_ATHN05C_1.png",
+   "ATHN05C\\shots\\s004_60.jpg",
+   "ATHN05C\\shots\\s007_105.jpg",
+   "ATHN05C\\shots\\s010_150.jpg"
+  ],
+  "run_s": 150,
+  "load_s": 2.4,
+  "fps": [
+   33.0,
+   56.5
+  ],
+  "speed": 1.034,
+  "zones_seen": [
+   "Athn01A",
+   "Athn05C"
+  ]
+ },
+ {
+  "name": "ATHN05BB",
+  "kind": "level",
+  "fail": [],
+  "slow": [],
+  "warn": [
+   "Kratos died after the warp (fall from the warp point)"
+  ],
+  "shots": [
+   "ATHN05BB\\shots\\s004_60.jpg",
+   "ATHN05BB\\shots\\s007_105.jpg",
+   "ATHN05BB\\shots\\s010_150.jpg"
+  ],
+  "run_s": 150,
+  "load_s": 1.1,
+  "fps": [
+   59.2,
+   59.9
+  ],
+  "speed": 1.004,
+  "zones_seen": [
+   "Athn01A",
+   "Athn05BB"
+  ]
+ },
+ {
+  "name": "ATHN05D",
+  "kind": "level",
+  "fail": [],
+  "slow": [],
+  "warn": [
+   "fps min 17.6",
+   "Kratos died after the warp (fall from the warp point)"
+  ],
+  "shots": [
+   "ATHN05D\\gow_warp_1_ATHN05D_1.png",
+   "ATHN05D\\shots\\s004_60.jpg",
+   "ATHN05D\\shots\\s007_105.jpg",
+   "ATHN05D\\shots\\s010_150.jpg"
+  ],
+  "run_s": 150,
+  "load_s": 0.9,
+  "fps": [
+   17.6,
+   57.5
+  ],
+  "speed": 1.016,
+  "zones_seen": [
+   "Athn01A",
+   "Athn05D"
+  ]
+ },
+ {
+  "name": "ATHN04D",
+  "kind": "level",
+  "fail": [],
+  "slow": [],
+  "warn": [
+   "fps min 17.2",
+   "Kratos died after the warp (fall from the warp point)"
+  ],
+  "shots": [
+   "ATHN04D\\gow_warp_1_ATHN04D_0.png",
+   "ATHN04D\\shots\\s004_60.jpg",
+   "ATHN04D\\shots\\s007_105.jpg",
+   "ATHN04D\\shots\\s010_150.jpg"
+  ],
+  "run_s": 150,
+  "load_s": 0.8,
+  "fps": [
+   17.2,
+   55.0
+  ],
+  "speed": 1.012,
+  "zones_seen": [
+   "?(zone=0)",
+   "Athn01A",
+   "Athn04D"
+  ]
+ },
+ {
+  "name": "ATHN06A",
+  "kind": "level",
+  "fail": [],
+  "slow": [],
+  "warn": [
+   "fps min 22.8"
+  ],
+  "shots": [
+   "ATHN06A\\gow_warp_1_ATHN06A_0.png",
+   "ATHN06A\\shots\\s004_60.jpg",
+   "ATHN06A\\shots\\s007_105.jpg",
+   "ATHN06A\\shots\\s010_150.jpg"
+  ],
+  "run_s": 150,
+  "load_s": 1.9,
+  "fps": [
+   22.8,
+   45.0
+  ],
+  "speed": 1.022,
+  "zones_seen": [
+   "Athn01A",
+   "Athn06A"
+  ]
+ },
+ {
+  "name": "ATHN06C",
+  "kind": "level",
+  "fail": [],
+  "slow": [],
+  "warn": [
+   "fps min 11.8"
+  ],
+  "shots": [
+   "ATHN06C\\gow_warp_1_ATHN06C_0.png",
+   "ATHN06C\\shots\\s004_60.jpg",
+   "ATHN06C\\shots\\s007_105.jpg",
+   "ATHN06C\\shots\\s010_150.jpg"
+  ],
+  "run_s": 150,
+  "load_s": 1.4,
+  "fps": [
+   11.8,
+   26.2
+  ],
+  "speed": 0.999,
+  "zones_seen": [
+   "Athn06C"
+  ]
+ },
+ {
+  "name": "ATHN06B",
+  "kind": "level",
+  "fail": [],
+  "slow": [
+   "game speed 1.06"
+  ],
+  "warn": [
+   "fps min 15.8"
+  ],
+  "shots": [
+   "ATHN06B\\gow_warp_1_ATHN06B_0.png",
+   "ATHN06B\\shots\\s004_60.jpg",
+   "ATHN06B\\shots\\s007_105.jpg",
+   "ATHN06B\\shots\\s010_150.jpg"
+  ],
+  "run_s": 150,
+  "load_s": 1.3,
+  "fps": [
+   15.8,
+   39.4
+  ],
+  "speed": 1.06,
+  "zones_seen": [
+   "Athn01A",
+   "Athn06B"
+  ]
+ },
+ {
+  "name": "ATHN07",
+  "kind": "level",
+  "fail": [],
+  "slow": [],
+  "warn": [
+   "fps min 15.8"
+  ],
+  "shots": [
+   "ATHN07\\gow_warp_1_ATHN07_1.png",
+   "ATHN07\\shots\\s004_60.jpg",
+   "ATHN07\\shots\\s007_105.jpg",
+   "ATHN07\\shots\\s010_150.jpg"
+  ],
+  "run_s": 150,
+  "load_s": 1.0,
+  "fps": [
+   15.8,
+   50.0
+  ],
+  "speed": 1.03,
+  "zones_seen": [
+   "Athn01A",
+   "Athn07"
+  ]
+ },
+ {
+  "name": "SEWR01",
+  "kind": "level",
+  "fail": [],
+  "slow": [],
+  "warn": [],
+  "shots": [
+   "SEWR01\\shots\\s004_60.jpg",
+   "SEWR01\\shots\\s007_105.jpg",
+   "SEWR01\\shots\\s010_150.jpg"
+  ],
+  "run_s": 150,
+  "load_s": 2.2,
+  "fps": [
+   58.6,
+   59.5
+  ],
+  "speed": 1.007,
+  "zones_seen": [
+   "Athn01A",
+   "sewr01"
+  ]
+ },
+ {
+  "name": "SEWR02",
+  "kind": "level",
+  "fail": [],
+  "slow": [],
+  "warn": [
+   "Kratos died after the warp (fall from the warp point)"
+  ],
+  "shots": [
+   "SEWR02\\gow_warp_1_SEWR02_0.png",
+   "SEWR02\\shots\\s004_60.jpg",
+   "SEWR02\\shots\\s007_105.jpg",
+   "SEWR02\\shots\\s010_150.jpg"
+  ],
+  "run_s": 150,
+  "load_s": 2.3,
+  "fps": [
+   33.8,
+   55.0
+  ],
+  "speed": 1.013,
+  "zones_seen": [
+   "Athn01A",
+   "sewr02"
+  ]
+ },
+ {
+  "name": "ATHN03D",
+  "kind": "level",
+  "fail": [],
+  "slow": [],
+  "warn": [
+   "fps min 13.6"
+  ],
+  "shots": [
+   "ATHN03D\\gow_warp_1_ATHN03D_0.png",
+   "ATHN03D\\shots\\s004_60.jpg",
+   "ATHN03D\\shots\\s007_105.jpg",
+   "ATHN03D\\shots\\s010_150.jpg"
+  ],
+  "run_s": 150,
+  "load_s": 1.0,
+  "fps": [
+   13.6,
+   40.4
+  ],
+  "speed": 1.016,
+  "zones_seen": [
+   "?(zone=0)",
+   "Athn01A"
+  ]
+ },
+ {
+  "name": "ATHN03E",
+  "kind": "level",
+  "fail": [],
+  "slow": [],
+  "warn": [],
+  "shots": [
+   "ATHN03E\\shots\\s004_60.jpg",
+   "ATHN03E\\shots\\s007_105.jpg",
+   "ATHN03E\\shots\\s010_150.jpg"
+  ],
+  "run_s": 150,
+  "load_s": 1.3,
+  "fps": [
+   55.4,
+   58.9
+  ],
+  "speed": 1.011,
+  "zones_seen": [
+   "Athn01A",
+   "Athn03E"
+  ]
+ },
+ {
+  "name": "DEST00",
+  "kind": "level",
+  "fail": [],
+  "slow": [],
+  "warn": [
+   "fps min 17.2"
+  ],
+  "shots": [
+   "DEST00\\gow_warp_1_DEST00_0.png",
+   "DEST00\\shots\\s004_60.jpg",
+   "DEST00\\shots\\s007_105.jpg",
+   "DEST00\\shots\\s010_150.jpg"
+  ],
+  "run_s": 150,
+  "load_s": 0.5,
+  "fps": [
+   17.2,
+   56.1
+  ],
+  "speed": 1.014,
+  "zones_seen": [
+   "?(zone=0)",
+   "Athn01A"
+  ]
+ },
+ {
+  "name": "DEST01",
+  "kind": "level",
+  "fail": [],
+  "slow": [],
+  "warn": [],
+  "shots": [
+   "DEST01\\gow_warp_1_DEST01_1.png",
+   "DEST01\\shots\\s004_60.jpg",
+   "DEST01\\shots\\s007_105.jpg",
+   "DEST01\\shots\\s010_150.jpg"
+  ],
+  "run_s": 150,
+  "load_s": 2.2,
+  "fps": [
+   33.8,
+   57.4
+  ],
+  "speed": 1.033,
+  "zones_seen": [
+   "Athn01A",
+   "Dest01"
+  ]
+ },
+ {
+  "name": "DEST02",
+  "kind": "level",
+  "fail": [],
+  "slow": [
+   "game speed 1.056"
+  ],
+  "warn": [
+   "fps min 21.2"
+  ],
+  "shots": [
+   "DEST02\\gow_warp_1_DEST02_1.png",
+   "DEST02\\shots\\s004_60.jpg",
+   "DEST02\\shots\\s007_105.jpg",
+   "DEST02\\shots\\s010_150.jpg"
+  ],
+  "run_s": 150,
+  "load_s": 1.2,
+  "fps": [
+   21.2,
+   55.6
+  ],
+  "speed": 1.056,
+  "zones_seen": [
+   "Athn01A",
+   "Dest02"
+  ]
+ },
+ {
+  "name": "DEST03",
+  "kind": "level",
+  "fail": [],
+  "slow": [],
+  "warn": [
+   "Kratos died after the warp (fall from the warp point)"
+  ],
+  "shots": [
+   "DEST03\\shots\\s004_60.jpg",
+   "DEST03\\shots\\s007_105.jpg",
+   "DEST03\\shots\\s010_150.jpg"
+  ],
+  "run_s": 150,
+  "load_s": 1.9,
+  "fps": [
+   58.4,
+   59.7
+  ],
+  "speed": 1.006,
+  "zones_seen": [
+   "Athn01A",
+   "Dest03"
+  ]
+ },
+ {
+  "name": "PAND00A",
+  "kind": "level",
+  "fail": [],
+  "slow": [
+   "game speed 1.055"
+  ],
+  "warn": [],
+  "shots": [
+   "PAND00A\\shots\\s004_60.jpg",
+   "PAND00A\\shots\\s007_105.jpg",
+   "PAND00A\\shots\\s010_150.jpg"
+  ],
+  "run_s": 150,
+  "load_s": 0.8,
+  "fps": [
+   50.6,
+   51.5
+  ],
+  "speed": 1.055,
+  "zones_seen": [
+   "?(zone=0)",
+   "Pand00A"
+  ]
+ },
+ {
+  "name": "ARENA06",
+  "kind": "level",
+  "fail": [],
+  "slow": [
+   "game speed 1.062"
+  ],
+  "warn": [
+   "fps min 15.4"
+  ],
+  "shots": [
+   "ARENA06\\gow_warp_1_ARENA06_0.png",
+   "ARENA06\\shots\\s004_60.jpg",
+   "ARENA06\\shots\\s007_105.jpg",
+   "ARENA06\\shots\\s010_150.jpg"
+  ],
+  "run_s": 150,
+  "load_s": 0.7,
+  "fps": [
+   15.4,
+   48.3
+  ],
+  "speed": 1.062,
+  "zones_seen": [
+   "Arena06"
+  ]
+ },
+ {
+  "name": "ARENA08",
+  "kind": "level",
+  "fail": [],
+  "slow": [],
+  "warn": [],
+  "shots": [
+   "ARENA08\\gow_warp_1_ARENA08_0.png",
+   "ARENA08\\shots\\s004_60.jpg",
+   "ARENA08\\shots\\s007_105.jpg",
+   "ARENA08\\shots\\s010_150.jpg"
+  ],
+  "run_s": 150,
+  "load_s": 2.0,
+  "fps": [
+   26.2,
+   48.0
+  ],
+  "speed": 1.01,
+  "zones_seen": [
+   "Arena08"
+  ]
+ },
+ {
+  "name": "ARENA09",
+  "kind": "level",
+  "fail": [],
+  "slow": [],
+  "warn": [
+   "fps min 20.2"
+  ],
+  "shots": [
+   "ARENA09\\gow_warp_1_ARENA09_1.png",
+   "ARENA09\\shots\\s004_60.jpg",
+   "ARENA09\\shots\\s007_105.jpg",
+   "ARENA09\\shots\\s010_150.jpg"
+  ],
+  "run_s": 150,
+  "load_s": 1.4,
+  "fps": [
+   20.2,
+   50.1
+  ],
+  "speed": 1.043,
+  "zones_seen": [
+   "Arena09"
+  ]
+ },
+ {
+  "name": "ARENA10",
+  "kind": "level",
+  "fail": [],
+  "slow": [
+   "game speed 1.082"
+  ],
+  "warn": [
+   "fps min 18.4"
+  ],
+  "shots": [
+   "ARENA10\\gow_warp_1_ARENA10_0.png",
+   "ARENA10\\shots\\s004_60.jpg",
+   "ARENA10\\shots\\s007_105.jpg",
+   "ARENA10\\shots\\s010_150.jpg"
+  ],
+  "run_s": 150,
+  "load_s": 0.9,
+  "fps": [
+   18.4,
+   55.7
+  ],
+  "speed": 1.082,
+  "zones_seen": [
+   "Arena10"
+  ]
+ },
+ {
+  "name": "ARENA12",
+  "kind": "level",
+  "fail": [],
+  "slow": [
+   "game speed 1.062"
+  ],
+  "warn": [
+   "fps min 18.0"
+  ],
+  "shots": [
+   "ARENA12\\gow_warp_1_ARENA12_0.png",
+   "ARENA12\\shots\\s004_60.jpg",
+   "ARENA12\\shots\\s007_105.jpg",
+   "ARENA12\\shots\\s010_150.jpg"
+  ],
+  "run_s": 150,
+  "load_s": 1.0,
+  "fps": [
+   18.0,
+   54.1
+  ],
+  "speed": 1.062,
+  "zones_seen": [
+   "Arena12"
+  ]
+ },
+ {
+  "name": "ARENA14",
+  "kind": "level",
+  "fail": [],
+  "slow": [],
+  "warn": [
+   "fps min 13.4"
+  ],
+  "shots": [
+   "ARENA14\\gow_warp_1_ARENA14_0.png",
+   "ARENA14\\shots\\s004_60.jpg",
+   "ARENA14\\shots\\s007_105.jpg",
+   "ARENA14\\shots\\s010_150.jpg"
+  ],
+  "run_s": 150,
+  "load_s": 0.9,
+  "fps": [
+   13.4,
+   41.1
+  ],
+  "speed": 0.99,
+  "zones_seen": [
+   "Arena14"
+  ]
+ },
+ {
+  "name": "ARENA19",
+  "kind": "level",
+  "fail": [],
+  "slow": [],
+  "warn": [
+   "fps min 20.0"
+  ],
+  "shots": [
+   "ARENA19\\gow_warp_1_ARENA19_0.png",
+   "ARENA19\\shots\\s004_60.jpg",
+   "ARENA19\\shots\\s007_105.jpg",
+   "ARENA19\\shots\\s010_150.jpg"
+  ],
+  "run_s": 150,
+  "load_s": 1.3,
+  "fps": [
+   20.0,
+   51.0
+  ],
+  "speed": 1.046,
+  "zones_seen": [
+   "Arena19"
+  ]
+ },
+ {
+  "name": "ARENA20",
+  "kind": "level",
+  "fail": [],
+  "slow": [],
+  "warn": [
+   "fps min 18.0"
+  ],
+  "shots": [
+   "ARENA20\\gow_warp_1_ARENA20_0.png",
+   "ARENA20\\shots\\s004_60.jpg",
+   "ARENA20\\shots\\s007_105.jpg",
+   "ARENA20\\shots\\s010_150.jpg"
+  ],
+  "run_s": 150,
+  "load_s": 1.3,
+  "fps": [
+   18.0,
+   43.2
+  ],
+  "speed": 0.999,
+  "zones_seen": [
+   "Arena20"
+  ]
+ },
+ {
+  "name": "ARENA26",
+  "kind": "level",
+  "fail": [],
+  "slow": [],
+  "warn": [
+   "fps min 20.2"
+  ],
+  "shots": [
+   "ARENA26\\gow_warp_1_ARENA26_0.png",
+   "ARENA26\\shots\\s004_60.jpg",
+   "ARENA26\\shots\\s007_105.jpg",
+   "ARENA26\\shots\\s010_150.jpg"
+  ],
+  "run_s": 150,
+  "load_s": 1.4,
+  "fps": [
+   20.2,
+   46.4
+  ],
+  "speed": 1.024,
+  "zones_seen": [
+   "Arena26"
+  ]
+ }
+]

@@ -80,6 +80,15 @@ def bot(*args, timeout=60):
     return None
 
 
+def put(local, path):
+    # right after a close the game may still hold its files open for a few seconds: retry
+    for _ in range(4):
+        if ftp('put', local, path)[0] == 0:
+            return True
+        time.sleep(15)
+    return False
+
+
 def ls_names(path):
     rc, out = ftp('ls', path)
     return [l.split()[-1] for l in out.splitlines() if l.strip()] if rc == 0 else []
@@ -171,6 +180,11 @@ def judge_level(text, item, r):
     expect = item['stay'] / 5 * 0.6
     if len(re.findall(r'\[gow-perf\]', seg)) < expect:
         r['fail'].append(f"hang: log stops {len(re.findall(r'.gow-perf.', seg)) * 5} s after arrival")
+    # a warp point over a pit (ATHN01EE, ...): Kratos falls and dies even with GOW_GOD_MODE; the death screen is
+    # dark, so a black capture there is the test, not the port
+    if re.search(r'\[gow-player\][^\n]* hp=0 state=14', seg):
+        r['warn'].append('Kratos died after the warp (fall from the warp point)')
+        r['fail'] = [f for f in r['fail'] if not f.startswith('black capture')]
     zs = sorted(set(re.findall(r'\[gow-player\].*? zone=(\S+)', seg)))
     if zs:
         r['zones_seen'] = zs[:6]
@@ -226,7 +240,7 @@ def run_item(item, outdir, args, sizes):
     else:
         pad = os.path.join(d, 'sweep_pad.txt')
         open(pad, 'w').write(level_pad(item['stay'] + 20, item['kind'] == 'fight'))
-        if ftp('put', pad, 'switch/gow')[0]:
+        if not put(pad, 'switch/gow'):
             r['fail'].append('pad script push failed')
             return r
         extra = ['GOW_SKIP_FMV=1', 'GOW_GOD_MODE=1', 'GOW_PLAYER_TRACE=1', 'GOW_PAD_TEST=1', 'GOW_PAD_TEST_NO_CAPTURE=1',
@@ -236,7 +250,7 @@ def run_item(item, outdir, args, sizes):
     os.makedirs(os.path.join(d, 'envdir'), exist_ok=True)
     envf = os.path.join(d, 'envdir', 'env.txt')
     open(envf, 'w', newline='\n').write(env_text(extra))
-    if ftp('put', envf, 'switch/gow')[0]:
+    if not put(envf, 'switch/gow'):
         r['fail'].append('env push failed')
         return r
     crash0 = set(ls_names('atmosphere/crash_reports'))

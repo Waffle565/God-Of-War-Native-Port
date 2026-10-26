@@ -1048,3 +1048,9 @@ Run: `python -I tools/zones.py --slots 1,2,3,4` (scale: `PS2X_GS_HW_SCALE`); sav
   Fix: image sub-allocation in 32 MiB chunks (docs/switch.md "Image memory"). Runs crash_ship1 (470 s, 1150 textures)
   and crash_hydra1 (GOW_WARP=ATHN01D, 455 s, 2220 textures, 43.5 fps): no crash, 2 chunks. No play.mcd existed on
   the SD card (the user had not saved).
+- 2026-10-26 (sw-sweep, on the console, stopped by the user 08:31): **console sweep tool** tools/switch_sweep.py
+  (docs/switch-sweep.md): every movie, level (one warp per boot) and fight with scripted input, judged from the pulled
+  log, bot screenshots and the warp capture. Partial run port/switch/sweep/20261026_0256: 67/67 movies pass, 46/108
+  zones (37 pass, 8 slow = game speed 1.06-1.08, ATHN01B test limit), fights not run. Bugs: Auto-Sleep during long
+  movies (no media-playback report), game 5-8 % fast in 8 zones. Console left at the default (exefs md5 6bfcb76e),
+  home menu. Resume: `--resume port/switch/sweep/20261026_0256`.
