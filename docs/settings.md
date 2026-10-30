@@ -86,6 +86,39 @@ language's track (ADPCM decoded) from the start plus its clip where the English 
 (cross-correlation). Its `.PSS` reads the same file. Checked 2026-10-19 with tools/movies.py + speech recognition:
 it_it Italian, de_de German, fr_fr French narration, pictures and sound ok.
 
+## Movies in other languages (2026-10-30, sw-movlang)
+User report (Switch, Italian): the intro spoke Italian but showed the English card "Three Weeks Earlier / The
+Aegean Sea", and the next movies spoke English. Causes: only the intro's sound was dubbed, and its card is part of
+the picture. What the European disc has, per movie (measured with tools/gow_movie.py + speech recognition):
+- **43 speaking movies with five ADPCM tracks** (`ff a1 00 <track>`: 0 en, 1 fr, 2 de, 3 it, 4 es; checked on
+  SEMO09 and A03MP01): A01MP01-04, A02MP02, A03MP01-02, A04MP01/04, A06MP01-05, A07MP01/04/05, D01MP02, MA360,
+  MAGICBZK, MAGICRTD, MATBOLT, MEWINTRO, P00MP02, P06MP01, SEMO01-10, SEMO13 and BONUS03/06/10/12/14/16/17/18.
+  The European pictures are PAL (640x512, 25/s) and 4:3, the sound has the USA length; the English track matches
+  the USA sound within 3 ms (envelope correlation 0.97-0.99), so a language track plays over the USA picture as is.
+- **Movies with one PCM track** (A01MP05, A06MP05B, BALLWAY, D01MP01/03, H01MP03, P00MP03/04, P01MP01,
+  P02MP01/02, P03MP06/07/98, P04MP05, SATINTRO, SKDINTRO, BONUS01/19/20/21/24): music and effects, no speech; the
+  same in every edition, nothing to do. BONUS25 is not on the European disc.
+- **Text in the picture**: only the intro card (SEMO01A-E, below) and the subtitled bonus movies BONUS01/19/20/24
+  B-E (English speech, PAL timing the USA player does not finish; not used). No other movie has burned-in text.
+
+How the port uses them (tools/lang_pack.py, for fr de it es):
+- **Dub files** (`voice_<l>/<MOVIE>.DUB`, tools/gow_movie.py `dub_file`): whole dubbed copies would be ~3.4 GB per
+  language (more than the Switch's free SD space), so the movie stays the USA file and the layout gets a line
+  `dub <lsn> <size> <path>`. ps2xIOP disc_source.cpp (`applyDubs`) replaces the PCM bytes of the movie's audio packets
+  with the language's ADPCM track, decoded while the sectors are read (window of 8192 frames per channel, decoded
+  again from the start only on a backward jump; one movie's windows kept). The dub file holds the movie's audio
+  packet ranges and the European ADPCM: 954 MB for 43 movies x 4 languages (~55 KB per second). Only the file the
+  port plays is dubbed (the `.PSW` where there is one). Checked with a disc_source harness (A03MP01 it_it: every
+  non-audio byte unchanged, samples = the European Italian track, correlation 0.9999998; speech recognition Italian).
+- **Intro card** (tools/gow_movie.py `intro_card`, inside `dub_intro`): the USA intro's pictures from the last
+  closed GOP before the clip (picture 1081 of 1432, black) to the end are re-encoded (PyAV mpeg2video, closed GOPs
+  of 16 I/P pictures, sequence header per GOP) from the language's clip: its 4:3 picture scaled 1.25x into the middle
+  of the anamorphic 640x480 frame (text as wide as the USA card), sides repeating the edge columns (the closing
+  white flash stays full screen), clip picture = floor(time x 25). The new video fills the movie's own video packets,
+  followed by the sequence end; the packets after it become padding packets (a megabyte of zero stuffing would
+  overflow libmpeg2's chunk buffer). PTS are rewritten for the packets where a new picture starts and removed
+  (header bytes as stuffing) where none does any more. Needs PyAV (`av`) when building the packs.
+
 Menus and in-game screens (2026-10-19): the European `R_SHELL<l>`/`R_PERM<l>.WAD` hold the menus (Flash chunk
 `FLP_Shell<l>`), the in-game screens and HUD (`FLP_HUD<l>`) with their own font (`GFX_GOWE`, accented glyphs) in
 each language. The European executable looks their objects up with the language letter (strings `R_ShellX`,

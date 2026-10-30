@@ -238,6 +238,40 @@ def dub_movies(code, usa, entries, usa_names, eu, eu_entries, eu_names, store, a
     return total
 
 
+def movie_dubs(usa, entries, usa_names, eu, eu_entries, eu_names, out, voices):
+    """Every speaking movie in the European languages, as dub files (tools/gow_movie.py dub_file, played by ps2xIOP
+    disc_source.cpp over the USA movie): {voice code: {usa movie name: path relative to lang/}}.
+    A movie is dubbed when its European version (same name, or the .PSS of a USA .PSW: the European disc has the
+    SEMO movies only as .PSS) has the five language tracks (0 en, 1 fr, 2 de, 3 it, 4 es); the European movies with
+    one track have no speech (music and effects, checked by speech recognition 2026-10-30) and stay as they are.
+    Only the file the port plays is dubbed: the .PSW where there is one (the port is always 16:9), else the .PSS.
+    SEMO01 is not here: dub_movies() replaces it whole (its text card is in the picture)."""
+    dubs = {code: {} for code in voices if code in VOICE_NUMBER}
+    if not dubs:
+        return dubs
+    total = 0
+    for name in sorted(usa_names):
+        base, ext = os.path.splitext(name)
+        if ext not in ('.PSS', '.PSW') or base == 'SEMO01' or (ext == '.PSS' and base + '.PSW' in usa_names):
+            continue
+        source = name if name in eu_names else base + '.PSS'
+        if source not in eu_names:
+            continue
+        european = read_file(eu, eu_entries, source)
+        if len(gow_movie.tracks(european)) < 5:
+            continue
+        movie = read_file(usa, entries, name)
+        for code in dubs:
+            path = f'voice_{code}/{base}.DUB'
+            data = gow_movie.dub_file(movie, european, VOICE_NUMBER[code])
+            with open(os.path.join(out, path), 'wb') as f:
+                f.write(data)
+            dubs[code][name] = path
+            total += len(data)
+    print(f'movie dubs: {len(next(iter(dubs.values())))} movies x {len(dubs)} languages, {total >> 20} MB')
+    return dubs
+
+
 def main(usa, eu=None, jpn=None, out=None, nx=False):
     files, sectors = read_layout(usa)
     meta = read_meta(usa)
@@ -310,6 +344,7 @@ def main(usa, eu=None, jpn=None, out=None, nx=False):
                                 lambda name, body: store(f'voice_{code}', name, body, f'voice_{code}/{name}'),
                                 aliases.setdefault(f'voice_{code}', {}))
         print(f'voice {code}: {len(stored[f"voice_{code}"])} files, {total >> 20} MB')
+    dubs = movie_dubs(usa, entries, usa_names, eu, eu_entries, eu_names, out, voices) if eu else {}
 
     for text, voice, icons in [(t, v, i) for t in langs for v in voices for i in (('', '_nx') if nx else ('',))]:
         members = dict(stored[f'shell_{text}{icons}'])
@@ -345,6 +380,8 @@ def main(usa, eu=None, jpn=None, out=None, nx=False):
                     lsn = starts[new_part] + new_offset
                     lines.append(f'file {lsn} {length} {path}')
                     end = max(end, lsn + sectors_of(length))
+            elif name in dubs.get(voice, {}):  # the movie stays in place; its audio comes from the dub file
+                lines.append(f'dub {starts[part] + offset} {size} {dubs[voice][name]}')
         combo = f'{text}_{voice}{icons}'
         open(os.path.join(out, combo + '.toc'), 'wb').write(patched)
         head = [f'# {combo}: text {text}, voices {voice}{", Switch button icons" if icons else ""}'

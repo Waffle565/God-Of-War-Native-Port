@@ -27,6 +27,9 @@ continues at once) to keep the runs short.
   asked for one more block before the tail was demuxed, it spun on end-of-file reads (0 bytes) forever: A01MP01 (the
   ship movie after the second Hydra fight) froze after its last picture while 989snd kept looping the last 16 KB of
   its IOP sound ring (user report "audio totally broken"). Reproduced and fixed with tools/movies.py.
+- Languages: the speaking movies play the European disc's language tracks through dub files that ps2xIOP's
+  disc_source decodes into the movie's PCM packets as they are read; the intro's text card is re-encoded per
+  language (docs/settings.md "Movies in other languages").
 - The game plays the widescreen files (`.PSW`, e.g. A01MP01.PSW) where they exist; the names it asks for have no
   extension. 67 movies are on the disc (`*.PSS`), 53 of them also as `.PSW`.
 - GS renderer: `TEST.ZTE = 0` means no depth test (the GS ignores ZTST then). The movie draws its picture sprite with
