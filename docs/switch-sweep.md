@@ -57,7 +57,8 @@ Filled in by the runs (latest first).
 - The console's Auto-Sleep counts only HID input: the runner's pad script is not HID, and the game does not report
   media playback (appletSetMediaPlaybackState), so 10 min without a press the screen went black mid-movie
   (BONUS03) and FTP stopped answering. The sweep now nudges the right stick (0x600, below the roll threshold) every
-  120 s. The same happens to a player who watches a long movie without touching the pad (bug, not fixed).
+  120 s. The same happened to a player who watches a long movie without touching the pad: fixed in update_bugs1
+  (`appletSetMediaPlaybackState` while a movie plays, docs/fmv.md "Switch: Auto-Sleep during long movies").
 - The log cannot be pulled while the game runs (the open log file is not readable over sys-ftpd), so items end by
   time budget and hangs are judged from the log pulled after closing.
 - Movie length from the file size is wrong for the `.PSW` files (16:9, about 0.94 MB/s); a movie counts as played
@@ -73,7 +74,10 @@ Filled in by the runs (latest first).
   ATHN05AA: Kratos falls from the warp point and dies (warning).
 - Bugs found: (1) Auto-Sleep during long movies (above). (2) game speed 1.055-1.082 (5-8 % fast) after the warp in
   ATHN03A, ATHN05B, ATHN06B, DEST02, PAND00A, ARENA06, ARENA10, ARENA12 (other zones 0.99-1.03); fps mean >= 25
-  everywhere, minimum down to 15.4 (ARENA06).
+  everywhere, minimum down to 15.4 (ARENA06). Cause of (2) (sw-bugs, docs/performance.md "Game speed 1.03-1.09"):
+  not the warp but short frames counted as a whole field (normal play below 60 fps, 2-9 % fast) plus the sweep's
+  own 3.5 s warp screenshots replayed by the frame-clock catch-up at 2-3x; fixed in update_bugs1. The per-window
+  mean over-weights the windows after a stall.
 - Report: port/switch/sweep/20261026_0256/report.md (+ results.json; logs and screenshots stay local, untracked).
 - Resume: console at the home menu, then
   `python -I tools/switch_sweep.py --resume port/switch/sweep/20261026_0256` (skips the 113 done items, runs

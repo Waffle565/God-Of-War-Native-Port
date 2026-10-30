@@ -254,6 +254,35 @@ Gains per lever above are estimates from the Gemini review (gemini-work/results/
   frame's T0 before the catch-up, fields added, the VBlank count, and that frame's perf buckets (ms; ee, vu, gs, iop,
   guest wait, gsq wait; buckets need `GOW_PERF_DIAG=1`) and EE idle waits by wake-up cause.
 
+### Game speed 1.03-1.09 in many zones: short frames and replayed EE stalls (2026-10-30, sw-bugs, update_bugs1)
+- Symptom (console sweep port/switch/sweep/20261026_0256, `[gow-speed]` after the debug warp): ATHN03A, ATHN05B,
+  ATHN06B, DEST02, PAND00A, ARENA06/10/12 at 1.055-1.082, most other zones 1.00-1.05. The warp itself is not the
+  cause; two separate effects, measured per zone from `[gow-speed]` / `[gow-fclk]` / `[gow-speed-hist]`:
+  1. **Short frames counted as a whole field** (normal play, any scene at ~45-59 fps with uneven frame times). The
+     game's [1, 4] clamp (0x17D778) counts a 0.8-field frame as 1 field while a 1.3-field frame counts in full. In
+     windows without any stall `t0_rate` (T0 per wall time) is 0.999 but game speed 1.03-1.09 (PAND00A 1.056 with
+     no stall at all, 52 fps; ATHN03A 58 fps with `[gow-speed-hist]` bins 7-8 frequent). This is what a player sees:
+     2-9 % fast motion wherever the frame rate hovers below 60.
+  2. **Stalls of the EE thread replayed as fast motion** (the sweep's warp screenshots, 3.5 s each, written
+     synchronously on the EE/GS path; in play any host stall that blocks the EE thread itself). Guest time stops,
+     the VBlank grid's host deadlines keep their schedule, and `catchUpToWall` (nat-spd) then caught up the whole
+     lag at up to 3.75 fields per frame: ATHN06B ran at 2.8x and 2.4x for the two seconds after each capture
+     (`[gow-fclk] added=137 t0_rate=2.86`). Per-window means made it look like +6 %; over wall time it was a pause
+     followed by a fast replay. Ordinary loads and long GPU frames are not affected: the EE sleeps on the pacing
+     grid there, so T0 keeps wall time (the existing 4-field clamp + 6-field debt handle them).
+- Fix (gow_overrides `gowFrameClockCatchUp`, EeScheduler `catchUpToWall`; port/switch/bugs1.patch):
+  - Credit: the part a frame below 9600 ticks (one 60 Hz field) was counted too long is kept as a credit (at most
+    `GOW_FCLK_CREDIT` hundredths of a field, default 200, 0 = off) and taken back from the next frames above 1 field
+    by moving their frame start 0x29C674 later before the game reads T0 (never below 1 field). Credit and debt
+    cancel each other. Simulation of the measured frame mix: 1.067 -> 1.000.
+  - Lag bound: `catchUpToWall` drops a lag above `GOW_FCLK_MAXLAG` hundredths of a field (default 1500 = 250 ms,
+    0 = no bound) by moving the host deadlines of the grid events (VBlankStart / VBlankEnd / pacing points) later;
+    all grid events share one lag (cycle and host deadline in lockstep), so the grid stays consistent. 250 ms is
+    above the longest normal GPU frame (70-230 ms in the ship fight), which is still caught up in full.
+  - `[gow-fclk]` adds `credit=` (left), `taken=` (fields taken back this second) and `lag_dropped_ms=`.
+- Sweep judging: the per-window mean of `[gow-speed]` over-weights the windows right after a stall; game seconds over
+  wall seconds of the windows without a stall is the better number (it was 1.00-1.09 before the fix).
+
 ### The ship-fight stalls: 170 frames queued on the GPU (2026-10-25, sw-stall, ext agent/swstall)
 - Measured with the new GS-thread block diagnostics (docs/switch-deko3d.md "Stall diagnostics"; run `sws2play`,
   update_sws2 = spd5 code + diagnostics, normal play, default clocks): every long frame of the fight is the GS thread

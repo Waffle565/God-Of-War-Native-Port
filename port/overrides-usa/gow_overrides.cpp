@@ -45,6 +45,7 @@ void gowDumpBranchRing(const char *why);
 #include <vector>
 
 extern std::atomic<uint64_t> g_gowWaitNs[8], g_gowWaitCnt[8]; // EeScheduler.cpp: EE idle waits by wake-up cause
+extern std::atomic<uint64_t> g_gowWallLagDroppedNs; // EeScheduler.cpp (sw-bugs): lag dropped by catchUpToWall
 
 namespace
 {
@@ -1828,6 +1829,14 @@ namespace
     // clamp. GOW_FCLK_CATCHUP=0 turns it off. With GOW_DELTA_DIAG=1, [gow-fclk] once per wall second: reads, reads
     // caught up, fields added (sum / max), T0 fields the game measured per wall field, frames below 1 / above 4 fields,
     // and [gow-fclk-long] for a frame above 4 fields or 4 wall fields (at most 8 per second).
+    // GOW-Port (sw-bugs): two more corrections, both found by the console sweep (game speed 1.03-1.09 in many zones):
+    // - Short frames: the game counts a frame below 1 field as a whole field (its [1, 4] clamp), so uneven frame times
+    //   below 60 fps (0.8 / 1.3 fields ...) ran game time 2-9 % fast. The part a short frame was counted too long
+    //   (below 9600 ticks, one 60 Hz field) becomes a credit, taken back from following frames above 1 field by moving
+    //   their frame start 0x29C674 later (never below 1 field); at most GOW_FCLK_CREDIT hundredths of a field are kept
+    //   (default 200, 0 = off). Credit and debt cancel each other.
+    // - Stalls of the EE thread itself: the catch-up drops a lag above GOW_FCLK_MAXLAG hundredths of a field
+    //   (default 1500 = 250 ms, 0 = no bound; EeScheduler::catchUpToWall) instead of replaying it at up to the frame cap.
     void gowFrameClockCatchUp(uint8_t *rdram, PS2Runtime *runtime, bool before)
     {
         static const bool on = [] {
@@ -1849,16 +1858,36 @@ namespace
         static double addedFields = 0.0, maxFields = 0.0, t0Fields = 0.0, lastAdded = 0.0, lastPre = 0.0;
         static auto windowStart = std::chrono::steady_clock::now();
         static auto lastRead = windowStart;
+        static const int64_t maxCredit = [] {
+            const char *v = std::getenv("GOW_FCLK_CREDIT");
+            return static_cast<int64_t>(v ? std::strtoul(v, nullptr, 10) : 200ul) * 9610 / 100;
+        }();
+        static int64_t debt = 0, credit = 0, creditTaken = 0;
+        // the frame start 0x29C674 and T0 extended as 0x17D778 computes them: ticks of the frame so far
+        auto frameTicks = [&]() -> uint32_t {
+            const uint32_t t0 = runtime->memory().eeTimerLoad(0x10000000u) & 0xFFFFu;
+            const uint32_t ext = readGuest32(rdram, 0x303628u) + t0 + (t0 < readGuest32(rdram, 0x2C7908u) ? 0x10000u : 0u);
+            return ext - readGuest32(rdram, 0x29C674u);
+        };
         if (before)
         {
             if (!on && !diag)
                 return;
             // ticks of the frame so far, as 0x17D778 will compute them (low 32 bits of the extended T0)
-            const uint32_t t0 = runtime->memory().eeTimerLoad(0x10000000u) & 0xFFFFu;
-            const uint32_t ext = readGuest32(rdram, 0x303628u) + t0 + (t0 < readGuest32(rdram, 0x2C7908u) ? 0x10000u : 0u);
-            const uint32_t elapsed = ext - readGuest32(rdram, 0x29C674u);
+            const uint32_t elapsed = frameTicks();
             const uint64_t budget = elapsed < capTicks ? (capTicks - elapsed) * kCyclesPerTick : 0u;
-            const uint64_t added = on && budget ? runtime->eeScheduler().catchUpToWall(budget) : 0u;
+            const uint64_t added = on ? runtime->eeScheduler().catchUpToWall(budget) : 0u;
+            if (on && credit > 0)
+            {
+                const uint32_t now = frameTicks();
+                if (now > 9610u && now < 0x80000000u)
+                {
+                    const int64_t take = std::min<int64_t>(credit, now - 9610u);
+                    credit -= take;
+                    creditTaken += take;
+                    writeGuest32(rdram, 0x29C674u, readGuest32(rdram, 0x29C674u) + static_cast<uint32_t>(take));
+                }
+            }
             lastAdded = added / kCyclesPerField;
             lastPre = elapsed / 9610.0;
             if (diag && added)
@@ -1885,8 +1914,15 @@ namespace
             const char *v = std::getenv("GOW_FCLK_DEBT");
             return static_cast<int64_t>(v ? std::strtoul(v, nullptr, 10) : 600ul) * 9610 / 100;
         }();
-        static int64_t debt = 0;
         double paidFields = 0.0;
+        if (on && maxCredit > 0 && ticks >= 0 && ticks < 9600)
+        {
+            int64_t over = 9600 - ticks; // the game counted this frame as 1 field
+            const int64_t cancel = std::min(debt, over);
+            debt -= cancel;
+            over -= cancel;
+            credit = std::min(maxCredit, credit + over);
+        }
         if (on && maxDebt > 0)
         {
             int64_t trueTicks = ticks;
@@ -1898,7 +1934,13 @@ namespace
                     trueTicks += wraps * 65536;
             }
             if (trueTicks > 4 * 9610)
-                debt = std::min(maxDebt, debt + trueTicks - std::clamp<int64_t>(ticks, 9610, 4 * 9610));
+            {
+                int64_t cut = trueTicks - std::clamp<int64_t>(ticks, 9610, 4 * 9610);
+                const int64_t cancel = std::min(credit, cut);
+                credit -= cancel;
+                cut -= cancel;
+                debt = std::min(maxDebt, debt + cut);
+            }
             const int64_t pay = std::min<int64_t>(debt, 9610 / 2);
             if (pay > 0)
             {
@@ -1945,10 +1987,16 @@ namespace
         const double wall = std::chrono::duration<double>(now - windowStart).count();
         if (wall < 1.0)
             return;
-        std::fprintf(stderr, "[gow-fclk] reads=%llu caught=%llu added=%.2f max=%.2f t0_rate=%.3f under1=%llu over4=%llu paid=%.2f debt=%.2f catchup=%d\n",
+        static uint64_t lastDropNs = 0;
+        const uint64_t dropNs = g_gowWallLagDroppedNs.load(std::memory_order_relaxed);
+        std::fprintf(stderr, "[gow-fclk] reads=%llu caught=%llu added=%.2f max=%.2f t0_rate=%.3f under1=%llu over4=%llu paid=%.2f debt=%.2f catchup=%d "
+                             "credit=%.2f taken=%.2f lag_dropped_ms=%.0f\n",
                      static_cast<unsigned long long>(reads), static_cast<unsigned long long>(caught), addedFields,
                      maxFields, t0Fields / (wall * 60.0), static_cast<unsigned long long>(under1),
-                     static_cast<unsigned long long>(over4), paidSum, debt / 9610.0, on ? 1 : 0);
+                     static_cast<unsigned long long>(over4), paidSum, debt / 9610.0, on ? 1 : 0, credit / 9610.0,
+                     creditTaken / 9610.0, (dropNs - lastDropNs) / 1e6);
+        lastDropNs = dropNs;
+        creditTaken = 0;
         windowStart = now; reads = caught = under1 = over4 = longLines = 0; addedFields = maxFields = t0Fields = 0.0;
         paidSum = 0.0;
     }

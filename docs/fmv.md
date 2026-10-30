@@ -282,3 +282,13 @@ adaptation, so a movie can be compared with its source track sample by sample.
   "already sent" uniform cache for the same program, so uniforms set through one entry were skipped by the other.
   Such keys now alias the uber entry itself.
 
+
+## Switch: Auto-Sleep during long movies (fixed 2026-10-30, sw-bugs, update_bugs1)
+- Symptom (console sweep 20261026_0256): 10 min after the last button press the console dimmed and slept in the middle
+  of a movie (BONUS03). Auto-Sleep and screen dimming count only HID input, and the game never told the system that
+  media was playing.
+- Fix: the movie decoder stub (Kernel/Stubs/MPEG.cpp, sceMpegGetPicture) stamps the time of every picture handed to
+  the game (`g_gowLastMoviePictureNs`); the Switch main loop (ps2_runtime.cpp, `PS2X_DK`) calls
+  `appletSetMediaPlaybackState(true)` while the last picture is less than 2 s old and `false` after, which disables
+  dimming and Auto-Sleep only while a movie plays (libnx applet.h). Log: `[switch] media playback on|off (rc=0x0)`.
+  Gameplay keeps the normal Auto-Sleep.
