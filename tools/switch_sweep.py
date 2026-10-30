@@ -399,6 +399,14 @@ def rejudge(outdir, todo):
     print('rejudged', len(out), '->', os.path.join(outdir, 'report.md'))
 
 
+def default_package():
+    """the console default's package: DEFAULT_PKG, else the one tools/switch_default.sh installs"""
+    if os.environ.get('DEFAULT_PKG'):
+        return os.environ['DEFAULT_PKG']
+    m = re.search(r'PKG=\$\{DEFAULT_PKG:-([^}]+)\}', open(os.path.join(ROOT, 'tools', 'switch_default.sh')).read())
+    return m.group(1) if m else 'update_crash1'
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--movies', action='store_true')
@@ -446,7 +454,7 @@ def main():
         ftp('rm', 'switch/gow/sweep_pad.txt')
         rc, out = sh('TRANSFER=ftp bash tools/switch_default.sh', timeout=600)
         print('[sweep] default restored' if rc == 0 else '[sweep] DEFAULT RESTORE FAILED: ' + out[-300:], flush=True)
-        local = os.path.join(ROOT, 'port', 'switch', 'nsp', 'out', os.environ.get('DEFAULT_PKG', 'update_crash1'),
+        local = os.path.join(ROOT, 'port', 'switch', 'nsp', 'out', default_package(),
                              'atmosphere', 'contents', GAME_TID, 'exefs', 'main')
         got = os.path.join(outdir, 'exefs_main.chk')
         if ftp('get', f'atmosphere/contents/{GAME_TID}/exefs/main', got)[0] == 0:
