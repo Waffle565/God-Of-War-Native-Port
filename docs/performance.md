@@ -280,6 +280,10 @@ Gains per lever above are estimates from the Gemini review (gemini-work/results/
     all grid events share one lag (cycle and host deadline in lockstep), so the grid stays consistent. 250 ms is
     above the longest normal GPU frame (70-230 ms in the ship fight), which is still caught up in full.
   - `[gow-fclk]` adds `credit=` (left), `taken=` (fields taken back this second) and `lag_dropped_ms=`.
+- Console check (2026-10-30, port/switch/sweep/20261030_1723, update_bugs1): windows without a stall at 1.001-1.005
+  (before 1.056-1.093): ATHN03A 1.001, ATHN06B 1.005, PAND00A 1.001, ARENA10 1.005; each 3.5 s warp capture shows
+  `lag_dropped_ms` ~3150, credit taken back 1-4 fields per second. All four zones PASS. Console default from
+  2026-10-30 evening: update_bugs1.
 - Sweep judging: the per-window mean of `[gow-speed]` over-weights the windows right after a stall; game seconds over
   wall seconds of the windows without a stall is the better number (it was 1.00-1.09 before the fix).
 

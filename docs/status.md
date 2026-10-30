@@ -1079,3 +1079,8 @@ Run: `python -I tools/zones.py --slots 1,2,3,4` (scale: `PS2X_GS_HW_SCALE`); sav
   SEMO01, A01MP01, SEMO02, A03MP01, it_it_nx): all PASS at 30 pictures/s, `[disc] dub read` for each, card
   "Tre Settimane Prima / Mar Egeo" on screen. **Console default = update_mlangfog1 + FAILGT** (exefs md5 b84b9fe6 =
   fog1 sources + dub; tree /root/src-mlang, build /root/gow-switch-mlang, ELF /root/elf_mlangfog1.elf).
+- 2026-10-30 (sw-bugs): **update_bugs1** (port/switch/bugs1.patch on the mlangfog1 sources): no Auto-Sleep during
+  movies (`appletSetMediaPlaybackState`, docs/fmv.md) and game speed back to 1.00 below 60 fps (short-frame credit +
+  EE stall lag bound, docs/performance.md "Game speed 1.03-1.09"). Console sweep port/switch/sweep/20261030_1723: 3
+  story movies + ATHN03A/ATHN06B/PAND00A/ARENA10 PASS. **Console default = update_bugs1 + FAILGT** (exefs md5
+  a2f50ea0; tree /root/src-mlang now = mlangfog1 + bugs1, originals /root/bugs1-orig, ELF /root/elf_bugs1.elf).

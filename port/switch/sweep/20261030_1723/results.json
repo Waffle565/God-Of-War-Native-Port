@@ -1,0 +1,142 @@
+[
+ {
+  "name": "movies_SEMO01",
+  "kind": "movies",
+  "fail": [],
+  "slow": [],
+  "warn": [],
+  "shots": [
+   "movies_SEMO01\\shots\\s008_120.jpg",
+   "movies_SEMO01\\shots\\s015_225.jpg"
+  ],
+  "run_s": 315,
+  "movies": [
+   {
+    "movie": "SEMO01",
+    "fail": [],
+    "slow": [],
+    "pictures": 1410,
+    "pps": 30.0,
+    "dub": true
+   },
+   {
+    "movie": "A01MP01",
+    "fail": [],
+    "slow": [],
+    "pictures": 780,
+    "pps": 29.9,
+    "dub": true
+   },
+   {
+    "movie": "A03MP01",
+    "fail": [],
+    "slow": [],
+    "pictures": 870,
+    "pps": 29.9,
+    "dub": true
+   }
+  ]
+ },
+ {
+  "name": "ATHN03A",
+  "kind": "level",
+  "fail": [],
+  "slow": [],
+  "warn": [],
+  "shots": [
+   "ATHN03A\\gow_warp_1_ATHN03A_0.png",
+   "ATHN03A\\shots\\s004_60.jpg",
+   "ATHN03A\\shots\\s007_105.jpg",
+   "ATHN03A\\shots\\s010_150.jpg"
+  ],
+  "run_s": 150,
+  "load_s": 2.5,
+  "fps": [
+   36.0,
+   55.7
+  ],
+  "speed": 0.99,
+  "zones_seen": [
+   "?(zone=0)",
+   "Athn01A",
+   "Athn03A"
+  ]
+ },
+ {
+  "name": "ATHN06B",
+  "kind": "level",
+  "fail": [],
+  "slow": [],
+  "warn": [
+   "fps min 19.6"
+  ],
+  "shots": [
+   "ATHN06B\\gow_warp_1_ATHN06B_0.png",
+   "ATHN06B\\shots\\s004_60.jpg",
+   "ATHN06B\\shots\\s007_105.jpg",
+   "ATHN06B\\shots\\s010_150.jpg"
+  ],
+  "run_s": 150,
+  "load_s": 1.4,
+  "fps": [
+   19.6,
+   40.2
+  ],
+  "speed": 0.983,
+  "zones_seen": [
+   "Athn01A",
+   "Athn06B"
+  ]
+ },
+ {
+  "name": "PAND00A",
+  "kind": "level",
+  "fail": [],
+  "slow": [],
+  "warn": [
+   "fps min 17.4"
+  ],
+  "shots": [
+   "PAND00A\\gow_warp_1_PAND00A_0.png",
+   "PAND00A\\shots\\s004_60.jpg",
+   "PAND00A\\shots\\s007_105.jpg",
+   "PAND00A\\shots\\s010_150.jpg"
+  ],
+  "run_s": 150,
+  "load_s": 0.8,
+  "fps": [
+   17.4,
+   49.5
+  ],
+  "speed": 0.992,
+  "zones_seen": [
+   "?(zone=0)",
+   "Pand00A"
+  ]
+ },
+ {
+  "name": "ARENA10",
+  "kind": "level",
+  "fail": [],
+  "slow": [],
+  "warn": [
+   "fps min 20.8"
+  ],
+  "shots": [
+   "ARENA10\\gow_warp_1_ARENA10_0.png",
+   "ARENA10\\shots\\s004_60.jpg",
+   "ARENA10\\shots\\s007_105.jpg",
+   "ARENA10\\shots\\s010_150.jpg"
+  ],
+  "run_s": 150,
+  "load_s": 0.9,
+  "fps": [
+   20.8,
+   53.1
+  ],
+  "speed": 0.984,
+  "zones_seen": [
+   "Arena10"
+  ]
+ }
+]

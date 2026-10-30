@@ -292,3 +292,5 @@ adaptation, so a movie can be compared with its source track sample by sample.
   `appletSetMediaPlaybackState(true)` while the last picture is less than 2 s old and `false` after, which disables
   dimming and Auto-Sleep only while a movie plays (libnx applet.h). Log: `[switch] media playback on|off (rc=0x0)`.
   Gameplay keeps the normal Auto-Sleep.
+- Console check (sweep 20261030_1723): SEMO01, A01MP01, A03MP01 in one boot, each `[switch] media playback on
+  (rc=0x0)` then `off`, 30 pictures/s, no guest crash (no `missing-target`).
