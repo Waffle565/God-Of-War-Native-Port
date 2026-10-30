@@ -319,7 +319,10 @@ namespace
         uint8_t state[32]{};
         if (!buffer || !socket || socket->port != 0 || !runtime ||
             !runtime->padBackend().readState(0, 0, state, sizeof(state))) { padReturn(ctx, 0xffffffffu); return; }
-        // GOW-Port: keyboard sticks only without any gamepad (PSPadBackend uses the first available slot).
+        // GOW-Port: keyboard sticks only without any gamepad (PSPadBackend uses the first available slot). Not in the
+        // deko3d (Switch) build: it has no raylib window, so raylib never sees a gamepad and this overwrote the HID
+        // sticks PSPadBackend had read with the centre (the sticks did nothing on the console).
+#if !defined(PS2X_DK)
         if (!IsGamepadAvailable(0) && !IsGamepadAvailable(1) && !IsGamepadAvailable(2) && !IsGamepadAvailable(3))
         {
             state[6] = IsKeyDown(KEY_A) ? 0 : IsKeyDown(KEY_D) ? 255 : 128;
@@ -327,6 +330,7 @@ namespace
             state[4] = IsKeyDown(KEY_J) ? 0 : IsKeyDown(KEY_L) ? 255 : 128;
             state[5] = IsKeyDown(KEY_I) ? 0 : IsKeyDown(KEY_K) ? 255 : 128;
         }
+#endif
         // Opt-in smoke test: advance title/new-game prompts without host UI input.
         // Capture the GS's own presented pixels; normal play never injects input.
         static const bool smokeTest = [] {
