@@ -1,6 +1,6 @@
 """Console sweep: test every movie, level and boss fight of the game on the Switch and write one report.
 
-usage: python -I tools/switch_sweep.py [--movies] [--levels] [--fights] [--only A,B] [--stay 40] [--resume <dir>]
+usage: python -I tools/switch_sweep.py [--movies] [--levels] [--fights] [--bonus] [--only A,B] [--stay 40] [--resume <dir>]
                                        [--out port/switch/sweep] [--movie-batch-s 900] [--no-default]
   (no --movies/--levels/--fights = all three; --only filters by movie / zone name)
 
@@ -40,10 +40,22 @@ GAME_TID = '0100D0D0600A0000'
 # Git bash (a plain "bash" on Windows can be WSL's)
 BASH = os.environ.get('SWEEP_BASH') or next((p for p in (r'C:/Program Files/Git/bin/bash.exe',) if os.path.exists(p)), 'bash')
 DEFAULT_ENV = os.path.join(ROOT, 'tools', 'switch', 'default_env.txt')
-# boss and main fights (zone, note): the warp point is at the zone start, the fight may need a walk to trigger
-FIGHTS = [('ATHN01D', 'Hydra 1, ship deck'), ('ATHN01EE', 'Hydra (R_AH3)'), ('ATHN01F', 'ship end / Hydra king'),
-          ('ATHN03A', 'Ares in Athens'), ('PAND05A', 'Pandora end'), ('PAND05B', 'Pandora end'),
-          ('ARENA06', 'arena'), ('ARENA19', 'arena'), ('ARENA27', 'arena'), ('OLYMP04', 'Olympus / Ares')]
+# boss and main fights (zone, note), from the boss resource WADs each zone loads (GODOFWAR.TOC: zone WAD followed by
+# its R_* WADs; the R_ WAD's strings name the creature, docs/switch-sweep.md "Fights"). The warp point is the zone
+# start, the fight may need a walk to trigger.
+FIGHTS = [('ATHN01D', 'Hydra 1, ship deck (R_AHA/R_AH2)'), ('ATHN01EE', 'Hydra 2 (R_AH3)'),
+          ('ATHN01F', "ship end, captain's cabin"), ('PAND03H', "Pandora's Guardian? (R_AB3/R_AB4)"),
+          ('PAND04H', 'Cerberus (R_CEP/R_CEA)'), ('ARENA27', 'Challenge of the Gods, Cerberus (R_CEP)'),
+          ('ATHN08B', 'Ares, phase 1 (R_A1A-C)'), ('ATHN08C', 'Kratos clones / family (R_AEV)'),
+          ('ATHN07B', 'Ares, phase 2 (R_A2A-C)')]
+# the 43 movies with speech (European disc: five language tracks), dubbed from the lang pack (docs/settings.md
+# "Movies in other languages"): each must log `[disc] dub read: .../voice_<SWEEP_LANG>/<MOVIE>.DUB` (the intro
+# SEMO01: `overlay read: .../SEMO01.PSW`, its re-encoded card)
+SPEAKING = set('A01MP01 A01MP02 A01MP03 A01MP04 A02MP02 A03MP01 A03MP02 A04MP01 A04MP04 A06MP01 A06MP02 A06MP03 '
+               'A06MP04 A06MP05 A07MP01 A07MP04 A07MP05 D01MP02 MA360 MAGICBZK MAGICRTD MATBOLT MEWINTRO P00MP02 '
+               'P06MP01 SEMO01 SEMO02 SEMO03 SEMO04 SEMO05 SEMO06 SEMO07 SEMO08 SEMO09 SEMO10 SEMO13 BONUS03 BONUS06 '
+               'BONUS10 BONUS12 BONUS14 BONUS16 BONUS17 BONUS18'.split())
+SWEEP_LANG = os.environ.get('SWEEP_LANG', 'it')
 ERRORS = zones.ERROR_PATTERNS + [(r'missing-target', 'guest crash (missing-target)'), (r'\[gow-heapguard\]', 'heap guard'),
                                  (r'\babort\b|fatal error|Fatal', 'abort/fatal line'), (r'null JALR', 'null JALR')]
 
@@ -120,7 +132,8 @@ def items(args):
     only = {x.strip().upper() for x in args.only.split(',')} if args.only else None
     if args.movies:
         sizes = movies.movie_list()
-        names = [m for m in sizes if not only or m in only]
+        # the bonus movies (BONUS*) only with --bonus (user 2026-10-30: only the story movies matter)
+        names = [m for m in sizes if (not only or m in only) and (args.bonus or not m.startswith('BONUS'))]
         batch, secs = [], 0
         for m in names:
             s = sizes[m] / movies.BYTES_PER_SECOND
@@ -214,6 +227,10 @@ def judge_movies(text, item, r, sizes):
             row['fail'].append(f'did not end (no sequence end, {frames} of ~{exp:.0f} pictures)')
         if pps < 28:
             row['slow'].append(f'{pps:.1f} pictures/s')
+        if name in SPEAKING:
+            row['dub'] = bool(re.search(rf'\[disc\] (?:dub|overlay) read: \S*voice_{SWEEP_LANG}/{name}\.(?:DUB|PSW|PSS)', text, re.I))
+            if not row['dub']:
+                row['fail'].append(f'no {SWEEP_LANG} dub read')
     r['movies'] = rows
 
 
@@ -412,6 +429,7 @@ def main():
     ap.add_argument('--movies', action='store_true')
     ap.add_argument('--levels', action='store_true')
     ap.add_argument('--fights', action='store_true')
+    ap.add_argument('--bonus', action='store_true', help='also the bonus movies (BONUS*)')
     ap.add_argument('--only', default='')
     ap.add_argument('--stay', type=int, default=40)
     ap.add_argument('--fight-stay', type=int, default=150)

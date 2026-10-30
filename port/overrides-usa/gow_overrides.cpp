@@ -1153,8 +1153,11 @@ namespace
     // GOW-Port: GOW_MOVIE_OVERRIDE=<name>[,<name>...] (debug) plays those movies (e.g. Semo02, BONUS03) instead of the
     // ones the game loads, one per load: the first replaces the intro, the next ones are started from the title menu by
     // gowDiagBonusMovie (tools/movies.py plays every movie of the disc in one session this way). 0x188CA0 copies its
-    // name argument (a0) into the movie struct (0x304D10), so the override name is put on the guest stack below sp and
-    // a0 points there; the game's own buffer (the intro's holds 6 characters) is not written.
+    // name argument (a0) into the movie struct (0x304D10) at its first call (frame 0x90), so the override name is put
+    // in the free guest stack 0x200 bytes below sp and a0 points there; the game's own buffer (the intro's holds 6
+    // characters) is not written. sp itself must not change: 0x188CA0 can return to the dispatcher early at an EE
+    // checkpoint (slow first disc read), and an sp restored here before it finished shifted its register restores
+    // (s0 = garbage, JALR 0 at 0x161C68; docs/switch-sweep.md, run 20261030_1450).
     std::vector<std::string> &movieOverrideList()
     {
         static std::vector<std::string> list = [] {
@@ -1188,8 +1191,7 @@ namespace
             return;
         }
         const std::string &override = list[g_movieOverrideNext++];
-        const uint32_t sp = GPR_U32(ctx, 29);
-        const uint32_t name = sp - 32u;
+        const uint32_t name = (GPR_U32(ctx, 29) - 0x200u) & ~15u;
         uint8_t *buffer = padBuffer(rdram, name, 32);
         const uint8_t *old = padBuffer(rdram, GPR_U32(ctx, 4), 1);
         std::fprintf(stderr, "[gow-fmv] override %zu/%zu %s -> %s\n", g_movieOverrideNext, list.size(),
@@ -1197,9 +1199,7 @@ namespace
         std::memset(buffer, 0, 32);
         std::memcpy(buffer, override.data(), override.size());
         SET_GPR_U32(ctx, 4, name);
-        SET_GPR_U32(ctx, 29, name);
         sub_00188CA0_0x188ca0(rdram, ctx, runtime);
-        SET_GPR_U32(ctx, 29, sp);
     }
 
     // GOW-Port: GOW_BONUS_MOVIE=<NN> (debug) plays bonus movie NN (BONUS03, 06, 10, 12, 14, 16, 17, 18, 24, 25) from

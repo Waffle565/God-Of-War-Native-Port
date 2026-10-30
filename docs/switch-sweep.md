@@ -46,11 +46,29 @@ seconds per wall second). One warp per boot: chained warps can evict the zone Kr
 - PASS otherwise. Heap-guard lines are warnings.
 - Limits: the screenshot check only sees a picture that stops changing (no JPEG decoder on the PC); the warp
   point is the zone start, so a boss whose fight starts further in is not fought (the fight list is a best guess:
-  ATHN01D/ATHN01EE/ATHN01F Hydra, ATHN03A Ares in Athens, PAND05A/B, ARENA06/19/27, OLYMP04).
+  tools/switch_sweep.py FIGHTS, from the boss resource WADs of each zone, run 20261030_1450 below).
 
 ## Results
 
 Filled in by the runs (latest first).
+
+### Run 20261030_1450 (sw-sweep2, default update_mlangfog1 + FAILGT, movies only, paused for sw-bugs)
+
+- Movies (all 67 incl. BONUS): 7 batches all FAIL, each ended by `[guest-branch:missing-target] JALR 0x161c68
+  target 0` right after a dubbed movie's first read (7 of 22 dubbed starts, 0 of ~10 undubbed).
+- Cause: sweep harness, not the game. gowMovieOverrideLoad (GOW_MOVIE_OVERRIDE / GOW_MPEG_DIAG only) moved sp 32
+  bytes down for the override name, called 0x188CA0 and restored sp; 0x188CA0 returns to the dispatcher early at an
+  EE checkpoint when the first disc read is slow (the dub decode made it slower), so sp was restored mid-function
+  and its epilogue reloaded s0 from a shifted slot (s0 = 0x2c7084, crash in 0x1619E0). Normal play does not install
+  the override. The dub files checked clean (all 43 range tables inside 0xBD audio payloads).
+- Fix (port/overrides-usa/gow_overrides.cpp): the name goes 0x200 bytes below sp, sp is not touched. Needs a build
+  on top of the next default (update_bugs1) before the story movies are rerun.
+- Tool changes: dubbed movies must log `[disc] dub read: .../voice_<SWEEP_LANG>/<MOVIE>.DUB` (SEMO01: `overlay
+  read: .../SEMO01.PSW`), else FAIL; BONUS* movies only with `--bonus`; fight list rebuilt from the boss resource
+  WADs each zone loads in GODOFWAR.TOC (R_AHA/R_AH2 Hydra in ATHN01D, R_AH3 Hydra in ATHN01EE, R_AB3/R_AB4 in
+  PAND03H, R_CEP/R_CEA Cerberus in PAND04H and ARENA27, R_A1A-C Ares in ATHN08B, R_AEV clones in ATHN08C, R_A2A-C
+  Ares in ATHN07B; ARENA zones are the Challenge of the Gods).
+- Levels and fights: not run yet.
 
 ### Lessons from the first run (2026-10-26, port/switch/sweep/20261026_0256)
 
