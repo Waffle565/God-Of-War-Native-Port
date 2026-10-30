@@ -1054,3 +1054,14 @@ Run: `python -I tools/zones.py --slots 1,2,3,4` (scale: `PS2X_GS_HW_SCALE`); sav
   zones (37 pass, 8 slow = game speed 1.06-1.08, ATHN01B test limit), fights not run. Bugs: Auto-Sleep during long
   movies (no media-playback report), game 5-8 % fast in 8 zones. Console left at the default (exefs md5 6bfcb76e),
   home menu. Resume: `--resume port/switch/sweep/20261026_0256`.
+- 2026-10-30 (sw-fog, user report "bugged fog" now and then in the second Hydra fight, console default
+  update_crash1+FAILGT): **cause found in gs_dk.cpp: the image descriptor slots were a 16384-entry ring.** After
+  16384 image allocations (the user's first 205 s of a new game already made ~2900 texture uploads) the ring wrapped
+  and new textures overwrote the descriptors of images still in use, first the render targets' colour/depth made at
+  start, so every pass sampling a target (haze/fog sprites, shuffles, bloom) read a foreign or freed image. Explains
+  "second fight, not the first" (time-dependent) and "intermittent" (the stolen slot's image changes). Fix
+  (port/switch/fog.patch on /root/src-crash, build /root/gow-switch-crash, ELF /root/elf_fog1.elf, package
+  update_fog1): per-image slots with a free list recycled after the GPU is done; `GOW_DK_SLOT_RING=<n>` reproduces
+  the old ring; plus new targets/depth buffers cleared whole (scissor/masks of the previous draw used to apply).
+  Docs: docs/switch-deko3d.md "Image descriptors". NOT yet verified on the console (console runs were refused by the
+  permission classifier); test env files port/switch/fogenv/{ring,fix}.txt (ATHN01D warp, ring=256 repro vs fix).

@@ -20,6 +20,18 @@ toolchain (`deko3d` 0.5.0 with the `uam` shader compiler, `/opt/devkitpro/tools/
   - Memory: buffer objects and uploads in CPU-visible GPU memory (the vertex stream is written in place and orphaned
     with `glBufferData` exactly as the backend does), images in their own blocks, freed when the submit that last
     used them has finished; a 16 MB command-memory ring and a 48 MB staging ring, both fenced per submit.
+  - Image descriptors (sw-fog, 2026-10-30, `port/switch/fog.patch`): every live image owns one of the 16384 slots of
+    the descriptor set; a released image's slot goes back to a free list after the GPU has finished the lists that
+    may still sample it (`Garbage::slot`, `retire`). The slots used to be a ring: after 16384 image allocations
+    (~20-40 min of play, i.e. late in the ship level, the second Hydra fight) a new texture overwrote the descriptor
+    of an image still in use, first of all the render targets' colour and depth allocated at start, so every pass
+    that samples a target (haze/fog sprites, channel shuffles, bloom) read a foreign or freed image: the user's
+    intermittent "bugged fog". `GOW_DK_SLOT_RING=<n>` brings the old ring back over n slots to reproduce it;
+    `[gs-dk-img]` (GOW_PERF_DIAG) logs `allocs=` (images allocated since start), `slots=` (high water) and
+    `free_slots=`.
+  - New render targets and depth buffers are cleared whole (scissor off, all write masks on): the clear used to keep
+    the previous draw's scissor and colour/depth masks (a depth buffer created under a draw without Z write was not
+    cleared at all), which only stayed hidden while new GPU memory happened to be zero; image chunks reuse memory.
   - Readbacks (`glReadPixels`) submit and wait; the backend only does that for a CLUT read from a render target
     (cached per target version) and for diagnostics.
 - **Shaders are compiled ahead of time.** deko3d has no GLSL compiler at run time. `tools/dk_shaders.py` extracts the

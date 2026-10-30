@@ -1,0 +1,159 @@
+--- a/ps2xRuntime/src/lib/gs/gpu/gs_dk.cpp
++++ b/ps2xRuntime/src/lib/gs/gpu/gs_dk.cpp
+@@ -48,7 +48,7 @@
+     // ---- device ------------------------------------------------------------------------------------------------------
+     constexpr uint32_t kCmdChunk = 1u << 20;         // command memory per chunk
+     constexpr uint32_t kCmdChunks = 16u;             // ring of chunks, each fenced by the submit that used it last
+-    constexpr uint32_t kImageSlots = 16384u;         // image descriptors (a ring: a slot comes back after 16384 images)
++    constexpr uint32_t kImageSlots = 16384u;         // image descriptors (GOW-Port: a free list, see writeDescriptor)
+     constexpr uint32_t kSamplerSlots = 64u;
+     constexpr uint32_t kSwapImages = 3u;
+     constexpr uint32_t kScreenW = 1280u, kScreenH = 720u;
+@@ -150,6 +150,7 @@
+         bool pool = false; // a buffer's storage: kept for reuse (bufferPool) instead of destroyed
+         int32_t chunk = -1; // an image chunk range (mem null): returned to the chunk's free list
+         uint32_t off = 0, len = 0;
++        uint32_t slot = 0; // GOW-Port: an image descriptor slot, back to State::freeSlots (0 = none)
+     };
+ 
+     struct State
+@@ -168,7 +169,14 @@
+         DkImageDescriptor *imageDescs = nullptr;
+         DkSamplerDescriptor *samplerDescs = nullptr;
+         DkGpuAddr imageDescAddr = 0, samplerDescAddr = 0;
+-        uint32_t nextSlot = 1; // 0 = the dummy texture
++        uint32_t nextSlot = 1; // 0 = the dummy texture; slots never handed out yet start here
++        // GOW-Port: image descriptor slots of released images, reusable once the GPU has finished the lists that may
++        // still sample them. The slots used to be a ring: after 16384 image allocations (~20-40 min of play) a new image
++        // overwrote the descriptor of one still alive (the render targets' colour and depth, allocated first), so every
++        // pass sampling a render target (fog, haze, channel shuffles) read another, often freed, image ("bugged fog").
++        std::vector<uint32_t> freeSlots;
++        uint32_t slotRing = 0;   // GOW_DK_SLOT_RING=<n>: the old ring over n slots (diagnostic, reproduces the bug)
++        uint64_t imageAllocs = 0; // [gs-dk-img] allocs: images allocated since start
+         bool descriptorsDirty = true;
+         bool setsBound = false;
+ 
+@@ -419,11 +427,13 @@
+         while (!s->garbage.empty() && s->garbage.front().serial <= s->doneSerial)
+         {
+             const Garbage &g = s->garbage.front();
++            if (g.slot)
++                s->freeSlots.push_back(g.slot);
+             if (g.chunk >= 0)
+                 imageFree(g.chunk, g.off, g.len);
+             else if (g.pool && s->bufferPool.size() < 4u)
+                 s->bufferPool.push_back(g.mem);
+-            else
++            else if (g.mem)
+                 dkMemBlockDestroy(g.mem);
+             s->garbage.pop_front();
+         }
+@@ -595,24 +605,60 @@
+         return id && id < s->textures.size() ? &s->textures[id] : nullptr;
+     }
+ 
++    // a descriptor slot of its own for every live image: a never used one, else one released and no longer read by
++    // the GPU (State::freeSlots); when all are taken, wait for the GPU to finish the lists that hold released ones
++    uint32_t takeSlot()
++    {
++        if (s->slotRing)
++        {
++            const uint32_t slot = s->nextSlot;
++            s->nextSlot = s->nextSlot + 1u >= s->slotRing ? 1u : s->nextSlot + 1u;
++            return slot;
++        }
++        if (s->nextSlot < kImageSlots)
++            return s->nextSlot++;
++        if (s->freeSlots.empty())
++        {
++            retire();
++            if (s->freeSlots.empty() && !s->garbage.empty())
++            {
++                waitSerial(submit());
++                retire();
++            }
++        }
++        if (s->freeSlots.empty())
++        {
++            fail("out of image descriptor slots");
++            return 0;
++        }
++        const uint32_t slot = s->freeSlots.back();
++        s->freeSlots.pop_back();
++        return slot;
++    }
++
+     void writeDescriptor(Texture &t)
+     {
+-        t.slot = s->nextSlot;
+-        s->nextSlot = s->nextSlot + 1u >= kImageSlots ? 1u : s->nextSlot + 1u;
++        t.slot = takeSlot();
++        ++s->imageAllocs;
+         dkImageDescriptorInitialize(&s->imageDescs[t.slot], &t.view, false, false);
+         s->descriptorInvalidate = true;
+     }
+ 
+     void releaseImage(Texture &t)
+     {
++        // memory and descriptor slot are freed after the open list (which may use them) finishes
++        const uint32_t slot = s->slotRing ? 0u : t.slot;
+         if (t.mem)
+         {
+-            s->garbage.push_back({s->nextSerial, t.mem}); // freed after the open list (which may use it) finishes
++            s->garbage.push_back({s->nextSerial, t.mem, false, -1, 0u, 0u, slot});
+             s->dedicatedBytes -= dkMemBlockGetSize(t.mem);
+             --s->dedicatedCount;
+         }
+         else if (t.chunk >= 0)
+-            s->garbage.push_back({s->nextSerial, nullptr, false, t.chunk, t.off, t.len});
++            s->garbage.push_back({s->nextSerial, nullptr, false, t.chunk, t.off, t.len, slot});
++        else if (slot)
++            s->garbage.push_back({s->nextSerial, nullptr, false, -1, 0u, 0u, slot});
++        t.slot = 0;
+         t.mem = nullptr;
+         t.chunk = -1;
+         t.off = t.len = 0;
+@@ -1025,9 +1071,10 @@
+             uint64_t used = 0;
+             for (const auto &c : s->imageChunks)
+                 used += c.used;
+-            std::fprintf(stderr, "[gs-dk-img] chunks=%zu chunk_mb=%zu used_kb=%llu dedicated=%u dedicated_kb=%llu garbage=%zu\n",
++            std::fprintf(stderr, "[gs-dk-img] chunks=%zu chunk_mb=%zu used_kb=%llu dedicated=%u dedicated_kb=%llu garbage=%zu allocs=%llu slots=%u free_slots=%zu ring=%u\n",
+                          s->imageChunks.size(), s->imageChunks.size() * (kImageChunk >> 20), (unsigned long long)(used >> 10),
+-                         s->dedicatedCount, (unsigned long long)(s->dedicatedBytes >> 10), s->garbage.size());
++                         s->dedicatedCount, (unsigned long long)(s->dedicatedBytes >> 10), s->garbage.size(),
++                         (unsigned long long)s->imageAllocs, s->nextSlot, s->freeSlots.size(), s->slotRing);
+         }
+         if (s->gpuTime)
+         {
+@@ -2186,6 +2233,8 @@
+         for (unsigned i = 0; i < GSDK::kShaderCount; ++i)
+             s->binaries[GSDK::kShaders[i].hash] = &GSDK::kShaders[i];
+ 
++        if (const char *r = std::getenv("GOW_DK_SLOT_RING"))
++            s->slotRing = std::clamp<uint32_t>(static_cast<uint32_t>(std::atoi(r)), 2u, kImageSlots);
+         // GOW_DK_MEMBLOCK_TEST=<n>: create up to n small image memory blocks and log the count every 100 (a failing
+         // dkMemBlockCreate aborts the process: the last logged count is the limit); then destroy them
+         if (const char *mt = std::getenv("GOW_DK_MEMBLOCK_TEST"))
+--- a/ps2xRuntime/src/lib/gs/gpu/gs_hw_backend.cpp
++++ b/ps2xRuntime/src/lib/gs/gpu/gs_hw_backend.cpp
+@@ -1337,6 +1337,10 @@
+         g.GenFramebuffers(1, &t.fbo);
+         g.BindFramebuffer(kFramebuffer, t.fbo);
+         g.FramebufferTexture2D(kFramebuffer, kColorAttachment0, kTexture2D, t.color, 0);
++        // GOW-Port: a clear honours the scissor and the write masks, and they are still the previous draw's here: clear
++        // the whole new target (new GPU memory is not zero on deko3d, it may hold a freed image)
++        g.Disable(kScissorTest);
++        g.ColorMask(kTrue, kTrue, kTrue, kTrue);
+         g.ClearColor(0.f, 0.f, 0.f, 0.f);
+         g.Clear(kColorBufferBit);
+         std::fprintf(stderr, "[gs-hw] render target fbp=%u fbw=%u -> %ux%u\n", fbp, t.fbw, t.glW, t.glH);
+@@ -1366,6 +1370,8 @@
+             g.TexParameteri(kTexture2D, kTextureMagFilter, kNearest);
+             g.BindFramebuffer(kFramebuffer, t.fbo);
+             g.FramebufferTexture2D(kFramebuffer, stencil ? kDepthStencilAttachment : kDepthAttachment, kTexture2D, t.depth, 0);
++            g.Disable(kScissorTest); // GOW-Port: the whole buffer, whatever the previous draw's scissor and depth mask
++            g.DepthMask(kTrue);
+             g.ClearDepth(0.0);
+             if (stencil)
+                 g.StencilMask(0xFFu), g.ClearStencil(0);
