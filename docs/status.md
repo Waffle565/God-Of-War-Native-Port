@@ -1063,5 +1063,8 @@ Run: `python -I tools/zones.py --slots 1,2,3,4` (scale: `PS2X_GS_HW_SCALE`); sav
   (port/switch/fog.patch on /root/src-crash, build /root/gow-switch-crash, ELF /root/elf_fog1.elf, package
   update_fog1): per-image slots with a free list recycled after the GPU is done; `GOW_DK_SLOT_RING=<n>` reproduces
   the old ring; plus new targets/depth buffers cleared whole (scissor/masks of the previous draw used to apply).
-  Docs: docs/switch-deko3d.md "Image descriptors". NOT yet verified on the console (console runs were refused by the
-  permission classifier); test env files port/switch/fogenv/{ring,fix}.txt (ATHN01D warp, ring=256 repro vs fix).
+  Docs: docs/switch-deko3d.md "Image descriptors". Console (user claude, ATHN01D warp + attack/mash pad script,
+  port/switch/fogenv): run_fog_ring2 (GOW_DK_SLOT_RING=256) = whole screen garbage stripes once the ring wraps
+  (mechanism confirmed); run_fog_fix = clean (allocs 1863, slots 1864 in 330 s), fight windows 38.6 Hz vs
+  run_fog_base (update_crash1, same script) 36.6: no regression. **Console default = update_fog1 + FAILGT**
+  (exefs md5 62e6b3f2; tools/switch_default.sh). The user should replay the second Hydra fight to confirm.
