@@ -205,6 +205,9 @@ namespace ps2x::iop
                         stream.read(first.data(), static_cast<std::streamsize>(first.size()));
                         stream.clear();
                     }
+                for (Dub &dub : m_dubs)
+                    loadDub(dub);
+                std::sort(m_dubs.begin(), m_dubs.end(), [](const Dub &a, const Dub &b) { return a.lsn < b.lsn; });
 
                 std::ifstream meta(root / ".disc_meta", std::ios::binary);
                 std::array<uint8_t, 4u + kSector> record{};
@@ -262,6 +265,8 @@ namespace ps2x::iop
                     ok = ok && static_cast<size_t>(stream.gcount()) == wanted;
                     i += run;
                 }
+                if (!m_dubs.empty())
+                    applyDubs(lsn, count, bytes);
                 return ok;
             }
 
@@ -307,6 +312,19 @@ namespace ps2x::iop
                         fields >> m_sectors;
                     else if (kind == "layer1")
                         fields >> m_layer1Start;
+                    else if (kind == "dub" && !base.empty())
+                    {
+                        // GOW-Port: dub <lsn> <size> <path>: the movie file at <lsn> plays the dub file's audio
+                        // (tools/gow_movie.py dub_file; applyDubs)
+                        Dub dub;
+                        fields >> dub.lsn >> dub.size;
+                        std::getline(fields >> std::ws, dub.path);
+                        if (dub.path.empty())
+                            continue;
+                        const auto absolute = (base / std::filesystem::u8path(dub.path)).u8string();
+                        dub.path.assign(absolute.begin(), absolute.end());
+                        m_dubs.push_back(std::move(dub));
+                    }
                     else if (kind == "file")
                     {
                         Entry entry;
@@ -363,11 +381,181 @@ namespace ps2x::iop
                 return it->second;
             }
 
+            // GOW-Port: a dubbed movie (docs/settings.md "Movies"). The overlay keeps the USA movie in place and
+            // names a dub file holding another language's track as PS2 ADPCM (tools/gow_movie.py dub_file: header,
+            // the movie's audio packet ranges, the ADPCM). Reads of the movie's sectors get the PCM bytes of its audio
+            // packets replaced by that track, decoded on the fly: the movie, its packets and its own SShd/SSbd
+            // headers stay the USA ones, so nothing else in the player changes. Whole dubbed copies of the ~40
+            // speaking movies would need ~3.4 GB per language; the dub files are ~55 KB per second of movie.
+            struct Dub
+            {
+                static constexpr uint32_t kWindowFrames = 8192u; // decoded ADPCM frames kept per channel (~4.8 s)
+                uint32_t lsn = 0, size = 0;
+                std::string path;
+                bool valid = false, reported = false;
+                uint32_t pcmStart = 0, pcmBytes = 0, pcmInterleave = 0, channels = 0, adpcmInterleave = 0, adpcmBytes = 0;
+                int32_t lag = 0;
+                uint64_t adpcmAt = 0;
+                std::vector<uint32_t> rangeOffset, rangeLength, rangeTrack; // file offset, length, track offset
+                std::ifstream file;
+                std::vector<uint8_t> chunk;         // cached ADPCM bytes [chunkAt, chunkAt + chunk.size())
+                uint64_t chunkAt = ~0ull;
+                struct Channel
+                {
+                    int64_t nextFrame = 0;          // next frame to decode
+                    int32_t h1 = 0, h2 = 0;
+                    std::vector<int16_t> window;    // frame f's 28 samples at (f % kWindowFrames) * 28
+                } channel[2];
+            };
+
+            void loadDub(Dub &dub)
+            {
+                const std::filesystem::path full = dub.path.find(":/") != std::string::npos
+                                                       ? std::filesystem::u8path(dub.path)
+                                                       : m_root / std::filesystem::u8path(dub.path);
+                dub.file.open(full, std::ios::binary);
+                std::array<uint8_t, 64> head{};
+                dub.file.read(reinterpret_cast<char *>(head.data()), static_cast<std::streamsize>(head.size()));
+                const uint32_t ranges = readLe32(head.data() + 12);
+                if (!dub.file || std::memcmp(head.data(), "GOWDUB1", 8) != 0 || readLe32(head.data() + 8) != dub.size)
+                {
+                    std::fprintf(stderr, "[disc] dub %s: not a dub file for this movie; English\n", dub.path.c_str());
+                    return;
+                }
+                dub.pcmStart = readLe32(head.data() + 16);
+                dub.pcmBytes = readLe32(head.data() + 20);
+                dub.pcmInterleave = readLe32(head.data() + 24);
+                dub.channels = readLe32(head.data() + 28);
+                dub.lag = static_cast<int32_t>(readLe32(head.data() + 32));
+                dub.adpcmInterleave = readLe32(head.data() + 36);
+                dub.adpcmBytes = readLe32(head.data() + 40);
+                if (dub.channels == 0u || dub.channels > 2u || dub.pcmInterleave < 2u || dub.adpcmInterleave < 16u ||
+                    dub.adpcmInterleave % 16u != 0u)
+                {
+                    std::fprintf(stderr, "[disc] dub %s: unsupported layout; English\n", dub.path.c_str());
+                    return;
+                }
+                std::vector<uint8_t> table(size_t{ranges} * 8u);
+                dub.file.read(reinterpret_cast<char *>(table.data()), static_cast<std::streamsize>(table.size()));
+                if (!dub.file)
+                    return;
+                uint32_t track = 0;
+                for (uint32_t r = 0; r < ranges; ++r)
+                {
+                    dub.rangeOffset.push_back(readLe32(table.data() + r * 8u));
+                    dub.rangeLength.push_back(readLe32(table.data() + r * 8u + 4u));
+                    dub.rangeTrack.push_back(track);
+                    track += dub.rangeLength.back();
+                }
+                dub.adpcmAt = 64u + table.size();
+                dub.valid = true;
+            }
+
+            // sample n of a channel of the dub's track (0 outside it)
+            int16_t dubSample(Dub &dub, uint32_t c, int64_t n)
+            {
+                static constexpr int32_t kF0[5] = {0, 60, 115, 98, 122};
+                static constexpr int32_t kF1[5] = {0, 0, -52, -55, -60};
+                const int64_t frames = dub.adpcmBytes / dub.channels / 16u;
+                if (n < 0 || n / 28 >= frames)
+                    return 0;
+                const int64_t frame = n / 28;
+                Dub::Channel &ch = dub.channel[c];
+                if (ch.window.empty())
+                {
+                    for (Dub &other : m_dubs) // one movie plays at a time: keep only this one's windows
+                        if (&other != &dub)
+                            for (Dub::Channel &o : other.channel)
+                                o = Dub::Channel{};
+                    ch.window.assign(size_t{Dub::kWindowFrames} * 28u, 0);
+                }
+                if (frame < ch.nextFrame - static_cast<int64_t>(Dub::kWindowFrames))
+                    ch.nextFrame = 0, ch.h1 = ch.h2 = 0; // behind the window: decode again from the start
+                const uint32_t chunkFrames = dub.adpcmInterleave / 16u;
+                while (ch.nextFrame <= frame)
+                {
+                    const int64_t f = ch.nextFrame;
+                    const uint64_t at = uint64_t(f / chunkFrames) * dub.adpcmInterleave * dub.channels +
+                                        uint64_t{c} * dub.adpcmInterleave + uint64_t(f % chunkFrames) * 16u;
+                    if (dub.chunkAt == ~0ull || at < dub.chunkAt || at + 16u > dub.chunkAt + dub.chunk.size())
+                    {
+                        dub.chunkAt = at & ~uint64_t{0xFFFF} ;
+                        dub.chunk.resize(0x10000u + 16u);
+                        dub.file.clear();
+                        dub.file.seekg(static_cast<std::streamoff>(dub.adpcmAt + dub.chunkAt));
+                        dub.file.read(reinterpret_cast<char *>(dub.chunk.data()), static_cast<std::streamsize>(dub.chunk.size()));
+                        dub.chunk.resize(static_cast<size_t>(dub.file.gcount()));
+                        if (at + 16u > dub.chunkAt + dub.chunk.size())
+                            return 0;
+                    }
+                    const uint8_t *data = dub.chunk.data() + (at - dub.chunkAt);
+                    int32_t shift = data[0] & 15;
+                    if (shift > 12)
+                        shift = 9;
+                    const int32_t filter = std::min<int32_t>((data[0] >> 4) & 7, 4);
+                    int16_t *out = ch.window.data() + size_t(f % Dub::kWindowFrames) * 28u;
+                    for (int k = 0; k < 28; ++k)
+                    {
+                        const int32_t nibble = (data[2 + k / 2] >> ((k & 1) * 4)) & 15;
+                        const int32_t sample = static_cast<int16_t>(nibble << 12) >> shift;
+                        int32_t value = sample + ((ch.h1 * kF0[filter] + ch.h2 * kF1[filter] + 32) >> 6);
+                        value = std::clamp(value, -32768, 32767);
+                        ch.h2 = ch.h1;
+                        ch.h1 = value;
+                        out[k] = static_cast<int16_t>(value);
+                    }
+                    ++ch.nextFrame;
+                }
+                return dub.channel[c].window[size_t(frame % Dub::kWindowFrames) * 28u + size_t(n % 28)];
+            }
+
+            // the PCM bytes of dubbed movies inside sectors [lsn, lsn + count) just read into bytes
+            void applyDubs(uint32_t lsn, uint32_t count, uint8_t *bytes)
+            {
+                const uint64_t readBegin = uint64_t{lsn} * kSector, readEnd = readBegin + uint64_t{count} * kSector;
+                for (Dub &dub : m_dubs)
+                {
+                    const uint64_t fileBegin = uint64_t{dub.lsn} * kSector;
+                    if (!dub.valid || fileBegin >= readEnd || fileBegin + dub.size <= readBegin)
+                        continue;
+                    if (!dub.reported)
+                    {
+                        dub.reported = true;
+                        std::fprintf(stderr, "[disc] dub read: %s\n", dub.path.c_str());
+                    }
+                    const uint64_t lo = std::max(readBegin, fileBegin) - fileBegin;
+                    const uint64_t hi = std::min(readEnd, fileBegin + dub.size) - fileBegin;
+                    // the first range ending after lo
+                    size_t r = static_cast<size_t>(std::upper_bound(dub.rangeOffset.begin(), dub.rangeOffset.end(), lo) -
+                                                   dub.rangeOffset.begin());
+                    r = r > 0u ? r - 1u : 0u;
+                    const uint32_t block = dub.pcmInterleave * dub.channels;
+                    for (; r < dub.rangeOffset.size() && dub.rangeOffset[r] < hi; ++r)
+                    {
+                        const uint64_t from = std::max<uint64_t>(lo, dub.rangeOffset[r]);
+                        const uint64_t to = std::min<uint64_t>(hi, uint64_t{dub.rangeOffset[r]} + dub.rangeLength[r]);
+                        for (uint64_t at = from; at < to; ++at)
+                        {
+                            const uint64_t track = dub.rangeTrack[r] + (at - dub.rangeOffset[r]);
+                            if (track < dub.pcmStart || track >= uint64_t{dub.pcmStart} + dub.pcmBytes)
+                                continue;
+                            const uint64_t p = track - dub.pcmStart;
+                            const uint32_t inBlock = static_cast<uint32_t>(p % block);
+                            const int64_t n = int64_t(p / block) * (dub.pcmInterleave / 2u) +
+                                              (inBlock % dub.pcmInterleave) / 2u;
+                            const int16_t value = dubSample(dub, inBlock / dub.pcmInterleave, n - dub.lag);
+                            bytes[fileBegin + at - readBegin] = static_cast<uint8_t>((p & 1u) ? uint16_t(value) >> 8 : uint16_t(value) & 0xFFu);
+                        }
+                    }
+                }
+            }
+
             std::mutex m_mutex;
             std::filesystem::path m_root;
             uint32_t m_sectors = 0u;
             uint32_t m_layer1Start = 0u;
             std::vector<Entry> m_files;
+            std::vector<Dub> m_dubs;
             std::unordered_map<uint32_t, std::array<uint8_t, kSector>> m_meta;
             std::map<std::string, std::ifstream> m_handles; // by path: an overlay file can share its LSN with the PAK it lies in
         };
