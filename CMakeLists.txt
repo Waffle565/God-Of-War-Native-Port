@@ -59,6 +59,14 @@ if(PS2X_IS_ARM_TARGET)
     if(PS2X_IS_AARCH64_TARGET AND APPLE)
         # macOS ARM64 already uses optimal defaults
         message(STATUS "macOS ARM64 - using default compiler flags")
+        # macOS: same x86-compatibility settings as the Switch build: plain char is signed on x86, and the VU/FPU code
+        # relies on SSE's exact NaN/min/max, division, square root and dot product results.
+        add_compile_options(-fsigned-char)
+        add_compile_definitions(
+            SSE2NEON_PRECISE_MINMAX=1
+            SSE2NEON_PRECISE_DIV=1
+            SSE2NEON_PRECISE_SQRT=1
+            SSE2NEON_PRECISE_DP=1)
     elseif(PS2X_IS_AARCH64_TARGET AND MSVC)
         # Windows ARM64 - MSVC already uses optimal defaults
         message(STATUS "Windows ARM64 (MSVC) - using default compiler flags")
