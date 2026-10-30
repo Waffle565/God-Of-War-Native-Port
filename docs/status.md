@@ -1068,3 +1068,14 @@ Run: `python -I tools/zones.py --slots 1,2,3,4` (scale: `PS2X_GS_HW_SCALE`); sav
   (mechanism confirmed); run_fog_fix = clean (allocs 1863, slots 1864 in 330 s), fight windows 38.6 Hz vs
   run_fog_base (update_crash1, same script) 36.6: no regression. **Console default = update_fog1 + FAILGT**
   (exefs md5 62e6b3f2; tools/switch_default.sh). The user should replay the second Hydra fight to confirm.
+- 2026-10-30 (sw-movlang, on the console): **movies in the player's language**. User report (Italian console): the
+  intro spoke Italian but showed the English card "Three Weeks Earlier / The Aegean Sea", the next movies spoke
+  English. Causes: only the intro's sound was dubbed; the European disc's five language tracks of the other 42
+  speaking movies were never used, and the card is part of the intro's picture (Europe: per-language clips
+  SEMO01A-E). Fix (docs/settings.md "Movies in other languages"): dub files (EU ADPCM track per movie, decoded into
+  the USA movie's PCM packets by ps2xIOP disc_source `dub` layout lines, ext 7d15a2a, port/switch/movlang.patch) and
+  the intro card re-encoded from the language's clip (tools/gow_movie.py). Pack port/switch/nsp/out/lang_nx2 on
+  sdmc:/switch/gow/lang (732 files, +954 MB). Console sweep port/switch/sweep_movlang/20261030_1338 (BONUS17,
+  SEMO01, A01MP01, SEMO02, A03MP01, it_it_nx): all PASS at 30 pictures/s, `[disc] dub read` for each, card
+  "Tre Settimane Prima / Mar Egeo" on screen. **Console default = update_mlangfog1 + FAILGT** (exefs md5 b84b9fe6 =
+  fog1 sources + dub; tree /root/src-mlang, build /root/gow-switch-mlang, ELF /root/elf_mlangfog1.elf).
