@@ -46,6 +46,25 @@ plus `IOP_MOD/` (symlinks to `disc-usa/` are enough; `out/build-mac/run/` is suc
 Speed diagnostics: `GOW_PERF_DIAG=1 GOW_DELTA_DIAG=1 GOW_PERF_FRAME_PC=0x001837B8` print `[gow-perf]` and
 `[gow-speed]`. `PS2X_GS_NULL=0` tries the GL renderer (fails on macOS until Metal).
 
+## Performance (Apple M4, ship start, new-game script)
+| scene | before | after |
+|---|---|---|
+| menu | 45.7 flips/s | 60.3 |
+| ship idle | 27.9 | 60.0 |
+| ship walk/fight | 20.8 (min 7.3) | 60.2 (min 59.4) |
+
+What did it: field-wise draw-state batching (740k -> ~9k draws/s), zero-copy presentation into a `CAMetalLayer` with
+vsync and 3 frames in flight, palette textures converted to RGBA and cached, shaders specialised with function
+constants (compiled in the background, generic fallback), feedback copies limited to the sampled rectangle.
+
+Presentation: the window is 16:9 letterboxed (1809x1018 inside a 1920x1018 content area on a 1080p display); on a
+75 Hz display 60 fps content judders, set the display to 60 Hz. The debug panel (F1) starts closed on macOS
+(`GOW_DEBUG_PANEL=1` opens it); while it is open the layer hides and frames go through RAM.
+
+Switches: `PS2X_GS_DIRECT_PRESENT=0` (RAM presentation, as for captures), `GOW_GS_MTL_DEPAL=0` (no RGBA palette
+cache), `GOW_GS_MTL_SPECIALIZE=0` (generic shader only), `GOW_GS_MTL_LABELS=1` (render-pass labels for Xcode's GPU
+capture), `GOW_GS_HW_STATS=1` (adds `gpu_ms` and `feedbackMpx`), `GOW_HOST_SHOT` (writes `host_shot.ppm`).
+
 ## macOS-specific build settings
 In the top-level CMakeLists (`APPLE AND aarch64` only): `-fsigned-char` (x86 `char`), `-ffp-contract=off` (Apple clang
 fuses `a*b+c`; x86 and the PS2 round twice), sse2neon precise min/max, division and dot product. Not
@@ -61,4 +80,7 @@ fuses `a*b+c`; x86 and the PS2 round twice), sse2neon precise min/max, division 
 - Test suite on macOS (`-DPS2X_BUILD_TEST=ON -DPS2X_TEST_SKIP_STALE=ON`): 452 tests, 62 fail, none in VU or float
   math: 53 PS2GS + 1 PS2VU1 read CPU-side GS VRAM that this runtime no longer rasterises, the rest are stale upstream
   tests.
-- Speed with the Metal renderer is not measured per zone yet (see the performance task).
+- Short dips at the start of the title screen and rare EE-side dips in gameplay (ee/vu/iop time spikes) also happen
+  with `PS2X_GS_NULL=1`, so they are not the renderer.
+- The GL renderer has the same uninitialised-padding problem in its draw-state comparison that made every primitive
+  its own batch on Metal (fixed here with a field-wise `SameDrawState`); worth reporting upstream.
