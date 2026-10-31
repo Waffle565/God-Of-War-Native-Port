@@ -39,7 +39,9 @@ int main()
     register_ps2_runtime_io_tests();
     register_ps2_runtime_kernel_tests();
     register_ps2_runtime_interrupt_tests();
+#ifndef PS2X_TEST_SKIP_STALE
     register_ps2_memory_tests();
+#endif
     register_ps2_vu1_tests();
     register_ps2_vu_tests();
     register_ps2_gs_tests();
@@ -51,8 +53,10 @@ int main()
     register_ps2_sif_dma_tests();
     register_ps2_recompiler_tests();
     register_ps2_runtime_expansion_tests();
+#ifndef PS2X_TEST_SKIP_STALE // GOW-Port: see PS2X_TEST_SKIP_STALE in ps2xTest/CMakeLists.txt.
     register_ps2_spu2_tests();
     register_ps2_sio2_tests();
+#endif
     register_ps2_mmi_tests();
     int res = MiniTest::Run();
     std::cout.flush();

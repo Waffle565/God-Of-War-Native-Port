@@ -26,7 +26,6 @@ add_library(ps2_test_lib STATIC
     src/ps2_runtime_io_tests.cpp
     src/ps2_runtime_kernel_tests.cpp
     src/ps2_runtime_interrupt_tests.cpp
-    src/ps2_memory_tests.cpp
     src/ps2_vu1_tests.cpp
     src/ps2_vu_tests.cpp
     src/ps2_gs_tests.cpp
@@ -38,10 +37,21 @@ add_library(ps2_test_lib STATIC
     src/ps2_sif_dma_tests.cpp
     src/ps2_recompiler_tests.cpp
     src/ps2_runtime_expansion_tests.cpp
-    src/ps2_spu2_tests.cpp
-    src/ps2_sio2_tests.cpp
     src/ps2_mmi_tests.cpp
 )
+
+# GOW-Port: these three suites still target the upstream PS2Memory / ps2xIOP emulator APIs that the GoW runtime replaced
+# (processPendingTransfers, ps2xIOP/src/emulator/core/sio2.h, spu2.h) and no longer compile. PS2X_TEST_SKIP_STALE=ON builds
+# the rest of the suite; the default keeps them in.
+option(PS2X_TEST_SKIP_STALE "Leave out the test suites that no longer compile against the GoW runtime" OFF)
+if(PS2X_TEST_SKIP_STALE)
+    target_compile_definitions(ps2_test_lib PRIVATE PS2X_TEST_SKIP_STALE)
+else()
+    target_sources(ps2_test_lib PRIVATE
+        src/ps2_memory_tests.cpp
+        src/ps2_spu2_tests.cpp
+        src/ps2_sio2_tests.cpp)
+endif()
 
 target_include_directories(ps2_test_lib PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include
@@ -66,6 +76,9 @@ add_executable(ps2x_tests
     src/main.cpp
     $<TARGET_OBJECTS:ps2_test_function_table>
 )
+if(PS2X_TEST_SKIP_STALE)
+    target_compile_definitions(ps2x_tests PRIVATE PS2X_TEST_SKIP_STALE)
+endif()
 
 option(PRINT_GENERATED_CODE "Print generated code in tests" OFF)
 if(PRINT_GENERATED_CODE)
