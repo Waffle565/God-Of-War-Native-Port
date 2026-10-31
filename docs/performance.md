@@ -716,3 +716,10 @@ Details: docs/native-render-study.md "step 7 on the renderer side, part 3".
   (a movie picture arrives as ~40 strips whose transfer ranges all start at the picture's first row): upload time
   222 -> 3760 ms per 5 s, SEMO01 30 -> 22.9 pictures/s. port/switch/dips7.patch = dips6 without that eager hash (block
   hashes only on demand). dips5/dips6 are superseded.
+- dips7 verified and installed (2026-10-31): GS thread ns per vertex in the heavy windows dips4 -> dips7: ATHN01D
+  150 -> 144, ATHN02A 173 -> 156, ATHN04C 135 -> 127, ATHN06C 159 -> 142, OLYMP02 146 -> 133. Mean fps ATHN02A
+  47.2 -> 49.1, ATHN04C 45.2 -> 46.4, ATHN07B 46.7 -> 47.3; movies unchanged (30 pictures/s).
+- Left in the GS thread (ATHN06C heavy part, still GS bound at ~36 fps with ~6.6 M vertices/s): the copy of the
+  52-byte HwVertex into the CpuUncached vertex buffer (memmove ~15 %), the conversion itself, draw()'s per-batch
+  texture lookup (tex_ms ~400 per 5 s). Ideas: a smaller vertex for triangles (the 16-byte sprite clamp range only
+  for sprites), converting straight into the stream buffer.

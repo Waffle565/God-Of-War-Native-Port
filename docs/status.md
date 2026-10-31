@@ -1096,3 +1096,10 @@ Run: `python -I tools/zones.py --slots 1,2,3,4` (scale: `PS2X_GS_HW_SCALE`); sav
   Log: port/switch/sweep/ab2_dips5/20261031_1208/ATHN02A/log.txt. Not reproduced in 12 later title boots (dips4,
   dips6, dips7); the GS texture hash changes cannot feed data back to the EE, so it looks like a timing-dependent EE
   race. If it appears again in any run: stop and investigate.
+- 2026-10-31 (sw-dips2): **update_dips7** = update_dips4 sources + port/switch/dips7.patch changes (per-256-byte-block
+  hash cache for the texture revalidation, vertex path: per-run constants, reserved vectors, no range insert, kick
+  prefetch). A/B vs dips4 same session (port/switch/sweep/ab3_*): GS thread 4-10 % less time per vertex; mean fps
+  ATHN02A 47.2 -> 49.1, ATHN04C 45.2 -> 46.4, ATHN07B 46.7 -> 47.3, ATHN01D / OLYMP02 unchanged within noise (VU1 /
+  not GS bound); SEMO01 and A06MP01 30 pictures/s; screenshots correct; 12 title boots clean. **Console default =
+  update_dips7 + FAILGT** (exefs md5 e619310c; tree /root/src-mlang = bugs1 + harness + dips7, ELF /root/elf_dips7.elf;
+  dips7.patch is the full diff from the bugs1 files /root/dips-orig, it contains dips4).

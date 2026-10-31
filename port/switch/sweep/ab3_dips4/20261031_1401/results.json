@@ -1,0 +1,178 @@
+[
+ {
+  "name": "movies_SEMO01",
+  "kind": "movies",
+  "fail": [],
+  "slow": [],
+  "warn": [],
+  "shots": [
+   "movies_SEMO01\\shots\\s008_80.jpg",
+   "movies_SEMO01\\shots\\s015_150.jpg",
+   "movies_SEMO01\\shots\\s022_220.jpg"
+  ],
+  "run_s": 230,
+  "movies": [
+   {
+    "movie": "SEMO01",
+    "fail": [],
+    "slow": [],
+    "pictures": 1410,
+    "pps": 30.0,
+    "dub": true
+   },
+   {
+    "movie": "A06MP01",
+    "fail": [],
+    "slow": [],
+    "pictures": 690,
+    "pps": 29.8,
+    "dub": true
+   }
+  ]
+ },
+ {
+  "name": "ATHN01D",
+  "kind": "level",
+  "fail": [],
+  "slow": [],
+  "warn": [],
+  "shots": [
+   "ATHN01D\\gow_warp_1_ATHN01D_0.png",
+   "ATHN01D\\shots\\s006_60.jpg",
+   "ATHN01D\\shots\\s011_110.jpg",
+   "ATHN01D\\shots\\s016_160.jpg"
+  ],
+  "run_s": 160,
+  "load_s": 1.5,
+  "fps": [
+   33.8,
+   37.5
+  ],
+  "speed": 0.989,
+  "zones_seen": [
+   "Athn01A",
+   "Athn01C",
+   "Athn01D"
+  ]
+ },
+ {
+  "name": "ATHN02A",
+  "kind": "level",
+  "fail": [],
+  "slow": [],
+  "warn": [],
+  "shots": [
+   "ATHN02A\\gow_warp_1_ATHN02A_0.png",
+   "ATHN02A\\shots\\s006_60.jpg",
+   "ATHN02A\\shots\\s011_110.jpg",
+   "ATHN02A\\shots\\s016_160.jpg"
+  ],
+  "run_s": 160,
+  "load_s": 2.1,
+  "fps": [
+   46.8,
+   47.2
+  ],
+  "speed": 0.983,
+  "zones_seen": [
+   "Athn01F",
+   "Athn02A"
+  ]
+ },
+ {
+  "name": "ATHN04C",
+  "kind": "level",
+  "fail": [],
+  "slow": [],
+  "warn": [],
+  "shots": [
+   "ATHN04C\\gow_warp_1_ATHN04C_0.png",
+   "ATHN04C\\shots\\s006_60.jpg",
+   "ATHN04C\\shots\\s011_110.jpg",
+   "ATHN04C\\shots\\s016_160.jpg"
+  ],
+  "run_s": 160,
+  "load_s": 0.6,
+  "fps": [
+   41.6,
+   45.2
+  ],
+  "speed": 0.984,
+  "zones_seen": [
+   "Athn01A",
+   "Athn04C"
+  ]
+ },
+ {
+  "name": "ATHN06C",
+  "kind": "level",
+  "fail": [],
+  "slow": [],
+  "warn": [],
+  "shots": [
+   "ATHN06C\\gow_warp_1_ATHN06C_0.png",
+   "ATHN06C\\shots\\s006_60.jpg",
+   "ATHN06C\\shots\\s011_110.jpg",
+   "ATHN06C\\shots\\s016_160.jpg"
+  ],
+  "run_s": 160,
+  "load_s": 1.4,
+  "fps": [
+   32.4,
+   49.2
+  ],
+  "speed": 0.983,
+  "zones_seen": [
+   "Athn01A",
+   "Athn06C"
+  ]
+ },
+ {
+  "name": "OLYMP02",
+  "kind": "level",
+  "fail": [],
+  "slow": [],
+  "warn": [],
+  "shots": [
+   "OLYMP02\\gow_warp_1_OLYMP02_0.png",
+   "OLYMP02\\shots\\s006_60.jpg",
+   "OLYMP02\\shots\\s011_110.jpg",
+   "OLYMP02\\shots\\s016_160.jpg"
+  ],
+  "run_s": 160,
+  "load_s": 0.7,
+  "fps": [
+   37.0,
+   38.7
+  ],
+  "speed": 0.984,
+  "zones_seen": [
+   "Athn01A",
+   "olymp01",
+   "olymp02"
+  ]
+ },
+ {
+  "name": "ATHN07B",
+  "kind": "level",
+  "fail": [],
+  "slow": [],
+  "warn": [],
+  "shots": [
+   "ATHN07B\\gow_warp_1_ATHN07B_0.png",
+   "ATHN07B\\shots\\s006_60.jpg",
+   "ATHN07B\\shots\\s011_110.jpg",
+   "ATHN07B\\shots\\s016_160.jpg"
+  ],
+  "run_s": 160,
+  "load_s": 0.9,
+  "fps": [
+   46.2,
+   46.7
+  ],
+  "speed": 0.983,
+  "zones_seen": [
+   "Athn07b"
+  ]
+ }
+]
