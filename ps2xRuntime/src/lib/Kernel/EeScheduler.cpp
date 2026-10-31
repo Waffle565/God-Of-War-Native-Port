@@ -237,6 +237,9 @@ void EeScheduler::run()
             {
                 GuestInvocation completed = std::move(running->invocations.back());
                 running->invocations.pop_back();
+#if defined(PS2X_HAVE_METAL)
+                updateDisplayHold(running);
+#endif
                 if (completed.onComplete)
                 {
                     try
@@ -298,6 +301,9 @@ void EeScheduler::run()
         try
         {
             m_insideInterrupt = !running->invocations.empty() && running->invocations.back().kind == GuestInvocationKind::Interrupt;
+#if defined(PS2X_HAVE_METAL)
+            updateDisplayHold(running);
+#endif
             m_guestExecuting.store(true, std::memory_order_release);
             ps2_perf::guestEntry(context.pc, m_rdram);
             loadSharedVu0Random(context);
@@ -1702,6 +1708,26 @@ void EeScheduler::makeRunning(GuestThread &item)
     m_currentThreadId = item.id;
     renewTimeSlice();
 }
+
+#if defined(PS2X_HAVE_METAL)
+// The display registers a handler writes take effect together when it returns, as the PS2 CRTC sees them: handlers run
+// inside the vertical blank, so a store it overwrites later in the same run is never scanned out.
+void EeScheduler::updateDisplayHold(const GuestThread *running)
+{
+    bool inHandler = false;
+    if (running)
+        for (const GuestInvocation &invocation : running->invocations)
+            if (invocation.kind == GuestInvocationKind::Interrupt || invocation.kind == GuestInvocationKind::GsCallback)
+            {
+                inHandler = true;
+                break;
+            }
+    if (inHandler == m_displayHeld)
+        return;
+    m_displayHeld = inHandler;
+    m_runtime.gs().holdDisplay(inHandler);
+}
+#endif
 
 void gowDumpBranchRing(const char *why);
 void EeScheduler::makeDormant(GuestThread &item)

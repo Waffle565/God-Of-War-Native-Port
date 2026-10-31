@@ -387,6 +387,11 @@ private:
     [[nodiscard]] GuestThread *selectReady();
     void makeRunning(GuestThread &thread);
     void makeDormant(GuestThread &thread);
+#if defined(PS2X_HAVE_METAL)
+    // GOW-Port (macOS): GS::holdDisplay while the running thread executes an interrupt or GS VSync callback
+    void updateDisplayHold(const GuestThread *running);
+    bool m_displayHeld = false;
+#endif
     void removeFromWaitObject(GuestThread &thread);
     [[noreturn]] void blockCurrent(EeWaitState wait);
     void makeReady(GuestThread &thread, int result, bool interruptSafe);

@@ -743,6 +743,22 @@ GSPresentationRequest GS::buildPresentationRequestUnlocked() const
     request.display2 = m_privRegs->display2;
     request.bgcolor = m_privRegs->bgcolor;
     request.vsyncTick = m_privRegs->vsyncTick.load(std::memory_order_acquire);
+#if defined(PS2X_HAVE_METAL)
+    {
+        // a handler that does not finish within two fields (a thread switch inside it) no longer freezes the display
+        std::lock_guard<std::mutex> held(m_heldDisplayMutex);
+        if (m_displayHeld && request.vsyncTick - m_heldDisplayTick <= 2u)
+        {
+            request.pmode = m_heldDisplay[0];
+            request.smode2 = m_heldDisplay[1];
+            request.dispfb1 = m_heldDisplay[2];
+            request.display1 = m_heldDisplay[3];
+            request.dispfb2 = m_heldDisplay[4];
+            request.display2 = m_heldDisplay[5];
+            request.bgcolor = m_heldDisplay[6];
+        }
+    }
+#endif
     request.contextFrames[0] = m_ctx[0].frame;
     request.contextFrames[1] = m_ctx[1].frame;
     request.preferredSource = m_preferredDisplaySourceFrame;
@@ -750,6 +766,24 @@ GSPresentationRequest GS::buildPresentationRequestUnlocked() const
     request.hasPreferredSource = m_hasPreferredDisplaySource;
     return request;
 }
+
+#if defined(PS2X_HAVE_METAL)
+void GS::holdDisplay(bool hold)
+{
+    std::lock_guard<std::mutex> held(m_heldDisplayMutex);
+    m_displayHeld = hold && m_privRegs;
+    if (!m_displayHeld)
+        return;
+    m_heldDisplayTick = m_privRegs->vsyncTick.load(std::memory_order_acquire);
+    m_heldDisplay[0] = m_privRegs->pmode;
+    m_heldDisplay[1] = m_privRegs->smode2;
+    m_heldDisplay[2] = m_privRegs->dispfb1;
+    m_heldDisplay[3] = m_privRegs->display1;
+    m_heldDisplay[4] = m_privRegs->dispfb2;
+    m_heldDisplay[5] = m_privRegs->display2;
+    m_heldDisplay[6] = m_privRegs->bgcolor;
+}
+#endif
 
 void GS::latchHostPresentationFrame()
 {
