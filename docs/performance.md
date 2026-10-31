@@ -931,3 +931,40 @@ Details: docs/native-render-study.md "step 7 on the renderer side, part 3".
 - dips20 (on dips19): the kind chains on prefix hashes (`nrun::FnvPrefix`: FNV-1a of every 8-byte prefix up to 288
   bytes in one pass; same tests in the same order) in kindOf and nmisc::loop; CodeInfo kinds tagged with a per-slot
   assignment id instead of the key, so an invalidation touches only the key's slot.
+  Profile prof_dips20_ATHN01D: the classification / TLS / tryRun group 9.0 % (dips16) -> 6.3 % of the VU1 thread
+  (kindOf now inlined into tryRun: tryRun 3.0 %), memcmp 0.24 %, idle 6.0 -> 7.6 %.
+- dips21 (port/switch/dips21.patch, ps2_memory.cpp, on dips20): before a DMA buffer goes to the worker (deliverDma) or
+  a streamed chain hands over its unpublished tail, its last 36 KB are cleaned from the EE core's L1 to the shared L2
+  (`DC CVAU` per line, no wait; `GOW_CHAIN_CLEAN=0` off): the worker's first reads of lines the EE just wrote snooped
+  the EE core (the streamed part already lags 64 KB behind the copy, GOW_CHAIN_STREAM_LAG_KB). Cache maintenance only.
+- dips22 (port/switch/dips22.patch, on dips21): VU1Interpreter::run leaves the FPCR alone for a run tryRun takes (tryRun
+  sets RZ + FTZ + DAZ itself and restores it; run() sets RZ only once tryRun declines): two serialising FPCR writes
+  fewer per native run (FPCR writes were ~0.4 % of the thread in tryRun alone); tryRun sets the packet base through one
+  `nrun::Tls` lookup.
+- A/B in one session (port/switch/sweep/ab9_dips16 / _dips20 / _dips21 / _dips22, stay 60 s, warp windows;
+  "outside" = VU1 time per run outside the native body, from `[gsw-split]` vu_ms and `[vu1nat-run]`):
+  | zone | VU1 thread us / run 16 -> 20 / 21 / 22 | outside us / run 16 -> 22 | report fps min / mean 16 -> 22 |
+  |---|---|---|---|
+  | ATHN01D | 11.02 -> 10.11 / 9.84 / 9.90 | 0.82 -> 0.51 | 37.0 / 39.3 -> 37.2 / 41.0 |
+  | ATHN04C | 9.84 -> 9.52 / 9.36 / 8.78 | 0.84 -> 0.51 | 45.4 / 49.3 -> 46.4 / 50.3 |
+  | ATHN06C | 8.91 -> 8.70 / 8.19 / 8.81 | 0.72 -> 0.53 | 36.0 / 51.6 -> 35.6 / 51.3 |
+  | OLYMP02 | 9.85 -> 9.92 / 9.70 / 8.87 | 0.74 -> 0.49 | 40.6 / 41.7 -> 41.6 / 43.3 |
+  dips21's chain clean did not change the VIF time per run (ATHN01D 1.57 us both; it stays in, GOW_CHAIN_CLEAN=0 turns
+  it off). The particle program got ~3 % slower per run since dips17 (ATHN01D 43.6-44.7 -> 44.0-46.1 us; its
+  classification time even left its measured window): the per-run Gates / `Vu v{s, m, u}` members of npart::Run may have
+  upset the register allocation of the 54 KB npart::run; to check. SEMO01 30.0 pictures/s (sweep/mov_dips22);
+  screenshots correct (ATHN04C 75 s shows the corridor fire trap, as in prof_dips13). **Installed 2026-11-01:
+  update_dips22 + FAILGT** (exefs md5 53fd9135).
+- **Handoff (sw-dips6 stopped here)**: sources /root/src-mlang (= dips22), ELF /root/elf_dips22.elf, originals of the
+  touched files per step /root/dips{16,17,18,19,20,21}-orig (patch: tools: the scratch mkpatch = `diff -u
+  --strip-trailing-cr --label a/<path> --label b/<path>` per file). Harnesses /root/vu1h/d7d (x86) / d7da (a64);
+  natcheck with the cached path: `GOW_VU1NAT_GENTEST=1 bash tools/vu1_nat/nca.sh <harness>` (output must equal the
+  plain run's). WSL: run scripts with `wsl --exec bash <file>` (`wsl -- bash -c` expands `$VAR` on Windows); the tools
+  scripts have CRLF line ends: `tr -d '\r'` them to /tmp first (as dips_hc.sh / dips_sb.sh were run here).
+  Next levers: (1) npart ~14 % of the ATHN01D VU1 thread (check the dips17 regression first: revert the Gates member /
+  Vu initialiser and compare part us per run); (2) tryRun still ~3 % (+ read_tp 1.8 %): a per-key cache of isProgram /
+  codeInfoFor in tryRun (invalidated by trackGen); (3) runLit's per-run prologue (~3 %, the batch switch + sphere test
+  through VU1State memory), kCullClip 6 %, kUnlitSt 5 %; (4) VIF ~13 % (misses on the chain data; prefetch distance
+  and L2 cleaning did not help); (5) core 1 (EE 3.7 s + IOP 0.8 s per 5 s in ATHN01D/06C): at ~50 fps it would be the
+  limit; its dispatchGuestBranch is 4 % and the chain copy (memmove) ~6 % of the EE thread; the EE thread's
+  fsdev_write samples of prof_dips13 are all in the warp load (60-110 s), not in play.

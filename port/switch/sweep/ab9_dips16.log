@@ -1,0 +1,12 @@
+[sweep] package update_dips16
+[sweep] 23:02:05 ATHN01D
+[sweep] ATHN01D PASS  
+[sweep] 23:05:34 ATHN04C
+[sweep] ATHN04C PASS  
+[sweep] 23:09:26 ATHN06C
+[sweep] ATHN06C PASS  
+[sweep] 23:13:20 OLYMP02
+[sweep] OLYMP02 PASS  
+[sweep] default restored
+[sweep] exefs md5 0b1119b1 = default
+[sweep] report port/switch/sweep/ab9_dips16\20261031_2301\report.md

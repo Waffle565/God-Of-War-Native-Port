@@ -1128,3 +1128,13 @@ Run: `python -I tools/zones.py --slots 1,2,3,4` (scale: `PS2X_GS_HW_SCALE`); sav
   on all 40 recordings; SEMO01 30.0 pictures/s; screenshots correct; title boots clean. **Console default =
   update_dips16 + FAILGT** (exefs md5 0b1119b1; tree /root/src-mlang = dips15 tree + dips16, ELF /root/elf_dips16.elf,
   dips15-state original of the touched file /root/dips15-orig).
+
+- 2026-11-01 (sw-dips6): **update_dips22** = update_dips16 sources + port/switch/dips17..22.patch (docs/performance.md
+  "Switch VU1 thread, sw-dips6"): one code key across micro-memory swaps with range invalidation (the old 4-image
+  canonicalGen missed on every swap: the images almost never repeat), classification once per run, kind chains on
+  prefix FNV, run TLS in one struct, two FPCR writes fewer per native run, chain tail cleaned to L2. VU1 time outside
+  the native body per run 0.72-0.84 -> 0.49-0.53 us; VU1 thread per run ATHN01D 11.02 -> 9.90 us, ATHN04C 9.84 -> 8.78,
+  OLYMP02 9.85 -> 8.87, ATHN06C 8.91 -> 8.81; report fps ATHN01D 39.3 -> 41.0 mean, ATHN04C 49.3 -> 50.3, OLYMP02 41.7
+  -> 43.3, ATHN06C equal. x86 / a64 natcheck identical on all 40 recordings, also with GOW_VU1NAT_GENTEST (the cached
+  path); SEMO01 30.0 pictures/s; screenshots correct; title boots clean. **Console default = update_dips22 + FAILGT**
+  (exefs md5 53fd9135; tree /root/src-mlang = dips22, ELF /root/elf_dips22.elf).
