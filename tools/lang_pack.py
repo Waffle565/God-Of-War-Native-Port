@@ -15,6 +15,8 @@ Output in <usa disc>/lang/:
   text_<code>.bin       R_PERM.WAD: wording + message table in <code>
   shell.bin             R_SHELL.WAD: wording
   voice_<code>.bin      the dubbed voice files of <code>, one after the other (not for en)
+  movies_<code>.bin     the dubbed movie sound of <code> (not for en; not part of the overlays: the runtime reads it
+                        through PS2X_MOVIE_VOICES and puts it in place of the USA movies' PCM, see movie_voices)
   <text>_<voice>.toc    GODOFWAR.TOC with those files pointing at the .bin data
   <text>_<voice>.layout the overlay: the patched TOC + the .bin files, placed past the end of the disc
 The USA executable keeps its file names (R_PERM.WAD, X.VAG); only the data behind them changes.
@@ -125,6 +127,115 @@ def localized_perm(usa_perm, eu_perm):
     return bytes(out)
 
 
+# Movie voices. The European movies are PAL (640x512, 25 fps) and carry five language tracks: private stream 1,
+# sub-stream header FF A1 00 <track>, each with its own SShd (type 16 = SPU ADPCM, 48 kHz, 2 channels, interleave
+# 32 bytes). The European executable registers the ADPCM callback on channel <track> (table at 0x29CA18 of
+# SCES_531.33). The USA executable plays only PCM (sub-stream FF A0, type 1, interleave 512), so the USA movies keep
+# their picture and sound, and the runtime swaps in the chosen track while demuxing (PS2X_MOVIE_VOICES, MovieVoice.cpp).
+MOVIE_TRACK = {'en': 0, 'fr': 1, 'de': 2, 'it': 3, 'es': 4}
+ADPCM_LEAD = 28  # each European track starts with one silent ADPCM block (28 samples) the USA PCM does not have
+# SEMO01 (the intro): the European movie stops 36.2 s in; the rest is a short movie per language, SEMO01A-E (letter =
+# 'a' + track), whose PCM starts at this USA sample (measured against SEMO01A, the English one).
+INTRO_TAIL = ('SEMO01', 1741265)
+STREAM_HEADER = 0x28  # SShd (32 bytes) + SSbd (8 bytes) at the start of every PSS audio stream
+
+
+def pss_audio(f, size):
+    """{(sub-stream, track): stream bytes} of the private stream 1 audio in a PSS (MPEG-2 program stream) read from f"""
+    tracks, buf, pos, left = {}, b'', 0, size
+    while True:
+        if len(buf) - pos < 0x10000 and left:
+            chunk = f.read(min(left, 1 << 22))
+            left -= len(chunk)
+            buf, pos = buf[pos:] + chunk, 0
+        if len(buf) - pos < 6 or buf[pos:pos + 3] != b'\0\0\1' or buf[pos + 3] == 0xB9:
+            return {k: bytes(v) for k, v in tracks.items()}
+        if buf[pos + 3] == 0xBA:  # pack header + stuffing
+            pos += 14 + (buf[pos + 13] & 7)
+            continue
+        n = struct.unpack_from('>H', buf, pos + 4)[0]
+        if buf[pos + 3] == 0xBD:
+            payload = buf[pos + 9 + buf[pos + 8]:pos + 6 + n]  # after the PES header: FF Ax 00 <track> + data
+            tracks.setdefault((payload[1], payload[3]), bytearray()).extend(payload[4:])
+        pos += 6 + n
+
+
+def movie_key(stream):
+    """FNV-1a 64 of an audio stream's header and first 2048 PCM bytes: how the runtime recognises a USA movie (the .PSS
+    and .PSW of a movie share their PCM)"""
+    h = 0xCBF29CE484222325
+    for b in stream[:STREAM_HEADER + 2048]:
+        h = ((h ^ b) * 0x100000001B3) & 0xFFFFFFFFFFFFFFFF
+    return h
+
+
+def movie_segments(name, code, tracks_of):
+    """the dubbed sound of a movie for language <code> as [(USA start sample, kind 0 ADPCM / 1 PCM16, interleave,
+    data)], None when the movie has no language tracks; tracks_of(name) gives a European movie's pss_audio"""
+    track = MOVIE_TRACK[code]
+    stream = tracks_of(name).get((0xA1, track))
+    if stream is None:
+        return None
+    segments = [(-ADPCM_LEAD, 0, struct.unpack_from('<I', stream, 20)[0], stream[STREAM_HEADER:])]
+    if name == INTRO_TAIL[0]:
+        tail = tracks_of(name + 'ABCDE'[track])[(0xA0, 0)]
+        segments.append((INTRO_TAIL[1], 1, struct.unpack_from('<I', tail, 20)[0], tail[STREAM_HEADER:]))
+    return segments
+
+
+def pack_movies(movies):
+    """lang/movies_<code>.bin: 'PSMV', u32 version 1, u32 movies, u32 0; per movie (by key) {u64 key, u32 first
+    segment, u32 segments}; per segment {i32 start sample, u32 kind, u32 interleave, u32 0, u64 data offset, u64 size};
+    then the data, 16-byte aligned"""
+    keys = sorted(movies)
+    nseg = sum(len(movies[k]) for k in keys)
+    head, table, data = bytearray(b'PSMV' + struct.pack('<3I', 1, len(keys), 0)), bytearray(), bytearray()
+    base = 16 + 16 * len(keys) + 32 * nseg
+    for k in keys:
+        head += struct.pack('<QII', k, len(table) // 32, len(movies[k]))
+        for start, kind, interleave, body in movies[k]:
+            table += struct.pack('<iIIIQQ', start, kind, interleave, 0, base + len(data), len(body))
+            data += body + b'\0' * (-len(body) % 16)
+    return bytes(head + table + data)
+
+
+def movie_voices(usa, entries, eu, eu_entries, codes):
+    """{code: lang/movies_<code>.bin} for the USA movies the European disc dubs"""
+    def open_entry(disc, toc, name):
+        _, _, part, size, offset = next(e for e in toc if e[1] == name)
+        f = open(os.path.join(disc, f'PART{part + 1}.PAK'), 'rb')
+        f.seek(offset * SECTOR)
+        return f, size
+
+    eu_names = {e[1] for e in eu_entries}
+    cache = {}
+
+    def tracks_of(base):
+        if base not in cache:
+            cache.clear()
+            f, size = open_entry(eu, eu_entries, base + '.PSS')
+            with f:
+                cache[base] = pss_audio(f, size)
+        return cache[base]
+
+    keys = {}  # USA base name -> keys of its .PSS/.PSW audio
+    for name in sorted({e[1] for e in entries if e[1].endswith(('.PSS', '.PSW'))}):
+        f, size = open_entry(usa, entries, name)
+        with f:
+            stream = pss_audio(f, min(size, 1 << 18)).get((0xA0, 0))
+        if stream and len(stream) >= STREAM_HEADER + 2048:
+            keys.setdefault(name[:-4], set()).add(movie_key(stream))
+    out = {code: {} for code in codes}
+    for base in sorted(keys):
+        if base + '.PSS' not in eu_names:
+            continue
+        for code in codes:
+            segments = movie_segments(base, code, tracks_of)
+            for k in keys[base] if segments else ():
+                out[code][k] = segments
+    return {code: pack_movies(movies) for code, movies in out.items()}
+
+
 def main(usa, eu=None):
     files, sectors = read_layout(usa)
     part2 = files['PART2.PAK'][0]
@@ -166,6 +277,11 @@ def main(usa, eu=None):
     for name, (_, data, _) in blobs.items():
         with open(os.path.join(out, name + '.bin'), 'wb') as f:
             f.write(data)
+    if eu:
+        for code, blob in movie_voices(usa, entries, eu, eu_entries, langs[1:]).items():
+            with open(os.path.join(out, f'movies_{code}.bin'), 'wb') as f:
+                f.write(blob)
+            print(f'movies {code}: {struct.unpack_from("<I", blob, 8)[0]} movie sounds, {len(blob) >> 20} MB')
 
     for text in langs:
         for voice in langs:

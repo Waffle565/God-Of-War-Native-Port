@@ -34,6 +34,11 @@ writes `disc-usa/lang/` (text + voice overlays for en, es, fr, de, it; docs/sett
 Voice menus are enabled when the disc folder has `lang/`; on Play it sets `PS2X_DISC_OVERLAY=lang/<text>_<voice>.layout`
 (settings.ini `[Game] Text`, `Voice`). Menus and HUD screens stay in English.
 
+Movies: `lang_pack.py` also writes `lang/movies_<code>.bin` (fr, de, it, es; ~240 MB each), the dubbed sound of the 44
+movies the European disc dubs (the intro included). When Voice is not English and the file exists, the launcher sets
+`PS2X_MOVIE_VOICES=lang/movies_<voice>.bin`; the runtime keeps the USA movies' picture and puts the dubbed track in
+place of their PCM while demuxing (`[movie-voice]` lines in game.log). Other movies have no speech or are not dubbed.
+
 ## Button prompts (keyboard keys)
 The game writes buttons in its texts as tokens (`[XButton]`, `[R2Button]`, ... in R_PERM.WAD's message table and the
 Power Up move list) and draws them as PS2 icons. `keyprompts/make_kb_overlays.py` makes a keyboard variant of every

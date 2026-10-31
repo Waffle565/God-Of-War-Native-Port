@@ -67,6 +67,14 @@ struct Settings {
         return keyboardPrompts && FileManager.default.fileExists(atPath: discPath(keyboard).path) ? keyboard : name
     }
 
+    // the movies' dubbed sound for the chosen voice (lang/movies_<voice>.bin, tools/lang_pack.py), relative to the disc
+    // folder, when the disc folder has it; English keeps the movies' own sound
+    var movieVoices: String? {
+        let name = "lang/movies_\(voice).bin"
+        guard voice != "en", !discFolder.isEmpty, FileManager.default.fileExists(atPath: discPath(name).path) else { return nil }
+        return name
+    }
+
     static let keyboardPrefix = "kb_"
 
     func discPath(_ relative: String) -> URL {

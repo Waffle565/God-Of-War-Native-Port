@@ -52,10 +52,17 @@ without a glyph is skipped: "Ascensin"). lang_pack.py folds the translated messa
 (`fold_for_usa_font`: accents dropped, umlauts/ß/œ spelled out, ¿ ¡ removed, cp1252 dashes and quotes made plain);
 check: `python3 -I -m unittest discover -s tools/tests`.
 
+Movie voices: the European movies carry 5 ADPCM tracks (private stream 1, sub-stream `FF A1 00 <track>`, SShd type
+16, 48 kHz stereo, interleave 32; tracks 0 en, 1 fr, 2 de, 3 it, 4 es, the European executable's table at 0x29CA18).
+Their video is PAL, so the USA picture is kept: `lang_pack.py` writes `lang/movies_<code>.bin` (44 dubbed movies, keyed
+by the USA movie's audio fingerprint; the intro = the European SEMO01's first 36.2 s + the per-language tail
+SEMO01A-E from USA sample 1741265) and the runtime (`MovieVoice`, `PS2X_MOVIE_VOICES=lang/movies_<code>.bin`) decodes
+the track and replaces the USA PCM byte for byte while the movie is demuxed; timing is untouched. The macOS launcher
+sets it when Voice is not English.
+
 Not localized: the menus and the in-game message screens (save, death, pause, upgrade texts) keep the USA art and
 English text: their text lives in the Flash chunks with the USA font (below), and the European versions of those
-chunks expect the European executable (swapping whole European WADs leaves the title menu empty after Start). The
-intro movie narration also stays English (above).
+chunks expect the European executable (swapping whole European WADs leaves the title menu empty after Start). 
 
 ## Save wording
 The port saves to a file (`saves\GodOfWar.sav`), so the PS2 texts about a "MEMORY CARD (8MB)(for PlayStation 2)",

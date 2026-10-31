@@ -116,6 +116,10 @@ enum GameRunner {
         if let overlay = settings.languageOverlay {
             env["PS2X_DISC_OVERLAY"] = overlay
         }
+        // the movies in the chosen voice: the runtime swaps the dubbed track into their sound (docs/settings.md)
+        if let movies = settings.movieVoices {
+            env["PS2X_MOVIE_VOICES"] = movies
+        }
         return env
     }
 
@@ -136,7 +140,7 @@ enum GameRunner {
         let elf = Paths.data.appendingPathComponent(Paths.elfName).path
         let env = environment(settings)
         let keys = ["GOW_MC0", "GOW_WINDOW", "GOW_FULLSCREEN", "PS2X_GS_HW_SCALE", "GOW_GS_MTL_NATIVE", "PS2X_GS_WORKER",
-                    "GOW_GS_FINISH_ASINCRONO", "GOW_AUDIO_DEVICE", "PS2X_DISC_OVERLAY", "GOW_GS_MTL_AA",
+                    "GOW_GS_FINISH_ASINCRONO", "GOW_AUDIO_DEVICE", "PS2X_DISC_OVERLAY", "PS2X_MOVIE_VOICES", "GOW_GS_MTL_AA",
                     "GOW_GS_MTL_ANISO", "GOW_GS_MTL_METALFX", "GOW_SHARPEN", "GOW_PANORAMICO",
                     "GOW_TEXTURES_DIR", "GOW_GS_MTL_TEXREPL"]
         var header = "[launcher] \(Date()) disc=\(settings.discFolder)\n[launcher] cwd=\(Paths.data.path) elf=\(elf)\n"
