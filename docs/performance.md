@@ -684,3 +684,22 @@ Details: docs/native-render-study.md "step 7 on the renderer side, part 3".
   15.3 ms, gap 2.8 -> 1.6 ms, 51 -> 59.6 fps; moving and fighting job 17-18 -> 12-15 ms, 50-52 -> 59-60 fps (min 54-59).
 - Left: the dispatch loop (~18 % of the worker) and per-program scheduler resets; the GS stage thread is now ~70 % busy
   (vertexKick) and is the next limit; the EE spins through the whole job (one core, matters on the Switch).
+
+## Switch GS thread: texture parking cache, 4-lane range hash, one queue lock per chunk (2026-10-31, sw-dips, port/switch/dips4.patch)
+- Cause: in the GS-thread-bound zones the game streams textures through a few GS memory areas, more contents per area
+  than the three earlier contents a texture keeps, and the same texture lands at other addresses in other frames:
+  1200-2450 texture decodes (+ glTexImage2D) per 5 s. The range hash was one latency-bound multiply chain, and the GS
+  worker took the queue mutex twice per chunk (svcArbitrateLock ~9 % of its samples).
+- Changes (gs_hw_backend.cpp, gs_threaded_backend.cpp; patch on the update_bugs1 sources):
+  - a GL texture that would be deleted (oldest earlier content, evicted texture) is parked, keyed by its shape (format,
+    TBW, size, TEXA, palette: all the decode reads except TBP0) + hash of its bytes; a texture about to be decoded
+    takes a parked one with the same shape and bytes. LRU, `GOW_GS_HW_TEXPARK_MB` (default 48, 0 = off).
+  - range hash in four independent lanes; the hash computed by the revalidation is reused by the decode that follows.
+  - GS worker: the finished chunk is accounted in the same critical section that takes the next one.
+- Result (same-session A/B vs update_bugs1, stay 60 s): ATHN02A mean 43.0 -> 47.0; ATHN07B 45.1 -> 46.4, frames
+  > 67 ms 24.6 -> 5.1 /min; ATHN06C heavy part 25-29 -> 28-33; decodes 1200-2450 -> 8-15 per 5 s; speed unchanged.
+- Package port/switch/nsp/out/update_dips4 (update_bugs1 + harness sp fix of a562e7c + dips4). The patch was
+  recovered after a PC restart from the WSL tree; applied onto the bugs1 files (/root/dips-orig) it rebuilds .text,
+  .rodata and .data byte-identical to the measured ELF (/root/elf_dips4.elf).
+- port/switch/dips5.patch (NOT tested, full diff from bugs1): dips4 + per-256-byte-block hash cache (block hashes
+  recomputed only after a transfer writes them; `GOW_GS_HW_BLOCKHASH=0` = off). Sources /root/dips5-src.

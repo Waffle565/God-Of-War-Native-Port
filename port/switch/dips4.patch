@@ -1,0 +1,377 @@
+diff -ruN a/ps2xRuntime/src/lib/gs/gpu/gs_hw_backend.cpp b/ps2xRuntime/src/lib/gs/gpu/gs_hw_backend.cpp
+--- a/ps2xRuntime/src/lib/gs/gpu/gs_hw_backend.cpp	2026-10-31 10:28:02.107708602 +0100
++++ b/ps2xRuntime/src/lib/gs/gpu/gs_hw_backend.cpp	2026-10-31 10:28:02.118588861 +0100
+@@ -506,6 +506,7 @@
+         bool valid = false;
+         uint64_t lastUse = 0;
+         uint64_t contentHash = 0; // GS memory [blockLo, blockHi) when last decoded (0: none)
++        uint64_t shape = 0;       // GOW_GS_HW_TEXPARK: everything the decode depends on except tbp0 and the bytes (0: none)
+         // earlier decodes of this texture with other contents (animated textures upload a few frames in turn to the same
+         // place), newest first; same size and range as the texture
+         struct Earlier
+@@ -1049,12 +1050,14 @@
+         const auto now = std::chrono::steady_clock::now();
+         if (!timed || now - cpuTiming.last < std::chrono::seconds(5))
+             return;
+-        std::fprintf(stderr, "[gs-hw-cpu] draw_ms=%.1f stream_ms=%.1f vertices=%llu draw_calls=%llu pre_ms=%.1f state_ms=%.1f tex_ms=%.1f post_ms=%.1f tex_decodes=%llu tex_revalidated=%llu clut_ms=%.1f cluts=%llu clut_kept=%llu\n",
++        std::fprintf(stderr, "[gs-hw-cpu] draw_ms=%.1f stream_ms=%.1f vertices=%llu draw_calls=%llu pre_ms=%.1f state_ms=%.1f tex_ms=%.1f post_ms=%.1f tex_decodes=%llu tex_revalidated=%llu clut_ms=%.1f cluts=%llu clut_kept=%llu park_hits=%llu park_adds=%llu park_drops=%llu parked=%zu parked_mb=%.1f\n",
+                      cpuTiming.drawNanos * 1e-6, cpuTiming.streamNanos * 1e-6, (unsigned long long)cpuTiming.vertices,
+                      (unsigned long long)cpuTiming.draws, cpuTiming.parts[0] * 1e-6, cpuTiming.parts[1] * 1e-6,
+                      cpuTiming.parts[2] * 1e-6, cpuTiming.parts[3] * 1e-6, (unsigned long long)decodes,
+                      (unsigned long long)revalidated, cpuTiming.clutNanos * 1e-6, (unsigned long long)cpuTiming.cluts,
+-                     (unsigned long long)cpuTiming.clutKept);
++                     (unsigned long long)cpuTiming.clutKept, (unsigned long long)parkHits, (unsigned long long)parkAdds,
++                     (unsigned long long)parkDrops, parked.size(), parkedBytes / 1048576.0);
++        parkHits = parkAdds = parkDrops = 0;
+         const WrapDiag &w = wrapDiag;
+         if (w.barrierBatches || w.groupedBatches || w.formula)
+             std::fprintf(stderr, "[gs-hw-wrap] barrier_batches=%llu barrier_tris=%llu grouped_batches=%llu grouped_tris=%llu groups=%llu not_flat=%llu mixed=%llu many=%llu big=%llu odd=%llu formula=%llu\n",
+@@ -1442,14 +1445,21 @@
+     Texture &textureFor(const GSDrawState &s)
+     {
+         const GSTex0Reg &t = s.context.tex0;
+-        uint64_t key = t.tbp0 | (static_cast<uint64_t>(t.tbw) << 14) | (static_cast<uint64_t>(t.psm & 63) << 20) |
+-                       (static_cast<uint64_t>(s.textureWidth) << 26) | (static_cast<uint64_t>(s.textureHeight) << 38);
+-        key = key * 1099511628211ull ^ (static_cast<uint64_t>(s.texa.ta0) | (static_cast<uint64_t>(s.texa.ta1) << 8) | (static_cast<uint64_t>(s.texa.aem) << 16));
++        const uint64_t base = (static_cast<uint64_t>(t.tbw) << 14) | (static_cast<uint64_t>(t.psm & 63) << 20) |
++                              (static_cast<uint64_t>(s.textureWidth) << 26) | (static_cast<uint64_t>(s.textureHeight) << 38);
++        uint64_t key = t.tbp0 | base, shape = base | (1ull << 62);
++        const uint64_t texaBits = static_cast<uint64_t>(s.texa.ta0) | (static_cast<uint64_t>(s.texa.ta1) << 8) | (static_cast<uint64_t>(s.texa.aem) << 16);
++        key = key * 1099511628211ull ^ texaBits;
++        shape = shape * 1099511628211ull ^ texaBits;
+         if (isIndexed(t.psm))
+         {
++            const uint64_t clutBits = t.cpsm | (t.csm << 8) | (t.csa << 16);
+             key = key * 1099511628211ull ^ clutHash;
+-            key = key * 1099511628211ull ^ (t.cpsm | (t.csm << 8) | (t.csa << 16));
++            key = key * 1099511628211ull ^ clutBits;
++            shape = shape * 1099511628211ull ^ clutHash;
++            shape = shape * 1099511628211ull ^ clutBits;
+         }
++        shape |= 1u;
+         Texture &tex = textures[key];
+         tex.lastUse = ++useCounter;
+         if (tex.valid)
+@@ -1459,7 +1469,7 @@
+         }
+         {
+             const uint32_t h = std::max<uint32_t>(1u, s.textureHeight);
+-            if (unchangedSinceDecode(tex, t.tbp0, t.tbp0 + spanBlocks(t.psm, t.tbw, h), std::max<uint32_t>(1u, s.textureWidth), h))
++            if (unchangedSinceDecode(tex, t.tbp0, t.tbp0 + spanBlocks(t.psm, t.tbw, h), std::max<uint32_t>(1u, s.textureWidth), h, shape))
+                 return tex;
+         }
+         ++stats.texDecodes;
+@@ -1495,7 +1505,8 @@
+         g.PixelStorei(kUnpackAlignment, 4);
+         g.TexImage2D(kTexture2D, 0, static_cast<GLint>(kRgba8), tex.width, tex.height, 0, kRgba, kUnsignedByte, pixels.data());
+         tex.valid = true;
+-        tex.contentHash = blockHash(tex.blockLo, tex.blockHi);
++        tex.contentHash = decodedHash(tex.blockLo, tex.blockHi);
++        tex.shape = shape;
+         if (textures.size() > 6000u)
+             evictOld();
+         return tex;
+@@ -1583,12 +1594,14 @@
+         }
+         {
+             const uint32_t h = std::max<uint32_t>(1u, s.textureHeight);
+-            if (unchangedSinceDecode(tex, t.tbp0, t.tbp0 + spanBlocks(t.psm, t.tbw, h), std::max<uint32_t>(1u, s.textureWidth), h))
++            if (unchangedSinceDecode(tex, t.tbp0, t.tbp0 + spanBlocks(t.psm, t.tbw, h), std::max<uint32_t>(1u, s.textureWidth), h,
++                                     key & ~static_cast<uint64_t>(0x3FFFu)))
+                 return tex;
+         }
+         ++stats.texDecodes;
+         ++decodes;
+         classifyTexture(s);
++        tex.shape = key & ~static_cast<uint64_t>(0x3FFFu); // the key without tbp0 (bit 63 set: never 0)
+         tex.width = std::max<uint32_t>(1u, s.textureWidth);
+         tex.height = std::max<uint32_t>(1u, s.textureHeight);
+         std::vector<uint8_t> indices(static_cast<size_t>(tex.width) * tex.height);
+@@ -1633,7 +1646,7 @@
+         g.TexParameteri(kTexture2D, kTextureMinFilter, kNearest);
+         g.TexParameteri(kTexture2D, kTextureMagFilter, kNearest);
+         tex.valid = true;
+-        tex.contentHash = blockHash(tex.blockLo, tex.blockHi);
++        tex.contentHash = decodedHash(tex.blockLo, tex.blockHi);
+         if (textures.size() > 6000u)
+             evictOld();
+         return tex;
+@@ -1686,16 +1699,14 @@
+ 
+     void evictOld()
+     {
+-        const Api &g = gl();
+         for (auto it = textures.begin(); it != textures.end();)
+         {
+             if (it->second.lastUse + 3000u < useCounter)
+             {
+-                if (it->second.id)
+-                    g.DeleteTextures(1, &it->second.id);
+-                for (Texture::Earlier &e : it->second.earlier)
+-                    if (e.id)
+-                        g.DeleteTextures(1, &e.id);
++                Texture &t = it->second;
++                park(t, t.contentHash, t.id);
++                for (Texture::Earlier &e : t.earlier)
++                    park(t, e.contentHash, e.id);
+                 it = textures.erase(it);
+             }
+             else
+@@ -1708,28 +1719,177 @@
+     // invalidated texture its memory is hashed: unchanged bytes keep the GL texture (the decode and glTexImage2D cost
+     // ~3.5 ms each on the console, ~130 per second in the title menu; a hash of the range costs tens of microseconds).
+     uint64_t revalidated = 0;
+-    uint64_t blockHash(uint32_t lo, uint32_t hi) const
++    // GOW-Port (sw-dips): the range hash runs four independent lanes (one multiply chain is latency bound).
++    uint64_t hashBytes(size_t begin, size_t end) const
+     {
+-        const size_t begin = std::min<size_t>(static_cast<size_t>(lo) * 256u, vramSize);
+-        const size_t end = std::min<size_t>(static_cast<size_t>(hi) * 256u, vramSize);
+-        uint64_t h = 0x9E3779B97F4A7C15ull ^ (end - begin);
+-        uint64_t word;
+-        for (size_t at = begin; at + 8u <= end; at += 8u)
++        // four independent lanes of 8 bytes (one chain is latency bound); ranges are whole 256-byte blocks
++        uint64_t h0 = 0x9E3779B97F4A7C15ull ^ (end - begin), h1 = 0xC2B2AE3D27D4EB4Full, h2 = 0x165667B19E3779F9ull,
++                 h3 = 0x27D4EB2F165667C5ull;
++        uint64_t w[4];
++        size_t at = begin;
++        for (; at + 32u <= end; at += 32u)
++        {
++            std::memcpy(w, vram + at, 32u);
++            h0 = (h0 ^ w[0]) * 0xFF51AFD7ED558CCDull;
++            h1 = (h1 ^ w[1]) * 0xFF51AFD7ED558CCDull;
++            h2 = (h2 ^ w[2]) * 0xFF51AFD7ED558CCDull;
++            h3 = (h3 ^ w[3]) * 0xFF51AFD7ED558CCDull;
++            h0 ^= h0 >> 29;
++            h1 ^= h1 >> 29;
++            h2 ^= h2 >> 29;
++            h3 ^= h3 >> 29;
++        }
++        for (; at + 8u <= end; at += 8u)
++        {
++            std::memcpy(w, vram + at, 8u);
++            h0 = (h0 ^ w[0]) * 0xFF51AFD7ED558CCDull;
++            h0 ^= h0 >> 29;
++        }
++        uint64_t h = h0;
++        for (uint64_t x : {h1, h2, h3})
+         {
+-            std::memcpy(&word, vram + at, 8u);
+-            h = (h ^ word) * 0xFF51AFD7ED558CCDull;
++            h = (h ^ x) * 0xFF51AFD7ED558CCDull;
+             h ^= h >> 29;
+         }
+-        return h | 1u;
++        return h;
++    }
++    uint64_t blockHash(uint32_t lo, uint32_t hi) const
++    {
++        const size_t begin = std::min<size_t>(static_cast<size_t>(lo) * 256u, vramSize);
++        const size_t end = std::min<size_t>(static_cast<size_t>(hi) * 256u, vramSize);
++        return hashBytes(begin, end) | 1u;
+     }
+     // true when an invalidated texture still matches GS memory, or matches one of its earlier contents (that GL texture
+     // is swapped in); the texture is valid again. Otherwise the current GL texture is kept as an earlier content and a
+     // fresh one is left for the decode.
+-    bool unchangedSinceDecode(Texture &tex, uint32_t lo, uint32_t hi, uint32_t width, uint32_t height)
++    // GOW-Port (sw-dips): the parking cache. Every frame the game streams textures through a few GS memory areas, more
++    // different ones per area than the three earlier contents a texture keeps, and the same texture lands at other
++    // addresses in other frames: 2-3 k decodes per 5 s in the GS-thread-bound zones (~0.4 ms each with the upload).
++    // A GL texture that would be deleted (the oldest earlier content, an evicted texture) is parked instead, keyed by
++    // its shape (format, TBW, size, TEXA, palette: everything the decode reads except TBP0, which only moves the bytes)
++    // and the hash of its bytes; a texture that has to be decoded first looks for its shape + current bytes there and
++    // takes that GL texture (one owner at a time: parked ids belong to the cache only). LRU, bounded in bytes:
++    // GOW_GS_HW_TEXPARK_MB (default 48, 0 = off: the old deletes).
++    struct Parked
++    {
++        GLuint id = 0;
++        uint64_t lastUse = 0;
++        uint32_t bytes = 0;
++    };
++    std::unordered_map<uint64_t, Parked> parked;
++    uint64_t parkedBytes = 0, parkHits = 0, parkAdds = 0, parkDrops = 0;
++    static uint64_t parkBudget()
++    {
++        static const uint64_t mb = [] { const char *v = std::getenv("GOW_GS_HW_TEXPARK_MB"); return v ? std::strtoull(v, nullptr, 10) : 48ull; }();
++        return mb << 20;
++    }
++    static uint64_t parkKey(uint64_t shape, uint64_t hash) { return (shape * 0x9E3779B97F4A7C15ull) ^ hash; }
++    static uint32_t textureBytes(const Texture &tex) { return tex.width * tex.height * ((tex.shape >> 63) ? 1u : 4u); }
++    bool parkable(const Texture &tex) const
++    {
++        return parkBudget() != 0u && tex.shape != 0u && static_cast<size_t>(tex.blockHi) * 256u <= vramSize;
++    }
++    void park(const Texture &tex, uint64_t hash, GLuint &id)
++    {
++        if (!id)
++            return;
++        if (!parkable(tex) || hash == 0u)
++        {
++            gl().DeleteTextures(1, &id);
++            id = 0u;
++            return;
++        }
++        const uint64_t key = parkKey(tex.shape, hash);
++        auto [it, added] = parked.try_emplace(key);
++        if (!added)
++            gl().DeleteTextures(1, &id); // the same contents are parked already
++        else
++        {
++            it->second.id = id;
++            it->second.bytes = textureBytes(tex);
++            parkedBytes += it->second.bytes;
++            ++parkAdds;
++        }
++        it->second.lastUse = useCounter;
++        id = 0u;
++        if (parkedBytes > parkBudget())
++        {
++            // drop the least recently used down to 3/4 of the budget (in one go: the scan is O(n))
++            std::vector<std::pair<uint64_t, uint64_t>> order;
++            order.reserve(parked.size());
++            for (const auto &kv : parked)
++                order.emplace_back(kv.second.lastUse, kv.first);
++            std::sort(order.begin(), order.end());
++            for (const auto &o : order)
++            {
++                if (parkedBytes <= parkBudget() / 4u * 3u)
++                    break;
++                auto p = parked.find(o.second);
++                parkedBytes -= p->second.bytes;
++                gl().DeleteTextures(1, &p->second.id);
++                parked.erase(p);
++                ++parkDrops;
++            }
++        }
++    }
++    GLuint unpark(const Texture &tex, uint64_t hash)
+     {
++        if (parked.empty() || !parkable(tex))
++            return 0u;
++        const auto it = parked.find(parkKey(tex.shape, hash));
++        if (it == parked.end())
++            return 0u;
++        const GLuint id = it->second.id;
++        parkedBytes -= it->second.bytes;
++        parked.erase(it);
++        ++parkHits;
++        return id;
++    }
++
++    // the hash unchangedSinceDecode computed for the decode that follows it (same thread, GS memory unchanged between)
++    uint64_t memoHash = 0;
++    uint32_t memoLo = 0, memoHi = 0;
++    uint64_t decodedHash(uint32_t lo, uint32_t hi)
++    {
++        const bool hit = memoHash != 0u && memoLo == lo && memoHi == hi;
++        const uint64_t h = hit ? memoHash : blockHash(lo, hi);
++        memoHash = 0u;
++        return h;
++    }
++    bool unchangedSinceDecode(Texture &tex, uint32_t lo, uint32_t hi, uint32_t width, uint32_t height, uint64_t shape)
++    {
++        memoHash = 0u;
+         if (!tex.id || tex.contentHash == 0u || tex.blockLo != lo || tex.blockHi != hi || tex.width != width || tex.height != height)
+-            return false;
++        {
++            // never decoded here (or its GL texture went to the earlier ones): the same bytes may be parked
++            if (parked.empty())
++                return false;
++            Texture probe;
++            probe.shape = shape;
++            probe.blockLo = lo;
++            probe.blockHi = hi;
++            if (!parkable(probe))
++                return false;
++            const uint64_t hash = blockHash(lo, hi);
++            memoHash = hash, memoLo = lo, memoHi = hi;
++            const GLuint id = unpark(probe, hash);
++            if (!id)
++                return false;
++            if (tex.id)
++                park(tex, tex.contentHash, tex.id);
++            tex.id = id;
++            tex.shape = shape;
++            tex.blockLo = lo;
++            tex.blockHi = hi;
++            tex.width = width;
++            tex.height = height;
++            tex.contentHash = hash;
++            tex.valid = true;
++            ++revalidated;
++            return true;
++        }
+         const uint64_t hash = blockHash(lo, hi);
++        memoHash = hash, memoLo = lo, memoHi = hi;
+         if (hash != tex.contentHash)
+         {
+             Texture::Earlier *match = nullptr;
+@@ -1746,14 +1906,19 @@
+                 ++revalidated;
+                 return true;
+             }
+-            // keep the current content, newest first; the oldest one is dropped
+-            if (tex.earlier[2].id)
+-                gl().DeleteTextures(1, &tex.earlier[2].id);
++            // keep the current content, newest first; the oldest one is parked (or dropped)
++            park(tex, tex.earlier[2].contentHash, tex.earlier[2].id);
+             tex.earlier[2] = tex.earlier[1];
+             tex.earlier[1] = tex.earlier[0];
+             tex.earlier[0] = current;
+-            tex.id = 0u;
+-            tex.contentHash = 0u;
++            tex.id = unpark(tex, hash);
++            tex.contentHash = tex.id ? hash : 0u;
++            if (tex.id)
++            {
++                tex.valid = true;
++                ++revalidated;
++                return true;
++            }
+             return false;
+         }
+         tex.valid = true;
+diff -ruN a/ps2xRuntime/src/lib/gs/gs_threaded_backend.cpp b/ps2xRuntime/src/lib/gs/gs_threaded_backend.cpp
+--- a/ps2xRuntime/src/lib/gs/gs_threaded_backend.cpp	2026-10-31 10:28:02.109161815 +0100
++++ b/ps2xRuntime/src/lib/gs/gs_threaded_backend.cpp	2026-10-31 10:28:02.121736866 +0100
+@@ -259,11 +259,24 @@
+     ThreadNaming::SetCurrentThreadName("GSThread");
+     ThreadPriority::RaiseCurrentThread(ThreadPriority::Level::AboveNormal);
+     GSPrimitiveBatch draw;
++    // GOW-Port (sw-dips): one queue lock per chunk, not two: the finished chunk is accounted (m_completed, spare, done
++    // notification) in the same critical section that takes the next one. The queue mutex was contended with the
++    // producer (svcArbitrateLock ~9 % of this thread's samples in GS-bound zones).
++    std::vector<uint8_t> chunk;
++    bool finished = false;
+     for (;;)
+     {
+-        std::vector<uint8_t> chunk;
+         {
+             std::unique_lock<std::mutex> lock(m_queueMutex);
++            if (finished)
++            {
++                finished = false;
++                ++m_completed;
++                if (m_spare.size() < 64u)
++                    m_spare.push_back(std::move(chunk));
++                chunk = std::vector<uint8_t>{};
++                m_doneCv.notify_all();
++            }
+             m_workCv.wait(lock, [&]
+                           { return m_stop || !m_pending.empty(); });
+             if (m_stop)
+@@ -291,13 +304,7 @@
+                 s_glTiming.report();
+             }
+         }
+-        {
+-            std::lock_guard<std::mutex> lock(m_queueMutex);
+-            ++m_completed;
+-            if (m_spare.size() < 64u)
+-                m_spare.push_back(std::move(chunk));
+-        }
+-        m_doneCv.notify_all();
++        finished = true;
+     }
+ }
+ 
