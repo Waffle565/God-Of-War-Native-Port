@@ -1,0 +1,346 @@
+--- a/ps2xRuntime/include/runtime/gs/gs_stage.h
++++ b/ps2xRuntime/include/runtime/gs/gs_stage.h
+@@ -8,6 +8,7 @@
+ // PS2X_GS_PIPELINE=0 keeps the GS frontend on the worker thread. Kept out of the precompiled header.
+ #include <cstdint>
+ #include <functional>
++#include <vector>
+ 
+ #include "runtime/gs/ps2_gif_arbiter.h"
+ 
+@@ -25,6 +26,11 @@
+     // Queues a copy of the packet (blocks while too much is queued, so the worker cannot run far ahead). A sleeping
+     // stage is woken only once enough is queued: the producer calls publish() when it has no more for now.
+     void push(GifPathId path, const uint8_t *data, uint32_t size);
++    // GOW-Port (sw-dips3): zero-copy push for the producer. directBuffer() is the byte buffer of the packet being
++    // filled: append a packet's bytes at its end, then commitDirect() with their size queues them exactly as push()
++    // would have (bytes appended and not committed must be removed again before any other push / publish).
++    std::vector<uint8_t> &directBuffer();
++    void commitDirect(GifPathId path, uint32_t size);
+     // Small packets are gathered on the producer side and queued together (16 KB, or at publish()): call publish()
+     // before anyone waits for the stage. Wakes the stage for whatever is queued (the worker calls it after each job).
+     void publish();
+--- a/ps2xRuntime/include/runtime/ps2_memory.h
++++ b/ps2xRuntime/include/runtime/ps2_memory.h
+@@ -402,6 +402,12 @@
+     void flushMaskedPath3Packets(bool drainImmediately = true);
+ 
+     void submitGifPacket(GifPathId pathId, const uint8_t *data, uint32_t sizeBytes, bool drainImmediately = true, bool path2DirectHl = false);
++    // GOW-Port (sw-dips3): PATH1 packets written straight into the GS stage's buffer (the native VU1 runs' XGKICKs):
++    // non-null only on the GS worker with the stage running and nothing queued in the GIF arbiter, i.e. exactly when
++    // submitGifPacket(Path1, ...) would copy the bytes into that buffer (ps2_gs_stage::push). Append the bytes, then
++    // gifDirectCommit(their size). GOW_GIF_DIRECT=0: off.
++    std::vector<uint8_t> *gifDirectBuffer();
++    void gifDirectCommit(uint32_t sizeBytes);
+     // PS2X_GS_WORKER_TRACE=<s>: one "[gsw-trace] <host us> <what> <value>" line (kick/job-start/job-done/gs-irq)
+     static void gsWorkerTrace(const char *what, size_t value);
+     void processGIFPacket(uint32_t srcPhysAddr, uint32_t qwCount);
+--- a/ps2xRuntime/include/runtime/ps2_perf.h
++++ b/ps2xRuntime/include/runtime/ps2_perf.h
+@@ -167,6 +167,9 @@
+         // worker idle between jobs (GOW-Port 2026-10-24): waits, total, and by length (< 0.1 ms, < 1 ms, < 4 ms, more),
+         // printed as [gsw-idle]; a wait is from the moment the worker finds no job to the next job's start
+         inline PaddedCounter idleNs{0}, idleWaits{0}, idleBucket[4] = {{0}, {0}, {0}, {0}}, idleBucketNs[4] = {{0}, {0}, {0}, {0}};
++        // GOW-Port (sw-dips3): the producer (worker) waiting for room in the GS stage queue (gs_stage.cpp flushStaged:
++        // 4 MB or all 256 packets in flight), printed as [gs-stage]
++        inline PaddedCounter stageFullNs{0}, stageFullWaits{0};
+         inline void addIdle(uint64_t ns)
+         {
+             const int b = ns < 100000u ? 0 : ns < 1000000u ? 1 : ns < 4000000u ? 2 : 3;
+@@ -204,6 +207,11 @@
+                          (now - last) * 1e-9, q[0] * 1e-6, (unsigned long long)q[1], (unsigned long long)q[2], q[6] * 1e-6,
+                          (unsigned long long)q[3], q[7] * 1e-6, (unsigned long long)q[4], q[8] * 1e-6,
+                          (unsigned long long)q[5], q[9] * 1e-6);
++            static uint64_t stageBefore[2] = {};
++            const uint64_t stageCur[2] = {stageFullNs.load(), stageFullWaits.load()};
++            std::fprintf(stderr, "[gs-stage] window=%.2f full_waits=%llu full_ms=%.1f\n", (now - last) * 1e-9,
++                         (unsigned long long)(stageCur[1] - stageBefore[1]), (stageCur[0] - stageBefore[0]) * 1e-6);
++            stageBefore[0] = stageCur[0], stageBefore[1] = stageCur[1];
+             last = now;
+         }
+     }
+--- a/ps2xRuntime/src/lib/gs/gpu/gs_hw_backend.cpp
++++ b/ps2xRuntime/src/lib/gs/gpu/gs_hw_backend.cpp
+@@ -2312,9 +2312,58 @@
+                 m.maxX = std::max(m.maxX, dx + 8u);
+                 m.maxY = std::max(m.maxY, dy + 8u);
+             }
++        static const bool merge = !(std::getenv("GOW_GS_HW_SHUFFLE_MERGE") && std::getenv("GOW_GS_HW_SHUFFLE_MERGE")[0] == '0');
++        if (merge)
++            for (std::vector<ShuffleVertex> &q : m.quads)
++                mergeShuffleUnits(q);
+         return m;
+     }
+ 
++    // GOW-Port (sw-dips3): the 8x8 units of one half combination that touch in the destination and read with the same
++    // offset become one rectangle (rows first, then equal rows below each other). Every destination texel is still
++    // drawn once with the same source texel; the units of a pass never overlap, so their order does not matter. The
++    // maps are cached, so this runs once per shape; it cuts the vertices each pass copies and streams (a 640x448
++    // shuffle was 4480 units = 26880 vertices, 430 KB, per pass). GOW_GS_HW_SHUFFLE_MERGE=0: off.
++    static void mergeShuffleUnits(std::vector<ShuffleVertex> &q)
++    {
++        struct Rect
++        {
++            float x0, y0, x1, y1, ox, oy;
++        };
++        std::vector<Rect> r;
++        r.reserve(q.size() / 6u);
++        for (size_t i = 0; i + 6u <= q.size(); i += 6u)
++            r.push_back({q[i].x, q[i].y, q[i + 4].x, q[i + 4].y, q[i].ox, q[i].oy});
++        if (r.size() < 2u)
++            return;
++        const auto rowOrder = [](const Rect &a, const Rect &b) {
++            return a.oy != b.oy ? a.oy < b.oy : a.ox != b.ox ? a.ox < b.ox : a.y0 != b.y0 ? a.y0 < b.y0 : a.x0 < b.x0;
++        };
++        std::sort(r.begin(), r.end(), rowOrder);
++        size_t n = 0;
++        for (size_t i = 0; i < r.size(); ++i)
++            if (n && r[n - 1].ox == r[i].ox && r[n - 1].oy == r[i].oy && r[n - 1].y0 == r[i].y0 && r[n - 1].y1 == r[i].y1 && r[n - 1].x1 == r[i].x0)
++                r[n - 1].x1 = r[i].x1;
++            else
++                r[n++] = r[i];
++        r.resize(n);
++        std::sort(r.begin(), r.end(), [](const Rect &a, const Rect &b) {
++            return a.oy != b.oy ? a.oy < b.oy : a.ox != b.ox ? a.ox < b.ox : a.x0 != b.x0 ? a.x0 < b.x0 : a.x1 != b.x1 ? a.x1 < b.x1 : a.y0 < b.y0;
++        });
++        n = 0;
++        for (size_t i = 0; i < r.size(); ++i)
++            if (n && r[n - 1].ox == r[i].ox && r[n - 1].oy == r[i].oy && r[n - 1].x0 == r[i].x0 && r[n - 1].x1 == r[i].x1 && r[n - 1].y1 == r[i].y0)
++                r[n - 1].y1 = r[i].y1;
++            else
++                r[n++] = r[i];
++        r.resize(n);
++        q.clear();
++        for (const Rect &e : r)
++            q.insert(q.end(), {{e.x0, e.y0, e.ox, e.oy}, {e.x1, e.y0, e.ox, e.oy}, {e.x0, e.y1, e.ox, e.oy},
++                               {e.x1, e.y0, e.ox, e.oy}, {e.x1, e.y1, e.ox, e.oy}, {e.x0, e.y1, e.ox, e.oy}});
++        q.shrink_to_fit();
++    }
++
+     static uint32_t fbmsk16(uint32_t m)
+     {
+         return ((m >> 3) & 0x1Fu) | ((m >> 6) & 0x3E0u) | ((m >> 9) & 0x7C00u) | ((m >> 16) & 0x8000u);
+--- a/ps2xRuntime/src/lib/gs/gs_stage.cpp
++++ b/ps2xRuntime/src/lib/gs/gs_stage.cpp
+@@ -1,3 +1,4 @@
++#include "runtime/ps2_perf.h"
+ #include "runtime/gs/gs_stage.h"
+ #include "ThreadNaming.h"
+ 
+@@ -23,6 +24,16 @@
+     // Bound on queued bytes: enough for several XGKICK packets of a batch, small enough that the worker never
+     // runs a whole frame ahead of the GS frontend.
+     constexpr size_t kMaxQueuedBytes = 4u << 20;
++    // GOW-Port (sw-dips3): GOW_GS_STAGE_MAX_KB (default 4096) and GOW_GS_STAGE_PACKETS (default 256, at most kSlots)
++    // replace the two bounds for queue-depth tests
++    size_t maxQueuedBytes()
++    {
++        static const size_t v = [] {
++            const char *e = std::getenv("GOW_GS_STAGE_MAX_KB");
++            return e ? static_cast<size_t>(std::strtoull(e, nullptr, 10)) << 10 : kMaxQueuedBytes;
++        }();
++        return v;
++    }
+     // GOW-Port: a sleeping stage is woken once this much is queued, at the end of each worker job (publish) or when
+     // someone waits for it (waitIdle), not for every packet: the worker sends a few hundred packets per frame and
+     // waking the stage for each one cost more CPU in thread switches (both threads) than the packets' GS work.
+@@ -37,7 +48,13 @@
+     // ring of 256 x 16 KB buffers cycled 4 MB through the 2 MB L2 and made every hand-off write miss). The mutex is
+     // taken only to sleep or to wake a sleeper: with a mutex around every hand-off the worker spent 2-2.5 % of the VU1
+     // thread in svcArbitrateLock (pthread_mutex_lock <- flushStaged, console fight profile, update_la6).
+-    constexpr uint32_t kSlots = 256;
++    constexpr uint32_t kSlots = 1024;
++    uint32_t packetLimit()
++    {
++        const char *e = std::getenv("GOW_GS_STAGE_PACKETS");
++        const unsigned long v = e ? std::strtoul(e, nullptr, 10) : 256ul;
++        return static_cast<uint32_t>(v < 2ul ? 2ul : v > kSlots ? kSlots : v);
++    }
+     // a packet whose buffer grew past this (a large image packet) gives the memory back after use
+     constexpr size_t kShrinkBytes = 256u << 10;
+ 
+@@ -71,7 +88,7 @@
+         Stage()
+         {
+             freeList.reserve(kSlots);
+-            for (uint32_t i = kSlots; i-- > 1;)
++            for (uint32_t i = packetLimit(); i-- > 1;)
+                 freeList.push_back(&packets[i]);
+             current = &packets[0];
+         }
+@@ -227,14 +244,17 @@
+         const size_t size = s.stagedBytes;
+         auto fits = [&s, size] {
+             reclaim(s);
+-            return (s.inFlightBytes == 0 || s.inFlightBytes + size <= kMaxQueuedBytes) && !s.freeList.empty();
++            return (s.inFlightBytes == 0 || s.inFlightBytes + size <= maxQueuedBytes()) && !s.freeList.empty();
+         };
+         if (!fits())
+         {
++            const uint64_t t0 = ps2_perf::nowNanos();
+             std::unique_lock<std::mutex> lock(s.mutex);
+             s.producerWaiting.store(true, std::memory_order_seq_cst);
+             s.space.wait(lock, fits);
+             s.producerWaiting.store(false, std::memory_order_relaxed);
++            ps2_perf::gsw::stageFullNs.addOwned(ps2_perf::nowNanos() - t0);
++            ps2_perf::gsw::stageFullWaits.addOwned(1);
+         }
+         s.current->bytes = size;
+         s.ring[s.fillHead % kSlots] = s.current;
+@@ -257,6 +277,20 @@
+         s.stagedBytes += size;
+         if (s.stagedBytes >= kStageFlushBytes)
+             flushStaged(s);
++    }
++
++    std::vector<uint8_t> &directBuffer()
++    {
++        return stage().current->data;
++    }
++
++    void commitDirect(GifPathId path, uint32_t size)
++    {
++        Stage &s = stage();
++        s.current->sizes.emplace_back(path, size);
++        s.stagedBytes += size;
++        if (s.stagedBytes >= kStageFlushBytes)
++            flushStaged(s);
+     }
+ 
+     void publish()
+--- a/ps2xRuntime/src/lib/ps2_memory.cpp
++++ b/ps2xRuntime/src/lib/ps2_memory.cpp
+@@ -2604,6 +2604,24 @@
+         m_gifPacketCallback(data, sizeBytes);
+ }
+ 
++std::vector<uint8_t> *PS2Memory::gifDirectBuffer()
++{
++    static const bool enabled = [] {
++        const char *e = std::getenv("GOW_GIF_DIRECT");
++        return !(e && e[0] == '0');
++    }();
++    // the arbiter's process function pushes to the stage exactly when the stage runs and this is the worker thread
++    if (!enabled || !m_gifArbiter || !m_gifArbiter->empty() || !ps2_gs_stage::running() || !onGsWorkerThread())
++        return nullptr;
++    return &ps2_gs_stage::directBuffer();
++}
++
++void PS2Memory::gifDirectCommit(uint32_t sizeBytes)
++{
++    if (sizeBytes >= 16)
++        ps2_gs_stage::commitDirect(GifPathId::Path1, sizeBytes);
++}
++
+ void PS2Memory::processGIFPacket(uint32_t srcPhysAddr, uint32_t qwCount)
+ {
+     syncGsWorkerIfOtherThread("processGIFPacket");
+--- a/ps2xRuntime/src/lib/vu/ps2_vu1_nat.inl
++++ b/ps2xRuntime/src/lib/vu/ps2_vu1_nat.inl
+@@ -1485,7 +1485,18 @@
+         return false;
+     }
+     thread_local VU1State s;
+-    thread_local std::vector<uint8_t> packets;
++    thread_local std::vector<uint8_t> ownPackets;
++    static const bool splitKicks = [] {
++        const char* e = std::getenv("GOW_VU1NAT_MERGE_KICKS");
++        return e && e[0] == '0';
++    }();
++    // sw-dips3: with the GS stage the run's XGKICKs go straight into the stage's buffer behind the packets already
++    // there (PS2Memory::gifDirectBuffer): one copy of each packet (VU memory -> stage) instead of two (VU memory ->
++    // ownPackets -> stage). Same bytes in the same order as the submit below.
++    std::vector<uint8_t> *direct = !splitKicks && ctx.memory ? ctx.memory->gifDirectBuffer() : nullptr;
++    std::vector<uint8_t> &packets = direct ? *direct : ownPackets;
++    const size_t base = direct ? direct->size() : 0u;
++    vu1nat::nrun::pkBase() = base;
+     // nat-vu1n: the native time starts here, after the classification both paths pay (a recompiled run's time starts
+     // at the same point: pendT0 above), so nat / rec per family compare the runs themselves
+     const uint64_t tRun = ps2_perf::nowNanos();
+@@ -1497,6 +1508,7 @@
+     vu_fpmode::set(savedFp);
+     if (!ok)
+     {
++        vu1nat::nrun::pkBase() = 0; // (runNative left the buffer at `base`)
+         if (dpc & 0x80000000u)
+         {
+             std::fprintf(stderr, "[vu1nat-run] FATAL: undo log overflow (decline %x): VU memory not restored\n", dpc & 0x7FFFFFFFu);
+@@ -1513,13 +1525,10 @@
+     // the packets in kick order to the GIF (PATH1), as finishXgkick hands them on, one submit per packet.
+     // default (nat-vu1r): the run's packets in one submit (the GIF input is a stream per path; one arbiter / stage
+     // entry instead of ~3.4 per run): misc -0.8 us per run on the console; nv4b's late-scene drop did not come back in
+-    // the nv5kk1 / kk2 re-benches. GOW_VU1NAT_MERGE_KICKS=0 restores one submit per packet.
+-    static const bool splitKicks = [] {
+-        const char* e = std::getenv("GOW_VU1NAT_MERGE_KICKS");
+-        return e && e[0] == '0';
+-    }();
+-    size_t whole = 0;
+-    for (size_t off = 0; off + 16u <= packets.size();)
++    // the nv5kk1 / kk2 re-benches. GOW_VU1NAT_MERGE_KICKS=0 restores one submit per packet (splitKicks, above).
++    vu1nat::nrun::pkBase() = 0;
++    size_t whole = base;
++    for (size_t off = base; off + 16u <= packets.size();)
+     {
+         size_t q = off;
+         for (;;)
+@@ -1545,7 +1554,12 @@
+         ++st.kicks;
+         off = whole = q;
+     }
+-    if (!splitKicks && whole)
++    if (direct)
++    {
++        direct->resize(whole); // (bytes past the last whole packet were never submitted either)
++        ctx.memory->gifDirectCommit(static_cast<uint32_t>(whole - base));
++    }
++    else if (!splitKicks && whole)
+     {
+         if (ctx.memory)
+             ctx.memory->submitGifPacket(GifPathId::Path1, packets.data(), static_cast<uint32_t>(whole));
+--- a/ps2xRuntime/src/lib/vu/ps2_vu1_nat_lit.inl
++++ b/ps2xRuntime/src/lib/vu/ps2_vu1_nat_lit.inl
+@@ -825,7 +825,7 @@
+         using namespace nrun;
+         using nlit::Op;
+         declinePc = 0;
+-        packets.clear();
++        packets.resize(nrun::pkBase());
+         if (!litKind)
+             litKind = nlit::entryKind(code, entry);
+         const bool lit = litKind == 1, skin = litKind == 2, skin28 = litKind == 3;
+--- a/ps2xRuntime/src/lib/vu/ps2_vu1_nat_run.inl
++++ b/ps2xRuntime/src/lib/vu/ps2_vu1_nat_run.inl
+@@ -67,6 +67,15 @@
+     {
+         inline __m128 vf0() { return _mm_setr_ps(0.0f, 0.0f, 0.0f, 1.0f); }
+ 
++        // GOW-Port (sw-dips3): where this run's packets start in the packet buffer. The runtime lets a run append its
++        // XGKICKs straight to the GS stage's buffer (PS2Memory::gifDirectBuffer), which already holds earlier runs'
++        // packets: a run "clears" its packets back to here, not to 0. 0 for the harness / oracle / replay callers.
++        inline size_t &pkBase()
++        {
++            thread_local size_t base = 0;
++            return base;
++        }
++
+         // Undo of a declined run's memory writes (runNative leaves memory as it found it when it returns false, so the
+         // runtime needs no 16 KB copy per run): the batch code's single stores are logged (old qword), the vertex loops'
+         // writes are not, so a run decides every decline before its first loop; the clip path (whose decline after the
+@@ -535,7 +544,7 @@
+     {
+         using namespace nrun;
+         declinePc = 0;
+-        packets.clear();
++        packets.resize(nrun::pkBase());
+         runGen() = codeGen;
+         if (startPC != 0x00u && startPC != 0x18u && startPC != 0x30u)
+             return declinePc = startPC, false;
+@@ -1123,7 +1132,7 @@
+                 return true;
+             declinePc = 0x7FFFFFFFu;
+         }
+-        packets.clear();
++        packets.resize(nrun::pkBase());
+         if (!u.restore(mem))
+             declinePc |= 0x80000000u;
+         return false;

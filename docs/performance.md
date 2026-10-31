@@ -765,3 +765,15 @@ Details: docs/native-render-study.md "step 7 on the renderer side, part 3".
   CpuUncached memory only in large aligned bulk copies. update_dips11 packs into a cached buffer, then one bulk copy
   (A/B in one binary with `GOW_GS_HW_COMPACT=0`, port/switch/sweep/ab5_*). dips11 also prints `[gs-stage] full_waits=
   full_ms=` every 5 s (GOW_PERF_DIAG): the worker waiting for room in the GS stage queue.
+- Compact stream result (one binary, port/switch/sweep/ab5_dips11 vs ab5_dips11nc = `GOW_GS_HW_COMPACT=0`): still
+  slower with the cached packing pass: stream_ms per 5 s ATHN01D 363 -> 662, ATHN02A 434 -> 845, ATHN04C 707 -> 1104,
+  draw_ms up by the same; mean fps ATHN01D 40.2 -> 36.2. The packing pass (per-vertex 36-byte copies) costs more than
+  the 16 bytes per vertex it saves in the bulk copy. Dropped: update_dips13 (port/switch/dips13.patch, full diff from
+  the dips7 tree) = dips8 + `[gs-stage]` counters + `GOW_GS_STAGE_MAX_KB` / `GOW_GS_STAGE_PACKETS` (queue-depth test
+  knobs, defaults unchanged), without the compact path. dips11.patch keeps the experiment.
+- `[gs-stage] full_waits=0` in every zone without the PC sampler: the worker never waits for the GS stage in normal
+  runs (the 3.7 % "cond_wait <- submitAndDrain" in the sampled profile is a sampler artefact).
+- GS GL thread per op (`[gs-gl]`, dips8): ATHN07B is different from the rest: busy 4.86 s per 5 s with present
+  1.77 s / 300 (5.9 ms each, 0.3-1 ms elsewhere) and texflush 0.49 s / 47 k: it waits on the GPU at present, i.e.
+  GPU-bound there (see "The GPU at the default clocks"). Elsewhere `clut` (1.2-1.65 s / 30-46 k) includes the draws a
+  CLUT load flushes, `?` is the other draws.
