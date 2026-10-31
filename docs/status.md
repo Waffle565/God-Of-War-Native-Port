@@ -1084,3 +1084,9 @@ Run: `python -I tools/zones.py --slots 1,2,3,4` (scale: `PS2X_GS_HW_SCALE`); sav
   EE stall lag bound, docs/performance.md "Game speed 1.03-1.09"). Console sweep port/switch/sweep/20261030_1723: 3
   story movies + ATHN03A/ATHN06B/PAND00A/ARENA10 PASS. **Console default = update_bugs1 + FAILGT** (exefs md5
   a2f50ea0; tree /root/src-mlang now = mlangfog1 + bugs1, originals /root/bugs1-orig, ELF /root/elf_bugs1.elf).
+- 2026-10-31 (sw-dips/sw-dips2): **update_dips4** = update_bugs1 + harness sp fix (a562e7c) + port/switch/dips4.patch
+  (GS thread texture parking cache, docs/performance.md). Same-session A/B (port/switch/sweep/ab_dips4 vs ab_bugs1,
+  min/mean fps): ATHN01D 33.8/35.5 -> 34.6/37.0, ATHN02A 43.6/43.9 -> 46.6/47.2, ATHN06C 27.4/28.5 -> 31.2/31.9,
+  ATHN07B 44.5/45.3 -> 46.2/46.6; SEMO01 30.0 pictures/s both; screenshots identical. **Console default =
+  update_dips4 + FAILGT** (exefs md5 070eaa9c; tree /root/src-mlang = bugs1 + harness + dips4, ELF /root/elf_dips4.elf,
+  dips originals /root/dips-orig).

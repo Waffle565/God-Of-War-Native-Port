@@ -703,3 +703,6 @@ Details: docs/native-render-study.md "step 7 on the renderer side, part 3".
   .rodata and .data byte-identical to the measured ELF (/root/elf_dips4.elf).
 - port/switch/dips5.patch (NOT tested, full diff from bugs1): dips4 + per-256-byte-block hash cache (block hashes
   recomputed only after a transfer writes them; `GOW_GS_HW_BLOCKHASH=0` = off). Sources /root/dips5-src.
+- Verified 2026-10-31 (sw-dips2), same-session A/B, min/mean fps bugs1 -> dips4: ATHN01D 33.8/35.5 -> 34.6/37.0,
+  ATHN02A 43.6/43.9 -> 46.6/47.2, ATHN06C 27.4/28.5 -> 31.2/31.9, ATHN07B 44.5/45.3 -> 46.2/46.6; speed 0.98-0.99 both;
+  screenshots (movie, title menu, HUD, ship deck fight, rain) identical. Installed as the console default.
