@@ -777,3 +777,22 @@ Details: docs/native-render-study.md "step 7 on the renderer side, part 3".
   1.77 s / 300 (5.9 ms each, 0.3-1 ms elsewhere) and texflush 0.49 s / 47 k: it waits on the GPU at present, i.e.
   GPU-bound there (see "The GPU at the default clocks"). Elsewhere `clut` (1.2-1.65 s / 30-46 k) includes the draws a
   CLUT load flushes, `?` is the other draws.
+- IOP on its own thread (env only, update_dips13, port/switch/sweep/iop0_dips13 / iop3_dips13, compare ab5_dips11nc):
+  `GOW_IOP_THREAD=1` (IopRun on core 0 beside the GS thread): ATHN01D 40.2 -> 36.2, ATHN04C 47.3 -> 44.5 mean fps;
+  `GOW_IOP_THREAD=1 GOW_CORE_IopRun=3 GOW_GS_STAGE_SPIN_US=0` (core 3 beside the GS stage): ATHN01D 40.1 (same),
+  ATHN04C 47.3 -> 39.8, ATHN06C minimum 23. The EE then waits on the IOP (guest_wait up 0.5-1.4 s per 5 s) and the VU1
+  thread idles; the IOP stays on the EE thread (core 1).
+- `GOW_VIF_PREFETCH=1536` (default 512; port/switch/sweep/pf_dips13 vs base_dips13): VIF time per VU1 run 1.56-1.76 ->
+  1.63-1.88 us, VU1 thread time per run up 1-4 %: the default stays.
+- **Installed 2026-10-31: update_dips13 + FAILGT** (exefs md5 bff8abe9, docs/status.md).
+- Handoff (sw-dips3 stopped here): sources /root/src-mlang (= dips13), build /root/gow-switch-mlang, ELFs
+  /root/elf_dips{8..13}.elf, originals of the touched files /root/dips8-orig (mkpatch: diff -u per file against
+  /root/src-mlang). Where the time is now (zone averages after the warp, dips13): the VU1 thread is 92-96 % busy in
+  ATHN01D, ATHN04C, ATHN06C (heavy part), OLYMP02, ATHN02A at ~9.2-10.3 us per VU1 run, VIF ~1.6-1.8 us of it; core 1
+  (EE 3.0-3.4 s + IOP 0.5-0.8 s per 5 s at ~40 fps) caps ~48 fps even with a faster VU1. Next levers: (1) VU1 thread:
+  npart (Run::go + element + quadCorners + snippet ~16 % of the thread) keeps the VU registers in VU1State memory
+  (the hot samples are register-file loads: store-to-load forwarding), a register-resident rewrite as the lit loops
+  got; VIF parse/unpack (~16 %) on a producer thread on core 3 (the GS stage there is ~55 % busy) as PCSX2's MTVU;
+  (2) core 1: the chain copy (appendGuestBytes 4 % of the EE thread) and an unexplained `fsdev_write <- _write_r`
+  (3.5 % of the EE thread's samples in svc 0x21, sampled runs; not the log ring, which is active) - find who writes;
+  (3) ATHN07B: GPU-bound at present (5.9 ms per present), see "The GPU at the default clocks".

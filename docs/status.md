@@ -1103,3 +1103,12 @@ Run: `python -I tools/zones.py --slots 1,2,3,4` (scale: `PS2X_GS_HW_SCALE`); sav
   not GS bound); SEMO01 and A06MP01 30 pictures/s; screenshots correct; 12 title boots clean. **Console default =
   update_dips7 + FAILGT** (exefs md5 e619310c; tree /root/src-mlang = bugs1 + harness + dips7, ELF /root/elf_dips7.elf;
   dips7.patch is the full diff from the bugs1 files /root/dips-orig, it contains dips4).
+- 2026-10-31 (sw-dips3): **update_dips13** = update_dips7 sources + port/switch/dips13.patch (native VU1 runs write
+  their XGKICKs straight into the GS stage buffer, merged channel-shuffle quads, `[gs-stage]` counters, stage queue
+  test knobs; docs/performance.md "Switch VU1 thread: XGKICKs straight into the GS stage"). VU1 thread time per VU1
+  run 2-11 % lower than dips7 (same-session A/B port/switch/sweep/ab4_*); mean fps ATHN01D 38.0 -> 39.5, ATHN02A
+  49.4 -> 50.8, ATHN04C 45.8 -> 47.9; SEMO01 / A06MP01 30 pictures/s; ~20 title boots clean. **Console default =
+  update_dips13 + FAILGT** (exefs md5 bff8abe9; tree /root/src-mlang = bugs1 + harness + dips7 + dips13, ELF
+  /root/elf_dips13.elf, dips7-state originals of the touched files /root/dips8-orig). Tried and dropped: 36-byte
+  vertex stream (slower), IOP on its own thread (core 0 or 3: slower), VIF prefetch 1536 (slower).
+
