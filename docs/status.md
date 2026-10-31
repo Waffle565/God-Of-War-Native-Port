@@ -1090,3 +1090,9 @@ Run: `python -I tools/zones.py --slots 1,2,3,4` (scale: `PS2X_GS_HW_SCALE`); sav
   ATHN07B 44.5/45.3 -> 46.2/46.6; SEMO01 30.0 pictures/s both; screenshots identical. **Console default =
   update_dips4 + FAILGT** (exefs md5 070eaa9c; tree /root/src-mlang = bugs1 + harness + dips4, ELF /root/elf_dips4.elf,
   dips originals /root/dips-orig).
+- OPEN (2026-10-31, sw-dips2): one EE guest crash on the Switch, `[guest-branch:missing-target] JALR source=0x1d6d44
+  target=0` (a0=0x30dc0051 unreadable), in a sweep run of ATHN02A on update_dips5, ~56 s after boot, after the level
+  load following "New Game" had stalled (pad script state 4, levelReady stayed 0 while normal runs have it at 50 s).
+  Log: port/switch/sweep/ab2_dips5/20261031_1208/ATHN02A/log.txt. Not reproduced in 12 later title boots (dips4,
+  dips6, dips7); the GS texture hash changes cannot feed data back to the EE, so it looks like a timing-dependent EE
+  race. If it appears again in any run: stop and investigate.
