@@ -170,15 +170,14 @@ def perf_of(seg):
 
 def fps_without_captures(seg):
     """guest fps per [gow-perf] window, without the windows of the sweep's own warp captures: each PPM capture stops
-    the game ~3.5 s (readback), so its 5 s window reads 12-15 fps. The capture line is logged next to that window's
-    [gow-perf] line (before or after it): drop the slower of the two neighbours."""
+    the game ~3.5 s (readback), so its 5 s window reads 12-15 fps and the stall can reach into the next one. The capture
+    line is logged next to those windows' [gow-perf] lines: drop both neighbours."""
     perf = [(m.start(), float(m.group(1))) for m in re.finditer(r'\[gow-perf\].*?guest_flip_hz=([0-9.]+)', seg)]
     drop = set()
     for c in re.finditer(r'\[gow-warp\] capture ', seg):
         near = [k for k in range(len(perf)) if perf[k][0] < c.start()][-1:] + \
                [k for k in range(len(perf)) if perf[k][0] > c.start()][:1]
-        if near:
-            drop.add(min(near, key=lambda k: perf[k][1]))
+        drop.update(near)
     return [h for k, (_, h) in enumerate(perf) if k not in drop]
 
 
