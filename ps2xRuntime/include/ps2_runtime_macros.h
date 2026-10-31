@@ -228,8 +228,54 @@ constexpr uint32_t PS2_FCR31_D = 0x00010000u;
 constexpr uint32_t PS2_FCR31_SI = 0x00000040u;
 constexpr uint32_t PS2_FCR31_SD = 0x00000020u;
 
+#if defined(USE_SSE2NEON) && (defined(__aarch64__) || defined(_M_ARM64))
+// GOW-Port (arm64): the x86 build switches MXCSR to round-to-nearest around one divss/sqrtss. On arm64 that switch is an
+// FPCR write that the compiler does not order against floating-point code, so other operations can move into (or the
+// division out of) the round-to-nearest window. Instead, the result is computed in double (exact to well under half a
+// float ulp in any rounding mode) and rounded to the nearest float here, without touching FPCR.
+// Normal float range only: returns false (caller falls back to the FPCR switch) when |q| < FLT_MIN or the rounded
+// result overflows. aboveMid(|mid|) says whether the exact result lies above |mid|; it is asked only when q sits
+// exactly on a float midpoint (a quotient or square root of floats is never exactly a midpoint).
+template <class AboveMid>
+inline bool ps2NearestFloatFromDouble(double q, AboveMid aboveMid, float &out)
+{
+    uint64_t bits;
+    std::memcpy(&bits, &q, sizeof(bits));
+    const uint32_t sign = static_cast<uint32_t>(bits >> 32) & 0x80000000u;
+    int exponent = static_cast<int>((bits >> 52) & 0x7FFu) - 1023;
+    if (exponent < -126 || exponent > 127)
+        return false;
+    const uint64_t mantissa = (bits & 0xFFFFFFFFFFFFFull) | (1ull << 52);
+    uint32_t kept = static_cast<uint32_t>(mantissa >> 29);
+    const uint64_t rest = mantissa & 0x1FFFFFFFull;
+    if (rest > 0x10000000ull || (rest == 0x10000000ull && aboveMid(std::fabs(q))))
+        ++kept;
+    if (kept == (1u << 24))
+    {
+        kept >>= 1;
+        ++exponent;
+    }
+    if (exponent > 127)
+        return false;
+    const uint32_t result = sign | (static_cast<uint32_t>(exponent + 127) << 23) | (kept & 0x7FFFFFu);
+    std::memcpy(&out, &result, sizeof(out));
+    return true;
+}
+#endif
+
 inline float ps2FpuDivideNearest(float dividend, float divisor)
 {
+#if defined(USE_SSE2NEON) && (defined(__aarch64__) || defined(_M_ARM64))
+    if (!ps2FloatIsZero(dividend) && !ps2FloatIsZero(divisor) &&
+        (ps2FloatBits(dividend) & 0x7F800000u) != 0x7F800000u && (ps2FloatBits(divisor) & 0x7F800000u) != 0x7F800000u)
+    {
+        const double a = dividend;
+        const double b = divisor;
+        float result;
+        if (ps2NearestFloatFromDouble(a / b, [&](double mid) { return std::fma(-mid, std::fabs(b), std::fabs(a)) > 0.0; }, result))
+            return result;
+    }
+#endif
     const uint32_t csr = _mm_getcsr();
     _mm_setcsr(csr & ~0x6000u);
     const float result = _mm_cvtss_f32(_mm_div_ss(_mm_set_ss(dividend), _mm_set_ss(divisor)));
@@ -239,6 +285,15 @@ inline float ps2FpuDivideNearest(float dividend, float divisor)
 
 inline float ps2FpuSqrtNearest(float value)
 {
+#if defined(USE_SSE2NEON) && (defined(__aarch64__) || defined(_M_ARM64))
+    if (!ps2FloatIsZero(value) && (ps2FloatBits(value) & 0xFF800000u) < 0x7F800000u)
+    {
+        const double v = value;
+        float result;
+        if (ps2NearestFloatFromDouble(std::sqrt(v), [&](double mid) { return std::fma(mid, mid, -v) < 0.0; }, result))
+            return result;
+    }
+#endif
     const uint32_t csr = _mm_getcsr();
     _mm_setcsr(csr & ~0x6000u);
     const float result = _mm_cvtss_f32(_mm_sqrt_ss(_mm_set_ss(value)));

@@ -71,10 +71,11 @@ if(PS2X_IS_ARM_TARGET)
         # x86's two); the VU1 interpreter and the sceVu0 stubs were built with fused math, so they no longer matched the
         # native VU1 blocks (GOW_VU1N_VERIFY).
         add_compile_options(-fsigned-char -ffp-contract=off)
+        # No SSE2NEON_PRECISE_SQRT: on AArch64 it replaces the exact vsqrtq_f32 with an estimate plus two Newton steps
+        # (1 ulp off for about half of all inputs); x86 sqrtps is correctly rounded.
         add_compile_definitions(
             SSE2NEON_PRECISE_MINMAX=1
             SSE2NEON_PRECISE_DIV=1
-            SSE2NEON_PRECISE_SQRT=1
             SSE2NEON_PRECISE_DP=1)
     elseif(PS2X_IS_AARCH64_TARGET AND MSVC)
         # Windows ARM64 - MSVC already uses optimal defaults
