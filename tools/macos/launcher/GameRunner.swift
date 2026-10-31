@@ -59,6 +59,10 @@ enum GameRunner {
         env["GOW_WINDOW"] = "\(settings.width)x\(settings.height)"
         env["GOW_FULLSCREEN"] = settings.fullscreen ? "1" : "0"
         env["PS2X_GS_HW_SCALE"] = String(settings.scale)
+        // text and voice language + the port's save wording (lang/ is linked into data/ with the disc's files)
+        if let overlay = settings.languageOverlay {
+            env["PS2X_DISC_OVERLAY"] = overlay
+        }
         return env
     }
 
@@ -79,7 +83,7 @@ enum GameRunner {
         let elf = Paths.data.appendingPathComponent(Paths.elfName).path
         let env = environment(settings)
         let keys = ["GOW_MC0", "GOW_WINDOW", "GOW_FULLSCREEN", "PS2X_GS_HW_SCALE", "PS2X_GS_WORKER",
-                    "GOW_GS_FINISH_ASINCRONO", "GOW_AUDIO_DEVICE"]
+                    "GOW_GS_FINISH_ASINCRONO", "GOW_AUDIO_DEVICE", "PS2X_DISC_OVERLAY"]
         var header = "[launcher] \(Date()) disc=\(settings.discFolder)\n[launcher] cwd=\(Paths.data.path) elf=\(elf)\n"
         for key in keys { header += "[launcher] \(key)=\(env[key] ?? "(unset)")\n" }
         log.write(header.data(using: .utf8)!)

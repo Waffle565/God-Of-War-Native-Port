@@ -1,5 +1,6 @@
 // The launcher window: disc folder, resolution, fullscreen, internal resolution, controls, Play/Quit.
-// Language (S6), 120 Hz (S7) and graphics options (S8) are shown greyed out until they exist.
+// Text and voice language come from the disc folder's lang/ overlays (tools/lang_pack.py with the European disc).
+// 120 Hz (S7) and graphics options (S8) are shown greyed out until they exist.
 import AppKit
 
 final class LauncherWindowController: NSWindowController {
@@ -9,6 +10,9 @@ final class LauncherWindowController: NSWindowController {
     private let resolution = NSPopUpButton()
     private let fullscreen = NSButton(checkboxWithTitle: "Fullscreen", target: nil, action: nil)
     private let scale = NSPopUpButton()
+    private let textLanguage = NSPopUpButton()
+    private let voiceLanguage = NSPopUpButton()
+    private let languageNote = NSTextField(labelWithString: "")
     private let discPath = NSTextField(labelWithString: "")
     private let playButton = NSButton(title: "Play", target: nil, action: nil)
 
@@ -25,7 +29,7 @@ final class LauncherWindowController: NSWindowController {
     init(settings: Settings, onPlay: @escaping () -> Void) {
         self.settings = settings
         self.onPlay = onPlay
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 500, height: 520),
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 520, height: 580),
                               styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
         window.title = "God of War"
         super.init(window: window)
@@ -61,9 +65,18 @@ final class LauncherWindowController: NSWindowController {
         scale.target = self
         scale.action = #selector(changed)
 
-        let language = NSPopUpButton()
-        language.addItem(withTitle: "English")
-        language.isEnabled = false
+        for popup in [textLanguage, voiceLanguage] {
+            popup.addItems(withTitles: Settings.languages.map { $0.1 })
+            popup.target = self
+            popup.action = #selector(changed)
+        }
+        textLanguage.selectItem(at: Settings.languages.firstIndex { $0.0 == settings.text } ?? 0)
+        voiceLanguage.selectItem(at: Settings.languages.firstIndex { $0.0 == settings.voice } ?? 0)
+        languageNote.textColor = .tertiaryLabelColor
+        languageNote.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        let languageRow = NSStackView(views: [label("Text"), textLanguage, label("Voice"), voiceLanguage])
+        languageRow.spacing = 6
+        updateLanguageState()
         let hz = NSButton(checkboxWithTitle: "120 Hz frame rate", target: nil, action: nil)
         hz.isEnabled = false
         let graphics = NSButton(title: "Graphics options…", target: nil, action: nil)
@@ -74,7 +87,8 @@ final class LauncherWindowController: NSWindowController {
             [label("Resolution:"), resolution],
             [NSGridCell.emptyContentView, fullscreen],
             [label("Internal resolution:"), scale],
-            [label("Language:"), soon(language)],
+            [label("Language:"), languageRow],
+            [NSGridCell.emptyContentView, languageNote],
             [label("Frame rate:"), soon(hz)],
             [label("Graphics:"), soon(graphics)],
         ])
@@ -135,6 +149,18 @@ final class LauncherWindowController: NSWindowController {
         discPath.textColor = ok ? .labelColor : .systemRed
         discPath.toolTip = settings.discFolder
         playButton.isEnabled = ok
+        updateLanguageState()
+    }
+
+    // languages other than English need the overlays tools/lang_pack.py writes into <disc folder>/lang/
+    private func updateLanguageState() {
+        let langFolder = URL(fileURLWithPath: settings.discFolder).appendingPathComponent("lang").path
+        let available = !settings.discFolder.isEmpty && FileManager.default.fileExists(atPath: langFolder)
+        textLanguage.isEnabled = available
+        voiceLanguage.isEnabled = available
+        languageNote.stringValue = available
+            ? "Menus and HUD screens stay in English."
+            : "Other languages need the European disc: tools/lang_pack.py"
     }
 
     @objc private func changed() {
@@ -143,6 +169,8 @@ final class LauncherWindowController: NSWindowController {
         settings.height = mode.1
         settings.fullscreen = fullscreen.state == .on
         settings.scale = scale.indexOfSelectedItem + 1
+        settings.text = Settings.languages[max(0, textLanguage.indexOfSelectedItem)].0
+        settings.voice = Settings.languages[max(0, voiceLanguage.indexOfSelectedItem)].0
         settings.save()
     }
 

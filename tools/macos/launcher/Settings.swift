@@ -39,6 +39,17 @@ struct Settings {
     var scale = 2 // PS2X_GS_HW_SCALE, 1-4
     var discFolder = ""
     var importOffered = false
+    var text = "en", voice = "en" // overlay lang/<text>_<voice>.layout made by tools/lang_pack.py (docs/settings.md)
+
+    static let languages = [("en", "English"), ("es", "Español"), ("fr", "Français"), ("de", "Deutsch"),
+                            ("it", "Italiano")]
+
+    // the language overlay for the chosen pair, relative to the disc folder, when the disc folder has it
+    var languageOverlay: String? {
+        let name = "lang/\(text)_\(voice).layout"
+        let path = URL(fileURLWithPath: discFolder).appendingPathComponent(name).path
+        return !discFolder.isEmpty && FileManager.default.fileExists(atPath: path) ? name : nil
+    }
 
     static func load() -> Settings {
         var s = Settings()
@@ -49,6 +60,9 @@ struct Settings {
         if let v = values["Video.Scale"].flatMap(Int.init) { s.scale = min(4, max(1, v)) }
         if let v = values["Game.DiscFolder"] { s.discFolder = v }
         if let v = values["Game.ImportOffered"] { s.importOffered = v == "1" }
+        let codes = Set(languages.map { $0.0 })
+        if let v = values["Game.Text"], codes.contains(v) { s.text = v }
+        if let v = values["Game.Voice"], codes.contains(v) { s.voice = v }
         if s.discFolder.isEmpty, let disc = Paths.bundled("GOWDefaultDiscFolder"), Paths.isDisc(disc) {
             s.discFolder = disc.path
         }
@@ -67,6 +81,8 @@ struct Settings {
         [Game]
         DiscFolder=\(discFolder)
         ImportOffered=\(importOffered ? 1 : 0)
+        Text=\(text)
+        Voice=\(voice)
 
         """
         try? FileManager.default.createDirectory(at: Paths.root, withIntermediateDirectories: true)

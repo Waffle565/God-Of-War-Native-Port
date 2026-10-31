@@ -26,3 +26,9 @@ and runs `GodOfWar <data>/SCUS_973.99` with `GOW_WINDOW=<w>x<h>`, `GOW_FULLSCREE
 `~/Library/Logs/God of War/game.log` (previous run: `game.log.1`). On the first start, when the build has a card at
 `GOWImportCard` and there is no save yet, the launcher offers to copy it. Language, 120 Hz and graphics options are
 shown greyed out until they exist (odd/tasks/macos-port.md T11-T13).
+
+## Languages
+With the European disc (SCES-53133) extracted next to the USA one, `python3 -I tools/lang_pack.py disc-usa disc-eu`
+writes `disc-usa/lang/` (text + voice overlays for en, es, fr, de, it; docs/settings.md). The launcher's Text and
+Voice menus are enabled when the disc folder has `lang/`; on Play it sets `PS2X_DISC_OVERLAY=lang/<text>_<voice>.layout`
+(settings.ini `[Game] Text`, `Voice`). Menus and HUD screens stay in English.
