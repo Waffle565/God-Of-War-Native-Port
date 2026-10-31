@@ -578,9 +578,12 @@ target_link_libraries(ps2EntryRunner
 # coinciden. Son datos del juego: se generan en la carpeta de compilación y no se publican.
 set(PS2X_VU1_MICROCODE_DIR "" CACHE PATH "Micromemorias de VU1 capturadas (vacío: solo intérprete)")
 set(PS2X_VU1_GENERATOR_SOURCE "" CACHE FILEPATH "Generador de C++ para VU1 (tools/vu1/generar_vu1.cpp)")
-if(PS2X_VU1_MICROCODE_DIR AND PS2X_VU1_GENERATOR_SOURCE AND NOT PS2X_IS_ANDROID AND NOT PS2X_IS_VITA)
+# GOW-Port: without PS2X_VU1_GENERATOR_SOURCE (generar_vu1.cpp is not public) only the lean native backend (vu1n_gen.py)
+# is built from the micro-memories; with it, both are built as before.
+if(PS2X_VU1_MICROCODE_DIR AND NOT PS2X_IS_ANDROID AND NOT PS2X_IS_VITA)
     file(GLOB PS2X_VU1_IMAGES CONFIGURE_DEPENDS "${PS2X_VU1_MICROCODE_DIR}/*.bin")
     if(PS2X_VU1_IMAGES)
+      if(PS2X_VU1_GENERATOR_SOURCE)
         add_executable(ps2x_vu1_generator "${PS2X_VU1_GENERATOR_SOURCE}")
         target_link_libraries(ps2x_vu1_generator PRIVATE ps2_runtime)
         set(PS2X_VU1_GENERATED_DIR "${CMAKE_CURRENT_BINARY_DIR}/vu1_generado")
@@ -598,10 +601,11 @@ if(PS2X_VU1_MICROCODE_DIR AND PS2X_VU1_GENERATOR_SOURCE AND NOT PS2X_IS_ANDROID 
         set_source_files_properties(${PS2X_VU1_GENERATED_PARTS} PROPERTIES
             SKIP_UNITY_BUILD_INCLUSION ON
             SKIP_PRECOMPILE_HEADERS ON)
-        target_include_directories(ps2EntryRunner PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src/lib/vu")
         if(MSVC)
             set_source_files_properties(${PS2X_VU1_GENERATED_PARTS} PROPERTIES COMPILE_OPTIONS "/bigobj")
         endif()
+      endif()
+        target_include_directories(ps2EntryRunner PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src/lib/vu")
         # GOW-Port: native lean backend (tools/vu1/vu1n_gen.py): straight-line blocks with immediate semantics.
         find_package(Python3 COMPONENTS Interpreter)
         set(PS2X_VU1N_GEN_OVERRIDE "" CACHE FILEPATH "Alternative vu1n_gen.py (empty: tools/vu1/vu1n_gen.py of the root repo)")

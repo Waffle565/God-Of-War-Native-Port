@@ -61,7 +61,10 @@ if(PS2X_IS_ARM_TARGET)
         message(STATUS "macOS ARM64 - using default compiler flags")
         # macOS: same x86-compatibility settings as the Switch build: plain char is signed on x86, and the VU/FPU code
         # relies on SSE's exact NaN/min/max, division, square root and dot product results.
-        add_compile_options(-fsigned-char)
+        # -ffp-contract=off: Apple clang fuses a*b+c into FMADD/FMLA by default (one rounding instead of the PS2's and
+        # x86's two); the VU1 interpreter and the sceVu0 stubs were built with fused math, so they no longer matched the
+        # native VU1 blocks (GOW_VU1N_VERIFY).
+        add_compile_options(-fsigned-char -ffp-contract=off)
         add_compile_definitions(
             SSE2NEON_PRECISE_MINMAX=1
             SSE2NEON_PRECISE_DIV=1
