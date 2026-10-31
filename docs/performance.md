@@ -875,3 +875,14 @@ Details: docs/native-render-study.md "step 7 on the renderer side, part 3".
   The particle program is 21-33 % faster per run in every zone. OLYMP02's fps varies run to run (dips13: 37.5 and
   51.2 in two runs): the rerun (port/switch/sweep/ab7b_dips16) gave 44.4 mean (ab), report 39.6 / 53.9, VU1 9.77 us / run.
   SEMO01 30.0 pictures/s. **Installed 2026-10-31: update_dips16 + FAILGT** (exefs md5 0b1119b1).
+- **Handoff (sw-dips5 stopped here)**: sources /root/src-mlang (= dips16), build /root/gow-switch-mlang (scratch
+  script sb.sh: `ninja`, ELF /root/elf_<tag>.elf, `make_update_to.sh` -> port/switch/nsp/out/update_<tag>), ELF
+  /root/elf_dips16.elf, original of the touched file /root/dips15-orig (patch: diff -u --strip-trailing-cr against
+  /root/src-mlang). Harness tree /root/natvu1x (synced from src-mlang), harnesses /root/vu1h/d5d (x86) / d5da (a64),
+  natcheck outputs /root/vu1h/nca_d5d*.txt. Next levers: (1) npart still ~0.75 s per 5 s in ATHN01D (17 k runs x
+  45 us): the a64 code now spills ~700 q-register loads / stores to the stack and reloads constants from the literal
+  pool (33 live VU registers > 32 NEON registers); smaller wins: unroll eexp's polynomial loop (it loads its table
+  per term), skip `nrm` on registers last written by a clamped FMAC result. (2) runLit dispatch / prologue for the
+  short nmisc runs (kind21 25 k x 10 us, kind12 12 k x 9 us in ATHN01D: their inner loops are already
+  register-resident in ps2_vu1_nat_wind.inl, so the per-run overhead is the target). (3) VIF command loop misses on
+  the chain data, (4) core 1 (EE + IOP).
