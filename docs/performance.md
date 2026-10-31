@@ -706,3 +706,9 @@ Details: docs/native-render-study.md "step 7 on the renderer side, part 3".
 - Verified 2026-10-31 (sw-dips2), same-session A/B, min/mean fps bugs1 -> dips4: ATHN01D 33.8/35.5 -> 34.6/37.0,
   ATHN02A 43.6/43.9 -> 46.6/47.2, ATHN06C 27.4/28.5 -> 31.2/31.9, ATHN07B 44.5/45.3 -> 46.2/46.6; speed 0.98-0.99 both;
   screenshots (movie, title menu, HUD, ship deck fight, rain) identical. Installed as the console default.
+- Next (sw-dips2, profile 2026-10-31, port/switch/logs/prof_lr4_ATHN06C): in ATHN06C's heavy part the GS thread is
+  ~98 % busy at ~30 fps with ~6 M vertices/s: submitKicks 29 % (10 % the stall on `v[i].kick`, the stage thread's
+  chunk; 10 % the `pendingIdx` range insert), addVertexOnly 11 %, memmove 15 % (draw's copy into the CpuUncached
+  vertex buffer), draw 10 %, unchangedSinceDecode 7 % (range hashes). ATHN01D is VU1-bound instead (GSWorker ~93 %
+  busy, GS thread 32 % idle). port/switch/dips6.patch (full, from bugs1) = dips5 + vertex path: per-run vertex
+  constants, reserved vectors, push_back instead of the range insert, prefetch of the kicks (in A/B).
