@@ -44,9 +44,11 @@
   log → `port/<name>.log`, screenshot → `port/<name>.png`.
 - `tools/shot.ps1 <process> <out.png>` — PrintWindow capture of the game window (works with overlapping windows).
 - The runtime debug panel (F1) is ImGui; its state is saved in `disc/imgui.ini` (set `Collapsed=1` to hide).
-- Window 640x448; keyboard/gamepad mapping in ps2xRuntime/src/lib/ps2_pad.cpp:
-  arrows/WASD = d-pad, X/Space = ✕, C/Esc = ○, Z = □, V = △, Q/E = L1/R1, LShift/RShift = L2/R2,
-  Enter = Start, Tab = Select; gamepad 0 if present.
+- Window 640x448; keyboard + mouse layout in ps2xRuntime/include/runtime/ps2_pad_keyboard.h (read by
+  ps2xRuntime/src/lib/ps2_pad.cpp): WASD = left stick (move), arrows = right stick (evade), left click = □,
+  right click = △, Space = ✕, E = ○, Q/R = L1/R1, F/G = L2/R2, 1-4 = d-pad up/right/down/left (magic),
+  Enter = Start, Backspace = Select. Keyboard/mouse and the gamepad work together: buttons add up, each stick
+  takes the source deflected further. Gamepad: the one whose button was pressed last, else the first one.
 
 ## PC release folder
 `powershell -ExecutionPolicy Bypass -File tools\pc_release\make_pc_folder.ps1 [-Dest <folder>]` (default
