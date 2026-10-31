@@ -39,6 +39,13 @@ Both are generated from a real run of the game:
 - VU1: the build runs `tools/vu1/vu1n_gen.py` over the captures (1916 micro-memories, 1512 blocks). Without
   `PS2X_VU1_GENERATOR_SOURCE` (`generar_vu1.cpp` is not public) only this lean backend is built.
 
+## App
+`tools/macos/make_app.sh` assembles `dist/God of War.app` from this machine's runner build (details:
+`tools/macos/README.md`). It is for local use only: the runner contains recompiled game code and must not be
+redistributed. The launcher keeps everything in `~/Library/Application Support/God of War/` (`data/` = links to the
+disc folder plus `IOP_MOD/`, `saves/GodOfWar.sav` with a `.bak` copy made before every start, `settings.ini`) and logs
+to `~/Library/Logs/God of War/game.log`. `open "dist/God of War.app" --args --play` skips the window.
+
 ## Run
 The game loads its modules from `IOP_MOD/<name>` next to the ELF, so run from a folder that holds the disc files
 plus `IOP_MOD/` (symlinks to `disc-usa/` are enough; `out/build-mac/run/` is such a folder):
