@@ -1,0 +1,26 @@
+[
+ {
+  "name": "ATHN01D",
+  "kind": "level",
+  "fail": [],
+  "slow": [],
+  "warn": [],
+  "shots": [
+   "ATHN01D\\gow_warp_1_ATHN01D_0.png",
+   "ATHN01D\\shots\\s004_60.jpg",
+   "ATHN01D\\shots\\s007_105.jpg",
+   "ATHN01D\\shots\\s010_150.jpg"
+  ],
+  "run_s": 165,
+  "load_s": 1.4,
+  "fps": [
+   34.4,
+   35.8
+  ],
+  "speed": 0.98,
+  "zones_seen": [
+   "Athn01C",
+   "Athn01D"
+  ]
+ }
+]

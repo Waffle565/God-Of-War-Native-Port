@@ -1,0 +1,26 @@
+[
+ {
+  "name": "OLYMP02",
+  "kind": "level",
+  "fail": [],
+  "slow": [],
+  "warn": [],
+  "shots": [
+   "OLYMP02\\gow_warp_1_OLYMP02_0.png",
+   "OLYMP02\\shots\\s004_60.jpg",
+   "OLYMP02\\shots\\s007_105.jpg",
+   "OLYMP02\\shots\\s010_150.jpg"
+  ],
+  "run_s": 165,
+  "load_s": 0.7,
+  "fps": [
+   38.0,
+   38.9
+  ],
+  "speed": 0.981,
+  "zones_seen": [
+   "Athn01A",
+   "olymp02"
+  ]
+ }
+]

@@ -796,3 +796,33 @@ Details: docs/native-render-study.md "step 7 on the renderer side, part 3".
   (2) core 1: the chain copy (appendGuestBytes 4 % of the EE thread) and an unexplained `fsdev_write <- _write_r`
   (3.5 % of the EE thread's samples in svc 0x21, sampled runs; not the log ring, which is active) - find who writes;
   (3) ATHN07B: GPU-bound at present (5.9 ms per present), see "The GPU at the default clocks".
+
+## Switch VU1 thread, sw-dips4 (2026-10-31, from update_dips13)
+- A/B metric: `tools/switch_ab.py <sweep dirs>` prints per zone, over the windows from the warp's arrival to its end:
+  guest fps min/mean, VU1 thread (GSWorker) busy ms per 5 s and per native VU1 run, VIF ms, EE / IOP ms, GS GL busy.
+  dips13 (port/switch/sweep/base_dips13): ATHN01D 10.9 us per run (4.88 s busy per 5 s), ATHN04C 9.8, ATHN06C 8.8,
+  OLYMP02 10.0. `tools/switch_pchot.sh` takes `LO=<address>` to pick one of several clones of a function.
+- VU1 programs on their own thread again (`PS2X_VU1_ASYNC=1 GOW_CORE_GSWorker=3 PS2X_VU1_ASYNC_WAIT_SPIN_US=3000
+  GOW_GS_STAGE_SPIN_US=0`: VIF on core 3 beside the GS stage, VU1Run on core 2; port/switch/sweep/as3_dips13):
+  ATHN01D 32.4 -> 18.6 mean fps. The VU1Run thread is busy only ~2.5 s per 5 s, and each run costs 13.9 us there
+  instead of ~9 us on the worker (VIF 0.7 -> 2.8 s per 5 s): VU memory written on one core and read on the other
+  makes both sides slower (cache lines move between cores at every run), and the hand-off leaves VU1Run idle half the
+  time. A two-deep variant (the worker posts the next MSCAL while the previous program runs, the VU1 thread takes it
+  at the program's end: port/switch/asyncq_dips14.patch, `PS2X_VU1_ASYNC_QUEUE=1`) was not built: it can only remove
+  the idle half, not the slower runs. VIF and VU1 stay on one thread.
+- Profile of dips13 (`GOW_PC_SAMPLE=500` on GSWorker, port/switch/logs/prof_dips13_{ATHN01D,OLYMP02,ATHN04C}; note:
+  `--env` splits on commas, so `GOW_PC_SAMPLE_THREADS=a,b` reaches the game as the first name only), ATHN01D busy
+  samples: runLit and its clones 15 %, the lit / skin loops 15.5 %, vu1hle kCullClip + kUnlitSt 8 %, npart (Run::go,
+  element, quadCorners, snippet) 10.7 %, nmisc loops 4.4 %, VIF (processVIF1Data + unpacks) 10 % (its hot lines are the
+  command-word loads: the chain data comes from the EE's core), memmove 4.4 %, memcmp 1.2 % (canonicalGen's 16 KB
+  compares at program swaps + MPG re-sends), per-run dispatch (tryRun, VU1Interpreter::run / execute, pipeline scans,
+  TLS reads) ~7 %.
+- Per family (`[vu1nat-run]`, dips14, ms of native run time per 5 s / us per run): **misc is the largest family** in
+  three of four VU1-bound zones: ATHN01D 1490 ms / 23 us (of 4.0 s native), ATHN04C 1200 / 21, ATHN06C 920 / 16,
+  OLYMP02 1850 / 12; then 7ab32108 in ATHN04C (1370 ms), 3d0d1206 in ATHN06C (1540 ms), 93febeec in ATHN01D (985 ms).
+  Windows where one family shows 35-100+ us per run are measurement outliers (the family sum exceeds the window).
+- dips14 (port/switch/dips14.patch, exact; x86 + a64 natcheck identical to the dips13 harness on all 40 recordings):
+  `VU1Interpreter::m_schedClean`: after a full `resetScheduler()` the pipeline queues stay empty until a program is
+  stepped, so the next reset skips ~1 KB of clearing and `pipelinesPending()` returns at once (a native run never
+  queues anything); `tryRun` runs on `vu.m_state` with one backup copy instead of copying the registers in and out.
+  Harness: tools/vu1_harness/stubs.cpp has the dips8 gifDirectBuffer / gifDirectCommit stubs (ctx.memory is null there).

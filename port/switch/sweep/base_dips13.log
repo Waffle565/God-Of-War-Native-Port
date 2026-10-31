@@ -1,0 +1,12 @@
+[sweep] package update_dips13
+[sweep] 17:54:52 ATHN01D
+[sweep] ATHN01D PASS  
+[sweep] 17:58:21 ATHN04C
+[sweep] ATHN04C PASS  
+[sweep] 18:02:14 ATHN06C
+[sweep] ATHN06C PASS  
+[sweep] 18:06:07 OLYMP02
+[sweep] OLYMP02 PASS  
+[sweep] default restored
+[sweep] exefs md5 e619310c = default
+[sweep] report port/switch/sweep/base_dips13\20261031_1754\report.md

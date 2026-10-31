@@ -1,0 +1,111 @@
+--- a/ps2xRuntime/include/runtime/ps2_vu1.h
++++ b/ps2xRuntime/include/runtime/ps2_vu1.h
+@@ -316,6 +316,10 @@
+     // GOW-Port: los flags (MAC/estado/clip) tienen todos la misma latencia, así que se confirman en el orden
+     // en que se emiten: una cola circular (cabeza y número de entradas) en lugar de buscar huecos.
+     uint32_t m_flagHead = 0u, m_flagCount = 0u;
++    // sw-dips4: VU1 only. True from a full resetScheduler() until run() steps the program (no native run): every
++    // pipeline queue is empty and the ready arrays are zero, so the next resetScheduler() / pipelinesPending() are
++    // trivial (a native run never touches the scheduler; ~150 k runs per 5 s each paid ~1 KB of clearing and scans).
++    bool m_schedClean = false;
+     XgkickPipeline m_xgkick{};
+     std::array<std::array<uint64_t, 4>, 32> m_vfReady{};
+     std::array<uint64_t, 16> m_viReady{};
+--- a/ps2xRuntime/src/lib/vu/ps2_vu1_core.cpp
++++ b/ps2xRuntime/src/lib/vu/ps2_vu1_core.cpp
+@@ -140,9 +140,13 @@
+ 
+ void VU1Interpreter::resetScheduler()
+ {
+-    commitReadyFlags(); // GOW-Port: las ya listas se habrían confirmado en su ciclo
++    const bool clean = m_schedClean; // sw-dips4: nothing queued since the last full reset (see m_schedClean)
++    if (!clean)
++        commitReadyFlags(); // GOW-Port: las ya listas se habrían confirmado en su ciclo
+     m_lastRunHitBudget = false; // GOW-Port
+     m_nextCommitCycle = ~0ull;
++    if (!clean) // (the queues, the ready arrays and the XGKICK state are as these lines leave them)
++    {
+     m_flagPipeline = {};
+     m_fdiv = {};
+     m_efu = {};
+@@ -157,6 +161,7 @@
+     m_vfReady = {};
+     m_viReady = {};
+     m_accReady = {};
++    }
+     if (m_native) // GOW-Port: native backend bookkeeping of these arrays (ps2_vu1_native.inl)
+     {
+         m_native->arraysReadyBy = 0u;
+@@ -173,6 +178,7 @@
+     m_stopRequested = false;
+     m_pendingHaltD = false;
+     m_pendingHaltT = false;
++    m_schedClean = m_unit == Unit::VU1;
+ }
+ 
+ void VU1Interpreter::reset()
+@@ -1302,6 +1308,8 @@
+ 
+ bool VU1Interpreter::pipelinesPending() const
+ {
++    if (m_schedClean)
++        return false;
+     if (m_fdiv.valid || m_xgkick.active)
+         return true;
+     for (const ScalarPipelineEntry &entry : m_efu)
+@@ -2027,6 +2035,8 @@
+     // the recompiled VU1 below only when it declines
+     const bool natRun = g_natRunStart && m_unit == Unit::VU1 && VU1NatAccess::tryRun(*this, &context);
+     g_natRunStart = false;
++    if (!natRun)
++        m_schedClean = false; // the program is stepped below: the queues fill
+ #if PS2X_VU1_ORACLE
+     if (!natRun)
+ #else
+@@ -2451,6 +2461,7 @@
+ 
+ bool VU1Interpreter::stepInterpreted(StepContext &context)
+ {
++    m_schedClean = false; // sw-dips4 (any caller: run(), the harness oracle)
+     if (!compiledPrologue(context))
+         return false;
+     if (m_state.pc + 8u > context.codeSize)
+--- a/ps2xRuntime/src/lib/vu/ps2_vu1_nat.inl
++++ b/ps2xRuntime/src/lib/vu/ps2_vu1_nat.inl
+@@ -1484,7 +1484,9 @@
+         st.pend = fam, st.pendT0 = ps2_perf::nowNanos();
+         return false;
+     }
+-    thread_local VU1State s;
++    // sw-dips4: the run works on vu.m_state itself; a copy is kept only to restore it on a decline (one 0.7 KB copy per
++    // run instead of two)
++    thread_local VU1State backup;
+     thread_local std::vector<uint8_t> ownPackets;
+     static const bool splitKicks = [] {
+         const char* e = std::getenv("GOW_VU1NAT_MERGE_KICKS");
+@@ -1500,7 +1502,8 @@
+     // nat-vu1n: the native time starts here, after the classification both paths pay (a recompiled run's time starts
+     // at the same point: pendT0 above), so nat / rec per family compare the runs themselves
+     const uint64_t tRun = ps2_perf::nowNanos();
+-    s = vu.m_state;
++    backup = vu.m_state;
++    VU1State &s = vu.m_state;
+     uint32_t dpc = 0;
+     const uint64_t savedFp = vu_fpmode::get();
+     vu_fpmode::set((savedFp & ~vu_fpmode::kRoundMask) | vu_fpmode::kRoundZero | vu_fpmode::kFlushZero); // FTZ + DAZ as the native blocks
+@@ -1508,6 +1511,7 @@
+     vu_fpmode::set(savedFp);
+     if (!ok)
+     {
++        vu.m_state = backup; // registers as the run found them
+         vu1nat::nrun::pkBase() = 0; // (runNative left the buffer at `base`)
+         if (dpc & 0x80000000u)
+         {
+@@ -1521,7 +1525,6 @@
+         st.pend = fam, st.pendT0 = t1;
+         return false;
+     }
+-    vu.m_state = s;
+     // the packets in kick order to the GIF (PATH1), as finishXgkick hands them on, one submit per packet.
+     // default (nat-vu1r): the run's packets in one submit (the GIF input is a stream per path; one arbiter / stage
+     // entry instead of ~3.4 per run): misc -0.8 us per run on the console; nv4b's late-scene drop did not come back in

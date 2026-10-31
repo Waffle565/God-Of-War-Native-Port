@@ -1,0 +1,18 @@
+[sweep] package update_dips8
+[sweep] 15:13:29 movies_SEMO01
+[sweep] movies_SEMO01 PASS  
+[sweep] 15:17:04 ATHN01D
+[sweep] ATHN01D PASS  
+[sweep] 15:20:24 ATHN02A
+[sweep] ATHN02A PASS  
+[sweep] 15:24:17 ATHN04C
+[sweep] ATHN04C PASS  
+[sweep] 15:28:20 ATHN06C
+[sweep] ATHN06C PASS  
+[sweep] 15:32:14 OLYMP02
+[sweep] OLYMP02 PASS  
+[sweep] 15:35:58 ATHN07B
+[sweep] ATHN07B PASS  
+[sweep] default restored
+[sweep] exefs md5 e619310c = default
+[sweep] report port/switch/sweep/ab4_dips8\20261031_1513\report.md

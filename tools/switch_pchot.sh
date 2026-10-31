@@ -1,8 +1,8 @@
 # hot addresses inside one function of a console PC-sample file (GOW_PC_SAMPLE), with source lines. WSL:
-#   bash tools/switch_pchot.sh <pcs_<thread>.txt> <function name substring> <first_ms> <last_ms>  (ELF: $ELF, default /root/elf_dips7.elf)
+#   [LO=<address hex, picks one of several clones>] bash tools/switch_pchot.sh <pcs_<thread>.txt> <function name substring> <first_ms> <last_ms>  (ELF: $ELF, default /root/elf_dips7.elf)
 cd "/mnt/c/Users/lovas/Claude/God Of War"
 B=/opt/devkitpro/devkitA64/bin/aarch64-none-elf
-read lo sz name < <($B-nm -S -C ${ELF:-/root/elf_dips7.elf} | grep -F "$2" | grep ' [TtWw] ' | head -1 | awk '{print $1, $2, $4}')
+read lo sz name < <($B-nm -S -C ${ELF:-/root/elf_dips7.elf} | grep -F "$2" | grep ' [TtWw] ' | grep -F "${LO:-}" | head -1 | awk '{print $1, $2, $4}')
 echo "func $lo size $sz"
 python3 - "$1" $lo $sz $3 $4 > /tmp/hot.txt <<'PY'
 import sys

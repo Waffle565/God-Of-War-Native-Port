@@ -1,0 +1,30 @@
+[sweep] 18:53:21 ATHN01D
+[sweep] ATHN01D PASS  
+[sweep] default restored
+[sweep] exefs md5 bff8abe9 = default
+[sweep] report port/switch/sweep/prof_dips13\20261031_1853\report.md
+285125 bytes -> port/switch/logs/prof_dips13_ATHN01D/pcs_GSWorker.txt
+FTP <switch-ip>:5000 failed: [WinError 10054] Connessione in corso interrotta forzatamente dall'host remoto
+FTP <switch-ip>:5000 failed: [WinError 10054] Connessione in corso interrotta forzatamente dall'host remoto
+FTP <switch-ip>:5000 failed: 451 
+PROF ATHN01D done
+[sweep] 18:57:54 OLYMP02
+[sweep] OLYMP02 PASS  
+[sweep] default restored
+[sweep] exefs md5 bff8abe9 = default
+[sweep] report port/switch/sweep/prof_dips13\20261031_1857\report.md
+265635 bytes -> port/switch/logs/prof_dips13_OLYMP02/pcs_GSWorker.txt
+288206 bytes -> port/switch/logs/prof_dips13_OLYMP02/pcs_GameThread.txt
+103417 bytes -> port/switch/logs/prof_dips13_OLYMP02/pcs_GSStage.txt
+100433 bytes -> port/switch/logs/prof_dips13_OLYMP02/pcs_GSThread.txt
+PROF OLYMP02 done
+[sweep] 19:03:02 ATHN04C
+[sweep] ATHN04C PASS  
+[sweep] default restored
+[sweep] exefs md5 bff8abe9 = default
+[sweep] report port/switch/sweep/prof_dips13\20261031_1903\report.md
+258767 bytes -> port/switch/logs/prof_dips13_ATHN04C/pcs_GSWorker.txt
+FTP <switch-ip>:5000 failed: [WinError 10054] Connessione in corso interrotta forzatamente dall'host remoto
+FTP <switch-ip>:5000 failed: [WinError 10054] Connessione in corso interrotta forzatamente dall'host remoto
+FTP <switch-ip>:5000 failed: 451 
+PROF ATHN04C done

@@ -1,0 +1,119 @@
+[sweep] 02:56:11 movies_BONUS03
+[sweep] movies_BONUS03 FAIL frozen screen at 630 s (3 identical screenshots); log not pulled 
+[sweep] 03:19:00 movies_BONUS10
+[sweep] 03:20:14 movies_BONUS03
+[sweep] movies_BONUS03 FAIL frozen screen at 1305 s (3 identical screenshots) 
+[sweep] 03:43:16 movies_BONUS10
+[sweep] movies_BONUS10 FAIL frozen screen at 930 s (3 identical screenshots) 
+[sweep] 04:02:36 movies_BONUS18
+[sweep] movies_BONUS18 FAIL frozen screen at 705 s (3 identical screenshots); frozen screen at 930 s (3 identical screenshots) A01MP02: cut short: 990 of ~1360 pictures | A01MP01: cut short: 780 of ~1090 pictures | A03MP01: cut short: 870 of ~1180 pictures
+[sweep] 04:29:40 movies_A06MP04
+[sweep] movies_A06MP04 FAIL frozen screen at 885 s (3 identical screenshots) SEMO13: cut short: 870 of ~1258 pictures
+[sweep] 04:53:03 movies_A07MP05
+[sweep] movies_A07MP05 FAIL frozen screen at 630 s (3 identical screenshots) 
+[sweep] 05:10:11 movies_SEMO08
+[sweep] movies_SEMO08 FAIL frozen screen at 765 s (3 identical screenshots); frozen screen at 840 s (3 identical screenshots) P04MP05: cut short: 720 of ~1036 pictures
+[sweep] 05:33:33 movies_MAGICBZK
+[sweep] movies_MAGICBZK FAIL  P00MP04: cut short: 450 of ~648 pictures | P02MP01: cut short: 780 of ~1092 pictures
+[sweep] 05:45:37 ATHN01A
+[sweep] ATHN01A PASS fps min 11.8 
+[sweep] 05:49:16 ATHN01B
+[sweep] ATHN01B FAIL pad script push failed 
+[sweep] 05:49:25 ATHN01D
+[sweep] ATHN01D FAIL pad script push failed 
+[sweep] 05:49:34 ATHN01EE
+[sweep] ATHN01EE FAIL pad script push failed 
+[sweep] 05:49:43 ATHN01C
+[sweep] ATHN01C PASS  
+[sweep] 05:52:52 ATHN01E
+[sweep] ATHN01E FAIL pad script push failed 
+[sweep] 05:53:01 ATHN01F
+[sweep] 05:53:20 ATHN01B
+[sweep] ATHN01B FAIL warp timeout ATHN01B at 149.1 s (slot=0 loaded=0 request=1 due=0) zone=Athn01B 
+[sweep] 05:56:28 ATHN01D
+[sweep] ATHN01D PASS fps min 12.8 
+[sweep] 05:59:42 ATHN01EE
+[sweep] ATHN01EE FAIL black capture gow_warp_1_ATHN01EE_0.ppm (mean 0.0); fps min 18.4 
+[sweep] 06:03:21 ATHN01E
+[sweep] ATHN01E PASS  
+[sweep] 06:06:50 ATHN01F
+[sweep] ATHN01F PASS fps min 18.0 
+[sweep] 06:09:55 ATHN02B
+[sweep] ATHN02B PASS  
+[sweep] 06:13:43 ATHN02D
+[sweep] ATHN02D PASS fps min 20.4 
+[sweep] 06:17:22 ATHN02A
+[sweep] ATHN02A PASS fps min 23.2 
+[sweep] 06:21:00 ATHN02C
+[sweep] ATHN02C PASS  
+[sweep] 06:24:30 ATHN03AA
+[sweep] ATHN03AA PASS fps min 14.2 
+[sweep] 06:28:18 ATHN03A
+[sweep] ATHN03A SLOW game speed 1.066 
+[sweep] 06:31:57 ATHN03C
+[sweep] ATHN03C PASS  
+[sweep] 06:35:27 ATHN04B
+[sweep] ATHN04B PASS  
+[sweep] 06:39:05 ATHN04A
+[sweep] ATHN04A PASS  
+[sweep] 06:42:44 ATHN04C
+[sweep] ATHN04C PASS fps min 13.6 
+[sweep] 06:46:31 ATHN05A
+[sweep] ATHN05A PASS  
+[sweep] 06:50:00 ATHN05AA
+[sweep] ATHN05AA FAIL black capture gow_warp_1_ATHN05AA_0.ppm (mean 0.0); fps min 18.6 
+[sweep] 06:53:14 ATHN05B
+[sweep] ATHN05B SLOW game speed 1.066 
+[sweep] 06:56:53 ATHN05C
+[sweep] ATHN05C PASS  
+[sweep] 07:00:22 ATHN05BB
+[sweep] ATHN05BB PASS  
+[sweep] 07:04:00 ATHN05D
+[sweep] ATHN05D PASS fps min 17.6 
+[sweep] 07:07:39 ATHN04D
+[sweep] ATHN04D PASS fps min 17.2 
+[sweep] 07:11:26 ATHN06A
+[sweep] ATHN06A PASS fps min 22.8 
+[sweep] 07:15:05 ATHN06C
+[sweep] ATHN06C PASS fps min 11.8 
+[sweep] 07:18:44 ATHN06B
+[sweep] ATHN06B SLOW game speed 1.06; fps min 15.8 
+[sweep] 07:22:23 ATHN07
+[sweep] ATHN07 PASS fps min 15.8 
+[sweep] 07:25:53 SEWR01
+[sweep] SEWR01 PASS  
+[sweep] 07:29:32 SEWR02
+[sweep] SEWR02 PASS  
+[sweep] 07:33:19 ATHN03D
+[sweep] ATHN03D PASS fps min 13.6 
+[sweep] 07:36:58 ATHN03E
+[sweep] ATHN03E PASS  
+[sweep] 07:40:27 DEST00
+[sweep] DEST00 PASS fps min 17.2 
+[sweep] 07:44:05 DEST01
+[sweep] DEST01 PASS  
+[sweep] 07:47:44 DEST02
+[sweep] DEST02 SLOW game speed 1.056; fps min 21.2 
+[sweep] 07:51:22 DEST03
+[sweep] DEST03 PASS  
+[sweep] 07:55:00 PAND00A
+[sweep] PAND00A SLOW game speed 1.055 
+[sweep] 07:58:38 ARENA06
+[sweep] ARENA06 SLOW game speed 1.062; fps min 15.4 
+[sweep] 08:02:25 ARENA08
+[sweep] ARENA08 PASS  
+[sweep] 08:06:04 ARENA09
+[sweep] ARENA09 PASS fps min 20.2 
+[sweep] 08:09:34 ARENA10
+[sweep] ARENA10 SLOW game speed 1.082; fps min 18.4 
+[sweep] 08:13:12 ARENA12
+[sweep] ARENA12 SLOW game speed 1.062; fps min 18.0 
+[sweep] 08:17:01 ARENA14
+[sweep] ARENA14 PASS fps min 13.4 
+[sweep] 08:20:39 ARENA19
+[sweep] ARENA19 PASS fps min 20.0 
+[sweep] 08:24:09 ARENA20
+[sweep] ARENA20 PASS fps min 18.0 
+[sweep] 08:27:57 ARENA26
+[sweep] ARENA26 PASS fps min 20.2 
+[sweep] 08:31:36 ARENA27

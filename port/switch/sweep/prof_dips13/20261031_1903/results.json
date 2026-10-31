@@ -1,0 +1,26 @@
+[
+ {
+  "name": "ATHN04C",
+  "kind": "level",
+  "fail": [],
+  "slow": [],
+  "warn": [],
+  "shots": [
+   "ATHN04C\\gow_warp_1_ATHN04C_1.png",
+   "ATHN04C\\shots\\s004_60.jpg",
+   "ATHN04C\\shots\\s007_105.jpg",
+   "ATHN04C\\shots\\s010_150.jpg"
+  ],
+  "run_s": 165,
+  "load_s": 0.6,
+  "fps": [
+   42.8,
+   47.1
+  ],
+  "speed": 0.992,
+  "zones_seen": [
+   "Athn01A",
+   "Athn04C"
+  ]
+ }
+]

@@ -1,0 +1,12 @@
+[sweep] package update_dips13 env GOW_VIF_PREFETCH=1536
+[sweep] 18:11:08 ATHN01D
+[sweep] ATHN01D PASS  
+[sweep] 18:15:10 ATHN04C
+[sweep] ATHN04C PASS  
+[sweep] 18:19:03 ATHN06C
+[sweep] ATHN06C PASS  
+[sweep] 18:22:56 OLYMP02
+[sweep] OLYMP02 PASS  
+[sweep] default restored
+[sweep] exefs md5 e619310c = default
+[sweep] report port/switch/sweep/pf_dips13\20261031_1810\report.md

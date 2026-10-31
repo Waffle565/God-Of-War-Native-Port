@@ -1,0 +1,155 @@
+diff -u --strip-trailing-cr a/ps2_memory.cpp b/ps2_memory.cpp
+--- a/ps2_memory.cpp	2026-10-31 18:52:14.744334091 +0100
++++ b/ps2_memory.cpp	2026-10-31 18:52:14.768207172 +0100
+@@ -277,6 +277,8 @@
+             const char *waitSpin = std::getenv("PS2X_VU1_ASYNC_WAIT_SPIN_US");
+             m_vu1AsyncWaitSpinNs = static_cast<uint64_t>(waitSpin ? std::strtoul(waitSpin, nullptr, 10) : 0ul) * 1000ull;
+             m_vu1AsyncOn = true;
++            const char *queue = std::getenv("PS2X_VU1_ASYNC_QUEUE");
++            m_vu1AsyncQueue = !m_vu1AsyncDefer && queue && queue[0] == '1';
+             if (!m_vu1AsyncDefer)
+             {
+                 m_vu1Async = std::thread([this] { vu1AsyncLoop(); });
+@@ -2191,6 +2193,50 @@
+ {
+     ThreadNaming::SetCurrentThreadName("VU1Run");
+     s_vu1RunOf = this; // onGsWorkerThread
++    if (m_vu1AsyncQueue)
++    {
++        // queue mode: take the posted job (m_vu1AsyncNext) as soon as it is there; state 2 before the slot is freed, so
++        // the worker never sees "nothing running, nothing posted" while a job is in flight
++        for (;;)
++        {
++            if (m_vu1AsyncNextState.load(std::memory_order_acquire) != 1)
++            {
++                const uint64_t until = ps2_perf::nowNanos() + m_vu1AsyncSpinNs;
++                unsigned n = 0;
++                while (m_vu1AsyncNextState.load(std::memory_order_acquire) != 1)
++                {
++                    vu1AsyncPause();
++                    if ((++n & 63u) == 0u && ps2_perf::nowNanos() >= until)
++                        break;
++                }
++            }
++            if (m_vu1AsyncNextState.load(std::memory_order_acquire) != 1)
++            {
++                std::unique_lock<std::mutex> lock(m_vu1AsyncMutex);
++                m_vu1AsyncSleeping.store(true, std::memory_order_seq_cst);
++                m_vu1AsyncCv.wait(lock, [this] { return m_vu1AsyncStop || m_vu1AsyncNextState.load(std::memory_order_seq_cst) == 1; });
++                m_vu1AsyncSleeping.store(false, std::memory_order_relaxed);
++                if (m_vu1AsyncNextState.load(std::memory_order_acquire) != 1)
++                    return; // stop
++            }
++            m_vu1AsyncJob = m_vu1AsyncNext;
++            m_vu1AsyncState.store(2, std::memory_order_seq_cst);
++            m_vu1AsyncNextState.store(0, std::memory_order_seq_cst); // taken: the worker leaves its MSCAL
++            if (m_vu1AsyncWaiting.load(std::memory_order_seq_cst))
++            {
++                std::lock_guard<std::mutex> lock(m_vu1AsyncMutex);
++                m_vu1AsyncDoneCv.notify_all();
++            }
++            if (m_vu1AsyncExec)
++                m_vu1AsyncExec(m_vu1AsyncJob);
++            m_vu1AsyncState.store(0, std::memory_order_seq_cst);
++            if (m_vu1AsyncWaiting.load(std::memory_order_seq_cst))
++            {
++                std::lock_guard<std::mutex> lock(m_vu1AsyncMutex);
++                m_vu1AsyncDoneCv.notify_all();
++            }
++        }
++    }
+     for (;;)
+     {
+         // spin a little for the next job (the MSCALs of a batch list come tens of microseconds apart), then sleep
+@@ -2230,6 +2276,19 @@
+ {
+     if (!m_vu1AsyncOn || !m_vu1AsyncExec || s_gsWorkerOf != this)
+         return false;
++    if (m_vu1AsyncQueue)
++    {
++        // post, then wait until the VU1 thread took it (it does at the end of the running program, or at once)
++        m_vu1AsyncNext = job;
++        m_vu1AsyncNextState.store(1, std::memory_order_seq_cst);
++        if (m_vu1AsyncSleeping.load(std::memory_order_seq_cst))
++        {
++            std::lock_guard<std::mutex> lock(m_vu1AsyncMutex);
++            m_vu1AsyncCv.notify_one();
++        }
++        vu1AsyncWait();
++        return true;
++    }
+     vu1AsyncWait();
+     m_vu1AsyncJob = job;
+     m_vu1AsyncState.store(1, std::memory_order_seq_cst);
+@@ -2253,13 +2312,21 @@
+         m_vu1AsyncExec(m_vu1AsyncJob);
+         m_vu1AsyncState.store(0, std::memory_order_relaxed);
+     }
+-    if (m_vu1AsyncState.load(std::memory_order_acquire) != 0)
++    // queue mode: a submit waits for its job to be taken (busy = posted), every other sync point for the end of
++    // everything (busy = posted or running)
++    const bool posted = m_vu1AsyncQueue && m_vu1AsyncNextState.load(std::memory_order_acquire) != 0;
++    const auto busy = [this, posted] {
++        return posted ? m_vu1AsyncNextState.load(std::memory_order_seq_cst) != 0
++                      : m_vu1AsyncState.load(std::memory_order_seq_cst) != 0 ||
++                            (m_vu1AsyncQueue && m_vu1AsyncNextState.load(std::memory_order_seq_cst) != 0);
++    };
++    if (busy())
+     {
+         const uint64_t t0 = ps2_perf::enabled() ? ps2_perf::nowNanos() : 0u;
+         // the program often ends within a few microseconds of the next MSCAL: spin first
+         if (m_vu1AsyncWaitSpinNs == 0u)
+         {
+-            for (unsigned n = 0; n < 4096u && m_vu1AsyncState.load(std::memory_order_acquire) != 0; ++n)
++            for (unsigned n = 0; n < 4096u && busy(); ++n)
+                 vu1AsyncPause();
+         }
+         else
+@@ -2268,18 +2335,18 @@
+             // costs the VU1 thread a notify (a syscall) at every program end
+             const uint64_t until = ps2_perf::nowNanos() + m_vu1AsyncWaitSpinNs;
+             unsigned n = 0;
+-            while (m_vu1AsyncState.load(std::memory_order_acquire) != 0)
++            while (busy())
+             {
+                 vu1AsyncPause();
+                 if ((++n & 63u) == 0u && ps2_perf::nowNanos() >= until)
+                     break;
+             }
+         }
+-        if (m_vu1AsyncState.load(std::memory_order_acquire) != 0)
++        if (busy())
+         {
+             std::unique_lock<std::mutex> lock(m_vu1AsyncMutex);
+             m_vu1AsyncWaiting.store(true, std::memory_order_seq_cst);
+-            m_vu1AsyncDoneCv.wait(lock, [this] { return m_vu1AsyncState.load(std::memory_order_seq_cst) == 0; });
++            m_vu1AsyncDoneCv.wait(lock, [&busy] { return !busy(); });
+             m_vu1AsyncWaiting.store(false, std::memory_order_relaxed);
+         }
+         if (t0)
+@@ -2288,7 +2355,7 @@
+             ps2_perf::gsw::asyncWaits.addOwned(1);
+         }
+     }
+-    if (m_vu1AsyncDrainAfter)
++    if (m_vu1AsyncDrainAfter && !posted) // (after a queued submit the next program runs)
+     {
+         m_vu1AsyncDrainAfter = false;
+         if (m_gifArbiter)
+diff -u --strip-trailing-cr a/ps2_memory.h b/ps2_memory.h
+--- a/ps2_memory.h	2026-10-31 18:52:14.744273608 +0100
++++ b/ps2_memory.h	2026-10-31 18:52:14.762568927 +0100
+@@ -605,6 +605,13 @@
+     uint64_t m_vu1AsyncWaitSpinNs = 0; // PS2X_VU1_ASYNC_WAIT_SPIN_US: the worker spins this long for the program's end (0: 4096 pauses)
+     Vu1AsyncJob m_vu1AsyncJob{};
+     Vu1AsyncExec m_vu1AsyncExec;
++    // PS2X_VU1_ASYNC_QUEUE=1 (sw-dips4): the worker posts an MSCAL / MSCNT as the next job while the previous program
++    // still runs (m_vu1AsyncNextState 1) and waits until the VU1 thread took it (0): that thread starts it the moment the
++    // previous program ends, without a hand-off back to the worker. The worker leaves the MSCAL at the same point as
++    // before (previous program ended, this one started), so the VIF stall semantics do not change.
++    bool m_vu1AsyncQueue = false;
++    std::atomic<int> m_vu1AsyncNextState{0};
++    Vu1AsyncJob m_vu1AsyncNext{};
+ 
+     std::mutex m_completedDmacMutex;
+     std::vector<uint32_t> m_completedDmacCauses;

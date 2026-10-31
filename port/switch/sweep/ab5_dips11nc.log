@@ -1,0 +1,14 @@
+[sweep] package update_dips11 env GOW_GS_HW_COMPACT=0
+[sweep] 17:00:40 ATHN01D
+[sweep] ATHN01D PASS  
+[sweep] 17:04:42 ATHN02A
+[sweep] ATHN02A PASS  
+[sweep] 17:08:35 ATHN04C
+[sweep] ATHN04C PASS  
+[sweep] 17:12:28 ATHN06C
+[sweep] ATHN06C PASS  
+[sweep] 17:16:22 ATHN07B
+[sweep] ATHN07B PASS  
+[sweep] default restored
+[sweep] exefs md5 e619310c = default
+[sweep] report port/switch/sweep/ab5_dips11nc\20261031_1700\report.md

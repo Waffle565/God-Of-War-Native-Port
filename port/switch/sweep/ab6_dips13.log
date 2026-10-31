@@ -1,0 +1,11 @@
+[sweep] 19:54:37 ATHN01D
+[sweep] ATHN01D PASS  
+[sweep] 19:58:06 ATHN04C
+[sweep] ATHN04C PASS  
+[sweep] 20:01:59 ATHN06C
+[sweep] ATHN06C PASS  
+[sweep] 20:05:52 OLYMP02
+[sweep] OLYMP02 PASS  
+[sweep] default restored
+[sweep] exefs md5 bff8abe9 = default
+[sweep] report port/switch/sweep/ab6_dips13\20261031_1954\report.md

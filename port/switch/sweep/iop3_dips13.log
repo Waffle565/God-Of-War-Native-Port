@@ -1,0 +1,12 @@
+[sweep] package update_dips13 env GOW_IOP_THREAD=1,GOW_CORE_IopRun=3,GOW_GS_STAGE_SPIN_US=0
+[sweep] 17:38:08 ATHN01D
+[sweep] ATHN01D PASS  
+[sweep] 17:42:01 ATHN04C
+[sweep] ATHN04C PASS  
+[sweep] 17:46:03 ATHN06C
+[sweep] ATHN06C PASS fps min 23.0 
+[sweep] 17:49:57 OLYMP02
+[sweep] OLYMP02 PASS  
+[sweep] default restored
+[sweep] exefs md5 e619310c = default
+[sweep] report port/switch/sweep/iop3_dips13\20261031_1737\report.md
