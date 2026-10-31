@@ -80,6 +80,13 @@ fuses `a*b+c`; x86 and the PS2 round twice), sse2neon precise min/max, division 
 (`ps2_runtime_macros.h`), because clang does not order float code against FPCR writes.
 
 ## Known issues
+- Fixed (macOS only, shared race): the intro movie's VBlank handler writes DISPFB2 twice per run (0x26E798 sets the
+  double-buffer entry 104/208, 0x26CF20 overwrites it with 104), and the host thread could latch the display between
+  the two stores, showing the stale in-engine picture for single frames. While an interrupt or GS callback handler runs,
+  presentation now uses a snapshot of the display registers taken at its start (`GS::holdDisplay`, at most two fields).
+  Windows and Linux have the same race in shared code.
+- Not checked yet: a few short bursts of frames in the in-engine cliff shot after the intro shift red towards
+  blue/green at the same point in every run (possibly scripted, e.g. lightning); compare with PCSX2.
 - The USA config's widescreen patches read a camera aperture factor from 0x000FFFF0; the override must write it
   (9/16) every frame, else the projection is +-FLT_MAX and VU1 culls every vertex (fixed in port/overrides-usa).
 - VU1 A/B check (`GOW_VU1N_VERIFY=1`): 0.038% of runs differ (383 in 998k), the same classes docs/vu1-native-flags.md
