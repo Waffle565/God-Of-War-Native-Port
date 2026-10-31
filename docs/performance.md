@@ -728,3 +728,21 @@ Details: docs/native-render-study.md "step 7 on the renderer side, part 3".
   `tools/switch_pchot.sh` (WSL: hot addresses + source lines inside one function of a pcs_*.txt). Profile runs:
   `switch_sweep.py --levels --only <zone> --env "GOW_PC_SAMPLE=500,GOW_PC_SAMPLE_THREADS=GSThread,GSWorker,GameThread,GSStage"`,
   then pull switch/gow/pcs_*.txt over FTP and map with tools/switch_pcprof.py against /root/elf_<build>.elf.
+
+## Switch VU1 thread: XGKICKs straight into the GS stage, merged channel-shuffle quads (2026-10-31, sw-dips3, port/switch/dips8.patch)
+- Where the time goes after dips7 (profile port/switch/logs/prof_dips7_ATHN01D, `GOW_PC_SAMPLE_LR` on memmove; zone
+  averages from the sweep logs after the warp): in ATHN01D, OLYMP02, ATHN04C, ATHN06C and ATHN02A the VU1 thread
+  (GSWorker, core 2) is 92-96 % busy (`[gsw-split] job_ms` 4.6-4.8 s per 5 s), so it sets the frame rate; core 1
+  (EE 3.2-3.5 s + IOP 0.7-0.8 s per 5 s) is next. ATHN07B is the exception (GS side: EE waits ~2 s per 5 s on the GS).
+  memmove was 7.6 % of the VU1 thread: 3.2 % `ps2_gs_stage::push` (copying each native run's packets into the stage's
+  buffer) + ~2.4 % the native runs' own XGKICK copy (VU memory -> a packet vector). On the GS thread the channel
+  shuffles cost ~3.7 % in copies (cached unit quads appended per sprite, then streamed), as much as the draw stream.
+- Changes (exact: same bytes to the GS frontend, same pixels):
+  - `PS2Memory::gifDirectBuffer()` / `gifDirectCommit()` + `ps2_gs_stage::directBuffer()` / `commitDirect()`: on the
+    worker, with the stage running and the GIF arbiter empty (exactly when the old submit would have called
+    `ps2_gs_stage::push`), a native VU1 run appends its XGKICKs straight to the stage's buffer behind the packets
+    already there; `vu1nat::nrun::pkBase()` tells the native code where its packets start (a run "clears" to there;
+    a declined run leaves the buffer as it found it). One copy per packet instead of two. `GOW_GIF_DIRECT=0`: off.
+  - `mergeShuffleUnits` (gs_hw_backend.cpp): the cached 8x8 unit quads of a shuffle map are merged into rectangles
+    (same half combination and source offset, touching in the destination: rows, then equal rows below each other),
+    once per map shape. `GOW_GS_HW_SHUFFLE_MERGE=0`: off.
