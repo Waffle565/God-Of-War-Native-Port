@@ -1,0 +1,55 @@
+--- a/ps2xRuntime/src/lib/ps2_memory.cpp
++++ b/ps2xRuntime/src/lib/ps2_memory.cpp
+@@ -1869,6 +1869,32 @@
+         return kb * 1024u;
+     }
+ 
++    // GOW-Port (sw-dips6): the last bytes the EE thread wrote are still dirty in its core's L1; the VU1 worker's first
++    // reads of those lines snoop that core. Before a buffer (or a chain's unpublished tail) goes to the worker, its last
++    // L1-size worth of lines is cleaned to the shared L2 (DC CVAU per 64-byte line, no wait). Cache maintenance only:
++    // the bytes are the same. GOW_CHAIN_CLEAN=0: off.
++    void cleanForWorker(const uint8_t *p, size_t n)
++    {
++#if defined(__aarch64__)
++        static const bool on = [] {
++            const char *v = std::getenv("GOW_CHAIN_CLEAN");
++            return !v || v[0] != '0';
++        }();
++        if (!on || n == 0u)
++            return;
++        constexpr size_t kTail = (32u << 10) + 4096u; // the A57's L1D and a little
++        if (n > kTail)
++            p += n - kTail, n = kTail;
++        uintptr_t a = reinterpret_cast<uintptr_t>(p) & ~static_cast<uintptr_t>(63);
++        const uintptr_t e = reinterpret_cast<uintptr_t>(p) + n;
++        for (; a < e; a += 64u)
++            __asm__ volatile("dc cvau, %0" : : "r"(a) : "memory");
++#else
++        (void)p;
++        (void)n;
++#endif
++    }
++
+     uint32_t chainStreamLag()
+     {
+         // GOW_CHAIN_STREAM_LAG_KB=<n> (default 64): publish only bytes copied >= n KB ago. Lines the worker reads right
+@@ -2044,6 +2070,11 @@
+     if (stream)
+     {
+         // the job is queued already: hand over the rest (the vector keeps its buffer, so base stays valid)
++        {
++            const uint32_t pub = stream->published.load(std::memory_order_relaxed);
++            if (bytes.size() > pub)
++                cleanForWorker(bytes.data() + pub, bytes.size() - pub);
++        }
+         stream->bytes = std::move(bytes);
+         stream->done.store(true, std::memory_order_release);
+         return;
+@@ -2133,6 +2164,7 @@
+     }
+     if (m_gsWorkerEnabled)
+     {
++        cleanForWorker(bytes.data(), bytes.size());
+         GsWorkerJob job;
+         job.fbrst = m_fbrstProvider ? m_fbrstProvider() : 0u;
+         job.items.push_back(GsWorkerItem{path == DmaPath::Vif1, std::move(bytes)});

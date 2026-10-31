@@ -916,3 +916,18 @@ Details: docs/native-render-study.md "step 7 on the renderer side, part 3".
   re-ran every per-generation cache (through the content memos). Not installed.
 - dips18 (port/switch/dips18.patch, on dips17): the run state thread_locals (undo log, packet base, run generation) in
   one `nrun::Tls`, fetched once per run in runNative / runNativeBody / runLit. Natcheck identical. Superseded by dips19.
+- dips19 (port/switch/dips19.patch, on dips18): **one code key while the micro memory changes** (`vu1nat::trackGen`,
+  `canonicalGen` now a wrapper over the change log `PS2Memory::vu1CodeChangedRange`): a swap with a known changed range
+  [lo, hi) keeps the key and drops only what reads those bytes (entry kinds and nmisc::loop's loop kinds whose
+  KindMemo window [at - 0xd8, at + 288) overlaps it, the coarse hashes of the key's CodeInfo slot when kCoveredRanges /
+  kClipRanges / nlit::kFixedRanges overlap, npart::isProgram's slot when its ranges overlap); an unknown range (log
+  overwritten, whole-memory write) starts a new key. The census keeps the raw generation. New harness mode
+  `GOW_VU1NAT_GENTEST=1` (natcheck): each run gets its key from trackGen (changed range = the bytes that differ from the
+  run before) and tryRun's classification as `nrun::Pre`, so the invalidation and the Pre path are checked against the
+  oracle: x86 / a64 identical to dips16 on all 40 recordings, plain and GENTEST. Profile prof_dips19_ATHN01D vs dips16:
+  memcmp 1.81 -> 0.30 %, the classification + TLS + tryRun group 8.5 -> 7.6 % (new: invalidateCodeInfo 0.57 %);
+  kindOf stays 1.16 %: its KindMemo misses recompute the kind chain with byte-wise FNV of every candidate length
+  (nmisc::entryKind alone ~5 KB per entry).
+- dips20 (on dips19): the kind chains on prefix hashes (`nrun::FnvPrefix`: FNV-1a of every 8-byte prefix up to 288
+  bytes in one pass; same tests in the same order) in kindOf and nmisc::loop; CodeInfo kinds tagged with a per-slot
+  assignment id instead of the key, so an invalidation touches only the key's slot.

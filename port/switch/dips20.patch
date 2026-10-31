@@ -1,0 +1,162 @@
+--- a/ps2xRuntime/src/lib/vu/ps2_vu1_nat_misc.inl
++++ b/ps2xRuntime/src/lib/vu/ps2_vu1_nat_misc.inl
+@@ -443,26 +443,27 @@
+             if (!kind)
+             {
+                 kind = memo.get(code, at, [&]() -> uint8_t {
+-                const uint64_t h152 = fnv(p, 152u);
++                const nrun::FnvPrefix H(p, PS2_VU1_CODE_SIZE - at); // sw-dips7: one pass for the chain
++                const uint64_t h152 = H(152u);
+                 // (the test order of the hash chain this replaces: the first match wins)
+-                return fnv(p, 112u) == kTexDiv ? 1u : fnv(p, 192u) == kLitSt ? 2u
+-                     : fnv(p, 192u) == nwind::kLoop541e ? 11u : fnv(p, 160u) == nwind::kLoop6064 ? 12u
+-                     : fnv(p, 160u) == nwind::kLoopFbde ? 13u : fnv(p, 128u) == nwind::kLoop2565 ? 14u
++                return H(112u) == kTexDiv ? 1u : H(192u) == kLitSt ? 2u
++                     : H(192u) == nwind::kLoop541e ? 11u : H(160u) == nwind::kLoop6064 ? 12u
++                     : H(160u) == nwind::kLoopFbde ? 13u : H(128u) == nwind::kLoop2565 ? 14u
+                      // nat-vu1k's loops (merged into the cache by nat-vu1l, same order)
+-                     : fnv(p, 104u) == nwind::kLoop7137 ? 17u : fnv(p, 136u) == nwind::kLoopF38d ? 18u
+-                     : fnv(p, 136u) == nwind::kLoop0d75 ? 19u : fnv(p, 104u) == nwind::kOwnB45e ? 20u
+-                     : fnv(p, 128u) == nwind::kLoop8449 ? 21u
+-                     : (at + 224u <= PS2_VU1_CODE_SIZE && fnv(p, 224u) == nwind::kLoop0f46) ? 22u
+-                     : fnv(p, 136u) == nwind::kLoopDf84 ? 23u : fnv(p, 104u) == nwind::kOwnB66a ? 24u
+-                     : fnv(p, 160u) == nwind::kLoop6734 ? 25u : fnv(p, 88u) == nwind::kLoopFb1e ? 26u
+-                     : fnv(p, 152u) == nwind::kLoop66bf ? 27u : fnv(p, 80u) == nwind::kOwn5e1e ? 28u
+-                     : fnv(p, 80u) == nwind::kOwnC79f ? 29u
+-                     : (at + 168u <= PS2_VU1_CODE_SIZE && fnv(p, 168u) == nwind::kOwnB12c) ? 30u
+-                     : fnv(p, 72u) == nwind::kOwnE4f3 ? 15u : fnv(p, 96u) == nwind::kOwnEa6b ? 16u
+-                     : fnv(p, 120u) == kColDiv ? 3u
++                     : H(104u) == nwind::kLoop7137 ? 17u : H(136u) == nwind::kLoopF38d ? 18u
++                     : H(136u) == nwind::kLoop0d75 ? 19u : H(104u) == nwind::kOwnB45e ? 20u
++                     : H(128u) == nwind::kLoop8449 ? 21u
++                     : (at + 224u <= PS2_VU1_CODE_SIZE && H(224u) == nwind::kLoop0f46) ? 22u
++                     : H(136u) == nwind::kLoopDf84 ? 23u : H(104u) == nwind::kOwnB66a ? 24u
++                     : H(160u) == nwind::kLoop6734 ? 25u : H(88u) == nwind::kLoopFb1e ? 26u
++                     : H(152u) == nwind::kLoop66bf ? 27u : H(80u) == nwind::kOwn5e1e ? 28u
++                     : H(80u) == nwind::kOwnC79f ? 29u
++                     : (at + 168u <= PS2_VU1_CODE_SIZE && H(168u) == nwind::kOwnB12c) ? 30u
++                     : H(72u) == nwind::kOwnE4f3 ? 15u : H(96u) == nwind::kOwnEa6b ? 16u
++                     : H(120u) == kColDiv ? 3u
+                      : h152 == kWindA ? 4u : h152 == kWindB ? 5u
+-                     : fnv(p, 160u) == kUnlitAb ? 6u : (at >= 0x58u && fnv(p - 0x58u, 160u) == kUnlitAb) ? 7u
+-                     : fnv(p, 144u) == kPosAb ? 8u : (at >= 0x48u && fnv(p - 0x48u, 144u) == kPosAb) ? 9u : 10u;
++                     : H(160u) == kUnlitAb ? 6u : (at >= 0x58u && fnv(p - 0x58u, 160u) == kUnlitAb) ? 7u
++                     : H(144u) == kPosAb ? 8u : (at >= 0x48u && fnv(p - 0x48u, 144u) == kPosAb) ? 9u : 10u;
+                 });
+                 if (gen)
+                     kc.kind[at / 8u] = kind, kc.gen[at / 8u] = gen;
+--- a/ps2xRuntime/src/lib/vu/ps2_vu1_nat_run.inl
++++ b/ps2xRuntime/src/lib/vu/ps2_vu1_nat_run.inl
+@@ -437,6 +437,27 @@
+             p0 = lo > KindMemo::kAfter ? (lo - KindMemo::kAfter) / 8u : 0u;
+             p1 = std::min<uint32_t>(PS2_VU1_CODE_SIZE / 8u, (hi + KindMemo::kBefore + 7u) / 8u);
+         }
++        // sw-dips7: FNV-1a 64 of p[0, len) for every len that is a multiple of 8 up to avail (at most 288), in one pass;
++        // any other len (or one past avail) hashes directly. H(len) == fnv(p, len) always. The kind chains test up to
++        // 30 hashes of different lengths of the same bytes (nmisc::entryKind alone ~5 KB of byte-wise FNV per entry).
++        struct FnvPrefix
++        {
++            const uint8_t *p;
++            uint32_t n8;
++            uint64_t h[37];
++            FnvPrefix(const uint8_t *q, uint32_t avail) : p(q), n8(std::min<uint32_t>(avail, 288u) / 8u)
++            {
++                uint64_t x = 1469598103934665603ull;
++                h[0] = x;
++                for (uint32_t i = 0; i < n8; ++i)
++                {
++                    for (uint32_t j = 0; j < 8u; ++j)
++                        x = (x ^ q[i * 8u + j]) * 1099511628211ull;
++                    h[i + 1u] = x;
++                }
++            }
++            uint64_t operator()(uint32_t len) const { return (len & 7u) == 0u && len / 8u <= n8 ? h[len / 8u] : fnv(p, len); }
++        };
+ 
+         // FNV of the fixed-code ranges this file transliterates (coveredHash): the main version of the fight and the menu
+         // (pcfight / pcmenu recordings, 2026-10-24). Another version falls back.
+@@ -469,7 +490,8 @@
+             // per entry pair: 0 not checked, 1 none, 2 3d0d1206, 3 7ab32108, 4 / 5 / 6 lit_st 93febeec / skin_lit_st
+             // 39f38df4 / skin_lit28 6df5c750 (ps2_vu1_nat_lit.inl), 7.. ps2_vu1_nat_misc.inl's entries
+             uint8_t kind[PS2_VU1_CODE_SIZE / 8u] = {};
+-            uint64_t kindGen[PS2_VU1_CODE_SIZE / 8u] = {};
++            uint64_t kindGen[PS2_VU1_CODE_SIZE / 8u] = {}; // the slot's tag the kind was computed under (0: none)
++            uint64_t tag = 0; // sw-dips7: unique per assignment of the slot to a generation (kinds of an earlier one never match)
+         };
+         // four generations' caches (nat-vu1j: the particle and the main program alternate, see canonicalGen; one slot
+         // was re-hashed on every swap), on the heap; codeInfo() = the slot codeInfoFor picked last
+@@ -480,6 +502,7 @@
+             uint64_t tick = 0;
+             CodeInfo *cur = &slot[0];
+             RangeMemo<> mCov, mClip; // the coarse hashes memoised by content (were thread_locals in codeInfoFor)
++            uint64_t tags = 0;
+         };
+         inline CodeInfoSlots &codeInfoSlots()
+         {
+@@ -527,6 +550,7 @@
+             if (!codeGen || ci.gen != codeGen)
+             {
+                 ci.gen = codeGen ? codeGen : ~0ull;
++                ci.tag = ++cs.tags;
+                 ci.fixedOk = cs.mCov.get(code, kCoveredRanges, coveredHash) == kCoveredFixedValue;
+                 ci.clipOk = cs.mClip.get(code, kClipRanges, clipHash) == kClipFixedValue;
+                 ci.litFixed = -1;
+@@ -538,23 +562,35 @@
+         {
+             if (entry + 0xE0u > PS2_VU1_CODE_SIZE)
+                 return 1u;
+-            if (codeGen && ci.kindGen[entry / 8u] == codeGen && ci.kind[entry / 8u])
++            if (codeGen && ci.kindGen[entry / 8u] == ci.tag && ci.kind[entry / 8u])
+                 return ci.kind[entry / 8u];
+             thread_local KindMemo memo; // nat-vu1s: by content on a generation miss
+             const uint8_t kind = memo.get(code, entry, [&]() -> uint8_t {
+-                uint8_t k = entryKind(code, entry);
+-                if (k == 1u)
+-                    if (const int lk = nlit::entryKind(code, entry))
+-                        k = static_cast<uint8_t>(3 + lk);
+-                return k;
++                // entryKind, then nlit::entryKind (with nmisc::entryKind): the same tests in the same order, on prefix
++                // hashes (sw-dips7)
++                const FnvPrefix H(code + entry, PS2_VU1_CODE_SIZE - entry);
++                if (H(216u) == kEntryUnlit3d0d)
++                    return 2u;
++                if (entry >= 0xd8u && H(120u) == kEntryNoDiv7ab && fnv(code + entry - 0xd8u, 216u) == kEntryUnlit3d0d)
++                    return 3u;
++                if (entry + 232u <= PS2_VU1_CODE_SIZE && H(232u) == nlit::kEntryLit93fe)
++                    return 4u;
++                if (entry + 288u <= PS2_VU1_CODE_SIZE && H(288u) == nlit::kEntrySkin39f3)
++                    return 5u;
++                if (entry + 264u <= PS2_VU1_CODE_SIZE && H(264u) == nlit::kEntrySkin6df5)
++                    return 6u;
++                for (size_t i = 0; i < sizeof(nmisc::kEntries) / sizeof(nmisc::kEntries[0]); ++i)
++                    if (entry + nmisc::kEntries[i].len <= PS2_VU1_CODE_SIZE && H(nmisc::kEntries[i].len) == nmisc::kEntries[i].hash)
++                        return static_cast<uint8_t>(7u + i);
++                return 1u;
+             });
+             if (codeGen)
+-                ci.kind[entry / 8u] = kind, ci.kindGen[entry / 8u] = codeGen;
++                ci.kind[entry / 8u] = kind, ci.kindGen[entry / 8u] = ci.tag;
+             return kind;
+         }
+         // sw-dips7 (canonicalGen's code tracking): the micro memory under `key` changed in bytes [lo, hi). Everything
+-        // cached under key that reads one of those bytes is dropped (entry kinds in every slot: a slot that held key
+-        // before may get it back) or recomputed (the coarse hashes of key's slot); the rest stays valid.
++        // cached under key that reads one of those bytes is dropped (entry kinds of key's slot; the other slots' kinds
++        // carry other tags) or recomputed (the coarse hashes of key's slot); the rest stays valid.
+         inline void invalidateCodeInfo(uint64_t key, const uint8_t *code, uint32_t lo, uint32_t hi)
+         {
+             CodeInfoSlots &cs = codeInfoSlots();
+@@ -562,11 +598,10 @@
+             kindWindow(lo, hi, p0, p1);
+             for (CodeInfo &ci : cs.slot)
+             {
+-                for (uint32_t p = p0; p < p1; ++p)
+-                    if (ci.kindGen[p] == key)
+-                        ci.kindGen[p] = 0;
+                 if (ci.gen != key)
+                     continue;
++                for (uint32_t p = p0; p < p1; ++p)
++                    ci.kindGen[p] = 0;
+                 if (overlapsAny(kCoveredRanges, lo, hi))
+                     ci.fixedOk = cs.mCov.get(code, kCoveredRanges, coveredHash) == kCoveredFixedValue;
+                 if (overlapsAny(kClipRanges, lo, hi))
