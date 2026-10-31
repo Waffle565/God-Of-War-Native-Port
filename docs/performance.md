@@ -875,7 +875,7 @@ Details: docs/native-render-study.md "step 7 on the renderer side, part 3".
   The particle program is 21-33 % faster per run in every zone. OLYMP02's fps varies run to run (dips13: 37.5 and
   51.2 in two runs): the rerun (port/switch/sweep/ab7b_dips16) gave 44.4 mean (ab), report 39.6 / 53.9, VU1 9.77 us / run.
   SEMO01 30.0 pictures/s. **Installed 2026-10-31: update_dips16 + FAILGT** (exefs md5 0b1119b1).
-- **Handoff (sw-dips5 stopped here)**: sources /root/src-mlang (= dips16), build /root/gow-switch-mlang (scratch
+- **Handoff (sw-dips5 stopped here)**: sources /root/src-mlang (= dips16), build /root/gow-switch-mlang (tools/vu1_nat/dips_sb.sh <tag>; harness + natcheck vs a base: dips_hc.sh <base> <new>, dips_post.sh; was a scratch
   script sb.sh: `ninja`, ELF /root/elf_<tag>.elf, `make_update_to.sh` -> port/switch/nsp/out/update_<tag>), ELF
   /root/elf_dips16.elf, original of the touched file /root/dips15-orig (patch: diff -u --strip-trailing-cr against
   /root/src-mlang). Harness tree /root/natvu1x (synced from src-mlang), harnesses /root/vu1h/d5d (x86) / d5da (a64),
