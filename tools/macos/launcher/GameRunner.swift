@@ -41,6 +41,43 @@ enum GameRunner {
         }
     }
 
+    // keyboard button prompts: writes the disc folder's lang/kb_*.layout overlays with make_kb_overlays.py (bundled in
+    // Contents/Resources/keyprompts by make_app.sh) when the chosen pair's is missing or older than its language overlay.
+    // Nothing to do without the language overlays (tools/lang_pack.py). Returns a problem to show, else nil.
+    static func prepareKeyPrompts(_ settings: Settings) -> String? {
+        guard settings.keyboardPrompts, !settings.discFolder.isEmpty else { return nil }
+        let pair = "\(settings.text)_\(settings.voice)"
+        let base = settings.discPath("lang/\(pair).layout"), text = settings.discPath("lang/text_\(settings.text).bin")
+        let keyboard = settings.discPath("lang/\(Settings.keyboardPrefix)\(pair).layout")
+        guard let baseDate = modified(base) else { return nil }
+        if let date = modified(keyboard), date >= baseDate, date >= modified(text) ?? baseDate { return nil }
+        let command = "python3 -I tools/macos/keyprompts/make_kb_overlays.py \"\(settings.discFolder)\""
+        guard let script = Bundle.main.url(forResource: "make_kb_overlays", withExtension: "py", subdirectory: "keyprompts") else {
+            return "The keyboard prompt generator is not in the app. Run tools/macos/make_app.sh again, or from the project: \(command)"
+        }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
+        process.arguments = ["-I", "-B", script.path, settings.discFolder] // -B: no caches inside the signed app
+        let output = Pipe()
+        process.standardOutput = output
+        process.standardError = output
+        do {
+            try process.run()
+        } catch {
+            return "Python 3 could not run (\(error.localizedDescription)). From the project: \(command)"
+        }
+        let report = String(decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        process.waitUntilExit()
+        guard process.terminationStatus == 0, FileManager.default.fileExists(atPath: keyboard.path) else {
+            return "The keyboard prompts could not be made; the game shows the PS2 buttons.\n\(report.suffix(600))\nFrom the project: \(command)"
+        }
+        return nil
+    }
+
+    private static func modified(_ url: URL) -> Date? {
+        (try? FileManager.default.attributesOfItem(atPath: url.path))?[.modificationDate] as? Date
+    }
+
     // copies the build's test card (out/build-mac/run/Mcd001.ps2) as the save file, once
     static func importCard(_ card: URL) throws {
         try FileManager.default.createDirectory(at: Paths.saves, withIntermediateDirectories: true)

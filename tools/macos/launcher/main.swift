@@ -37,6 +37,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func start() {
         offerCardImport()
+        // not fatal: without the keyboard overlays the game shows the PS2 buttons
+        if let problem = GameRunner.prepareKeyPrompts(settings), !playOnly {
+            fail("Keyboard button prompts are not available", problem)
+        }
         do {
             try GameRunner.prepare(disc: URL(fileURLWithPath: settings.discFolder))
             game = try GameRunner.launch(settings) { [weak self] status, reason in

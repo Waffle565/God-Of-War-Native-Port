@@ -5,6 +5,8 @@
 #   Contents/MacOS/God of War   launcher (tools/macos/launcher/*.swift, swiftc)
 #   Contents/MacOS/GodOfWar     the runner (out/build-mac/ps2xRuntime/ps2EntryRunner)
 #   Contents/Resources/AppIcon.icns  from port/switch/nsp/icon.jpg when present
+#   Contents/Resources/keyprompts/   keyboard button prompt generator (tools/macos/keyprompts + the tools/ modules
+#                                    it imports); the launcher runs it on Play when the kb_ overlays are missing
 # usage: tools/macos/make_app.sh            (RUNNER=<path> for another runner build)
 set -euo pipefail
 
@@ -32,6 +34,18 @@ xcrun swiftc -O -swift-version 5 -target arm64-apple-macos15.0 -framework AppKit
 mv -f "$tmp/launcher" "$APP/Contents/MacOS/God of War"
 cp "$RUNNER" "$tmp/GodOfWar"
 mv -f "$tmp/GodOfWar" "$APP/Contents/MacOS/GodOfWar"
+
+# keyboard button prompts (stdlib Python 3 only); the disc's kb_ overlays are refreshed now when it has lang/
+mkdir -p "$tmp/keyprompts"
+cp "$ROOT"/tools/macos/keyprompts/make_kb_overlays.py "$ROOT"/tools/macos/keyprompts/keymap.py \
+    "$ROOT"/tools/lang_pack.py "$ROOT"/tools/gow_wording.py "$ROOT"/tools/gow_text.py "$tmp/keyprompts/"
+rm -rf "$APP/Contents/Resources/keyprompts"
+mv "$tmp/keyprompts" "$APP/Contents/Resources/keyprompts"
+if [ -n "$DISC" ] && [ -d "$DISC/lang" ]; then
+    python3 -I "$ROOT/tools/macos/keyprompts/make_kb_overlays.py" "$DISC" | tail -1
+else
+    echo "note: no language overlays in the disc folder; keyboard prompts need tools/lang_pack.py first"
+fi
 
 # icon
 ICON_KEY=""

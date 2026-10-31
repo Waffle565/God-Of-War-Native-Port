@@ -51,15 +51,26 @@ struct Settings {
     var discFolder = ""
     var importOffered = false
     var text = "en", voice = "en" // overlay lang/<text>_<voice>.layout made by tools/lang_pack.py (docs/settings.md)
+    // button prompts in the game's texts: keyboard keys (lang/kb_<text>_<voice>.layout, tools/macos/keyprompts) or the
+    // PS2 buttons
+    var keyboardPrompts = true
 
     static let languages = [("en", "English"), ("es", "Español"), ("fr", "Français"), ("de", "Deutsch"),
                             ("it", "Italiano")]
 
-    // the language overlay for the chosen pair, relative to the disc folder, when the disc folder has it
+    // the language overlay for the chosen pair, relative to the disc folder, when the disc folder has it; with keyboard
+    // prompts its keyboard variant when that exists
     var languageOverlay: String? {
         let name = "lang/\(text)_\(voice).layout"
-        let path = URL(fileURLWithPath: discFolder).appendingPathComponent(name).path
-        return !discFolder.isEmpty && FileManager.default.fileExists(atPath: path) ? name : nil
+        guard !discFolder.isEmpty, FileManager.default.fileExists(atPath: discPath(name).path) else { return nil }
+        let keyboard = "lang/\(Settings.keyboardPrefix)\(text)_\(voice).layout"
+        return keyboardPrompts && FileManager.default.fileExists(atPath: discPath(keyboard).path) ? keyboard : name
+    }
+
+    static let keyboardPrefix = "kb_"
+
+    func discPath(_ relative: String) -> URL {
+        URL(fileURLWithPath: discFolder).appendingPathComponent(relative)
     }
 
     static func load() -> Settings {
@@ -81,6 +92,7 @@ struct Settings {
         let codes = Set(languages.map { $0.0 })
         if let v = values["Game.Text"], codes.contains(v) { s.text = v }
         if let v = values["Game.Voice"], codes.contains(v) { s.voice = v }
+        if let v = values["Game.ButtonPrompts"] { s.keyboardPrompts = v != "Controller" }
         if s.discFolder.isEmpty, let disc = Paths.bundled("GOWDefaultDiscFolder"), Paths.isDisc(disc) {
             s.discFolder = disc.path
         }
@@ -109,6 +121,7 @@ struct Settings {
         ImportOffered=\(importOffered ? 1 : 0)
         Text=\(text)
         Voice=\(voice)
+        ButtonPrompts=\(keyboardPrompts ? "Keyboard" : "Controller")
 
         """
         try? FileManager.default.createDirectory(at: Paths.root, withIntermediateDirectories: true)

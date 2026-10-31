@@ -1,5 +1,6 @@
 // The launcher window: disc folder, resolution, fullscreen, internal resolution, controls, Play/Quit.
 // Text and voice language come from the disc folder's lang/ overlays (tools/lang_pack.py with the European disc).
+// Button prompts: keyboard keys or PS2 buttons in the game's texts (kb_ overlays, tools/macos/keyprompts).
 // Graphics: anti-aliasing, anisotropic filtering, MetalFX, sharpening, wider view (docs/macos.md). 120 Hz (S7) is
 // shown greyed out until it exists.
 import AppKit
@@ -14,6 +15,8 @@ final class LauncherWindowController: NSWindowController {
     private let textLanguage = NSPopUpButton()
     private let voiceLanguage = NSPopUpButton()
     private let languageNote = NSTextField(labelWithString: "")
+    private let buttonPrompts = NSPopUpButton()
+    private let promptsNote = NSTextField(labelWithString: "")
     private let fxaa = NSButton(checkboxWithTitle: "Anti-aliasing (FXAA)", target: nil, action: nil)
     private let aniso = NSPopUpButton()
     private let metalFX = NSButton(checkboxWithTitle: "MetalFX upscaling (Retina/4K)", target: nil, action: nil)
@@ -37,7 +40,7 @@ final class LauncherWindowController: NSWindowController {
     init(settings: Settings, onPlay: @escaping () -> Void) {
         self.settings = settings
         self.onPlay = onPlay
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 560, height: 770),
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 560, height: 830),
                               styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
         window.title = "God of War"
         super.init(window: window)
@@ -84,6 +87,12 @@ final class LauncherWindowController: NSWindowController {
         languageNote.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
         let languageRow = NSStackView(views: [label("Text"), textLanguage, label("Voice"), voiceLanguage])
         languageRow.spacing = 6
+        buttonPrompts.addItems(withTitles: ["Keyboard (keys)", "Controller (PS2 buttons)"])
+        buttonPrompts.selectItem(at: settings.keyboardPrompts ? 0 : 1)
+        buttonPrompts.target = self
+        buttonPrompts.action = #selector(changed)
+        promptsNote.textColor = .tertiaryLabelColor
+        promptsNote.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
         updateLanguageState()
         let hz = NSButton(checkboxWithTitle: "120 Hz frame rate", target: nil, action: nil)
         hz.isEnabled = false
@@ -116,6 +125,8 @@ final class LauncherWindowController: NSWindowController {
             [label("Internal resolution:"), scale],
             [label("Language:"), languageRow],
             [NSGridCell.emptyContentView, languageNote],
+            [label("Button prompts:"), buttonPrompts],
+            [NSGridCell.emptyContentView, promptsNote],
             [label("Frame rate:"), soon(hz)],
             [label("Graphics:"), fxaa],
             [NSGridCell.emptyContentView, anisoRow],
@@ -193,6 +204,11 @@ final class LauncherWindowController: NSWindowController {
         languageNote.stringValue = available
             ? "Menus and HUD screens stay in English."
             : "Other languages need the European disc: tools/lang_pack.py"
+        // the keyboard texts are variants of the language overlays (made on Play when missing)
+        buttonPrompts.isEnabled = available
+        promptsNote.stringValue = available
+            ? "Hints and move lists; menu legends keep the PS2 symbols."
+            : "Needs the language overlays: python3 -I tools/lang_pack.py <disc folder>"
     }
 
     @objc private func changed() {
@@ -203,6 +219,7 @@ final class LauncherWindowController: NSWindowController {
         settings.scale = scale.indexOfSelectedItem + 1
         settings.text = Settings.languages[max(0, textLanguage.indexOfSelectedItem)].0
         settings.voice = Settings.languages[max(0, voiceLanguage.indexOfSelectedItem)].0
+        settings.keyboardPrompts = buttonPrompts.indexOfSelectedItem != 1
         settings.fxaa = fxaa.state == .on
         settings.aniso = Settings.anisoLevels[max(0, aniso.indexOfSelectedItem)]
         settings.metalFX = metalFX.state == .on
