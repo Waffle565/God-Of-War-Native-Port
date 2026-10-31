@@ -64,6 +64,11 @@ What did it: field-wise draw-state batching (740k -> ~9k draws/s), zero-copy pre
 vsync and 3 frames in flight, palette textures converted to RGBA and cached, shaders specialised with function
 constants (compiled in the background, generic fallback), feedback copies limited to the sampled rectangle.
 
+Window: on macOS the window is fitted inside the screen's visible area (menu bar and Dock excluded) so its title
+bar and buttons stay reachable, and fullscreen (`GOW_FULLSCREEN=1`, F11, the green button) is macOS fullscreen in its
+own Space; GLFW's exclusive fullscreen (which switches the display mode) is not used on macOS. `[window]` log lines
+report the size and fullscreen changes.
+
 Presentation: the window is 16:9 letterboxed (1809x1018 inside a 1920x1018 content area on a 1080p display); on a
 75 Hz display 60 fps content judders, set the display to 60 Hz. The debug panel (F1) starts closed on macOS
 (`GOW_DEBUG_PANEL=1` opens it); while it is open the layer hides and frames go through RAM.
