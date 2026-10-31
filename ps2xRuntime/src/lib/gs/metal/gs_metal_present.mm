@@ -1,7 +1,9 @@
 // GOW-Port: display output of GSMetalBackend: the two CRTC read circuits composed on the GPU (circuit 1 over circuit 2 or
-// BGCOLOR, by ALP or its own alpha x2), then read back once and returned as pixels (RAM presentation, as on the Switch).
+// BGCOLOR, by ALP or its own alpha x2), then either presented into the window's CAMetalLayer (presentToLayer, zero-copy)
+// or read back once and returned as pixels (RAM presentation, as on the Switch; captures and PS2X_GS_DIRECT_PRESENT=0).
 // Port of GSHwBackend::Present and ClearFramebuffer (gs_hw_backend.cpp).
 #include "gs_metal_impl.h"
+#include "runtime/gs/gs_metal_layer.h"
 
 using namespace gsmtl;
 
@@ -66,9 +68,13 @@ PresentationFrame GSMetalBackend::Impl::present(const GSPresentationRequest &req
     uint32_t fbp1 = 0, dbx1 = 0, dby1 = 0, w1 = 0, h1 = 0, fbp2 = 0, dbx2 = 0, dby2 = 0, w2 = 0, h2 = 0;
     const bool ok1 = (request.pmode & 1ull) != 0ull && decode(request.dispfb1, request.display1, fbp1, dbx1, dby1, w1, h1);
     const bool ok2 = (request.pmode & 2ull) != 0ull && decode(request.dispfb2, request.display2, fbp2, dbx2, dby2, w2, h2);
+    const bool direct = !request.forceReadback && GSMetalLayer::Active();
     if (!ok1 && !ok2)
     {
-        commit(false); // keep the GPU busy with the frame's draws even when nothing is shown
+        if (direct)
+            presentToLayer(nil, 0u, 0u);
+        else
+            commit(false); // keep the GPU busy with the frame's draws even when nothing is shown
         return frame;
     }
     // the TV area: 448 lines (movies set 480 lines with 32 black ones below the picture)
@@ -142,6 +148,11 @@ PresentationFrame GSMetalBackend::Impl::present(const GSPresentationRequest &req
     else
         drawCircuit(fbp, ok1 ? request.dispfb1 : request.dispfb2, ok1 ? dbx1 : dbx2, ok1 ? dby1 : dby2, false, BlendDesc{});
     [e endEncoding];
+    if (direct)
+    {
+        presentToLayer(presentTex, outW, outH);
+        return frame;
+    }
     frame.pixels.resize(static_cast<size_t>(outW) * outH * 4u);
     readback(presentTex, 0, 0, outW, outH, frame.pixels.data());
     // the displayed image is opaque (the host draws it with blending)
@@ -157,6 +168,96 @@ PresentationFrame GSMetalBackend::Impl::present(const GSPresentationRequest &req
         frame.pixels = std::move(rows);
     }
     return frame;
+}
+
+void GSMetalBackend::Impl::presentToLayer(id<MTLTexture> src, uint32_t width, uint32_t height)
+{
+    constexpr long kFramesInFlight = 3;
+    CAMetalLayer *layer = GSMetalLayer::Layer();
+    uint32_t dw = 0, dh = 0;
+    GSMetalLayer::DrawableSize(dw, dh);
+    if (!layer || !GSMetalLayer::Showing() || !GSMetalLayer::WindowVisible() || dw == 0u || dh == 0u)
+    {
+        commit(false);
+        return;
+    }
+    if (!framesInFlight)
+        framesInFlight = dispatch_semaphore_create(kFramesInFlight);
+    // at most kFramesInFlight frames queued on the GPU: the GS worker runs ahead of the GPU by that much, no more
+    dispatch_semaphore_wait(framesInFlight, DISPATCH_TIME_FOREVER);
+    if (layer.drawableSize.width != dw || layer.drawableSize.height != dh)
+        layer.drawableSize = CGSizeMake(dw, dh);
+    id<CAMetalDrawable> drawable = [layer nextDrawable];
+    id<MTLCommandBuffer> c = commands();
+    dispatch_semaphore_t inFlight = framesInFlight;
+    [c addCompletedHandler:^(id<MTLCommandBuffer>) { dispatch_semaphore_signal(inFlight); }];
+    if (!drawable)
+    {
+        commit(false);
+        return;
+    }
+    endEncoder();
+    MTLRenderPassDescriptor *pass = [MTLRenderPassDescriptor renderPassDescriptor];
+    pass.colorAttachments[0].texture = drawable.texture;
+    pass.colorAttachments[0].loadAction = MTLLoadActionClear;
+    pass.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 1);
+    pass.colorAttachments[0].storeAction = MTLStoreActionStore;
+    id<MTLRenderCommandEncoder> e = [c renderCommandEncoderWithDescriptor:pass];
+    if (src && width != 0u && height != 0u)
+    {
+        // the PS2 picture is shown at 16:9 (the game renders widescreen, gow_overrides.cpp), centred, black bars
+        constexpr double kAspect = 16.0 / 9.0;
+        const double rw = std::min<double>(dw, dh * kAspect), rh = rw / kAspect;
+        const double rx = std::floor((dw - rw) * 0.5), ry = std::floor((dh - rh) * 0.5);
+        static const bool bilinearOnly = []
+        {
+            const char *v = std::getenv("GOW_SCALER");
+            return v && std::strcmp(v, "bilinear") == 0;
+        }();
+        static const float sharpen = []
+        {
+            const char *v = std::getenv("GOW_SHARPEN");
+            return v ? static_cast<float>(std::atof(v)) : 0.5f;
+        }();
+        ScaleUniforms u{};
+        u.originX = static_cast<float>(rx);
+        u.originY = static_cast<float>(ry);
+        u.sizeX = static_cast<float>(rw);
+        u.sizeY = static_cast<float>(rh);
+        u.srcW = static_cast<float>(width);
+        u.srcH = static_cast<float>(height);
+        u.sharpen = sharpen;
+        // the bicubic + sharpen pass only when the frame is magnified (as the raylib host scaler)
+        u.plain = (bilinearOnly || (width >= rw && height >= rh)) ? 1.0f : 0.0f;
+        [e setViewport:MTLViewport{rx, ry, rw, rh, 0.0, 1.0}];
+        [e setRenderPipelineState:pipelineFor(Pso::Scale, kMaskAll, false)];
+        [e setFragmentBytes:&u length:sizeof(u) atIndex:0];
+        [e setFragmentTexture:src atIndex:0];
+        [e drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+    }
+    [e endEncoding];
+    // GOW_HOST_SHOT=<n>: the n-th window frame as it is presented -> host_shot.ppm (working directory)
+    static const long shotAt = [] { const char *v = std::getenv("GOW_HOST_SHOT"); return v ? std::atol(v) : -1L; }();
+    if (static_cast<long>(layerPresents++) == shotAt && !layer.framebufferOnly)
+    {
+        std::vector<uint8_t> px(static_cast<size_t>(dw) * dh * 4u);
+        [c presentDrawable:drawable];
+        readback(drawable.texture, 0, 0, dw, dh, px.data());
+        if (FILE *f = std::fopen("host_shot.ppm", "wb"))
+        {
+            std::fprintf(f, "P6\n%u %u\n255\n", dw, dh);
+            for (size_t i = 0; i + 3 < px.size(); i += 4)
+            {
+                const uint8_t rgb[3] = {px[i + 2], px[i + 1], px[i]};
+                std::fwrite(rgb, 1, 3, f);
+            }
+            std::fclose(f);
+        }
+        std::fprintf(stderr, "[gs-present] host_shot frame=%ux%u drawable=%ux%u (Metal layer)\n", width, height, dw, dh);
+        return;
+    }
+    [c presentDrawable:drawable];
+    commit(false);
 }
 
 bool GSMetalBackend::Impl::clearFramebuffer(const GSContext &context, uint32_t rgba)

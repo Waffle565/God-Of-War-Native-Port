@@ -2,6 +2,7 @@
 // They run on the GS worker thread, a plain std::thread without an autorelease pool: every entry drains its own pool, or
 // the autoreleased Metal objects (command buffers, encoders, pass descriptors) would pile up until the thread exits.
 #include "gs_metal_impl.h"
+#include "runtime/gs/gs_metal_layer.h"
 
 using namespace gsmtl;
 
@@ -13,6 +14,15 @@ GSMetalBackend::~GSMetalBackend()
     {
         if (m_impl->initialized)
             m_impl->commit(true);
+        // a dispatch semaphore must be back at its initial count when it is released
+        if (dispatch_semaphore_t inFlight = m_impl->framesInFlight)
+        {
+            long taken = 0;
+            while (taken < 3 && dispatch_semaphore_wait(inFlight, dispatch_time(DISPATCH_TIME_NOW, 1000000000)) == 0)
+                ++taken;
+            for (long i = 0; i < taken; ++i)
+                dispatch_semaphore_signal(inFlight);
+        }
         m_impl.reset();
     }
 }
@@ -123,6 +133,11 @@ PresentationFrame GSMetalBackend::Present(const GSPresentationRequest &request)
     {
         return m_impl->present(request);
     }
+}
+
+bool GSMetalBackend::UsesSharedPresentation() const
+{
+    return GSMetalLayer::Active();
 }
 
 bool GSMetalBackend::ClearFramebuffer(const GSContext &context, uint32_t rgba)

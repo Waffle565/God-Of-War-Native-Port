@@ -3,6 +3,9 @@
 #include "ps2_runtime_macros.h"
 #include "ps2_log.h"
 #include "runtime/ee_scheduler.h"
+#if defined(PS2X_HAVE_METAL)
+#include "runtime/gs/gs_metal_layer.h"
+#endif
 
 #include <unordered_set>
 #include "Kernel/Syscalls/Helpers/State.h"
@@ -2183,6 +2186,12 @@ void PS2DebugPanel::initialize()
     {
         rlImGuiSetup(true);
         m_initialized = true;
+#if defined(PS2X_HAVE_METAL)
+        // GOW-Port (macOS): the panel starts closed (F1 opens it) so the game shows in the GS's CAMetalLayer;
+        // GOW_DEBUG_PANEL=1 opens it at start
+        const char *open = std::getenv("GOW_DEBUG_PANEL");
+        m_visible = open && *open == '1';
+#endif
     }
 #endif
 }
@@ -2210,6 +2219,10 @@ void PS2DebugPanel::draw(PS2Runtime &runtime)
     {
         toggleVisible();
     }
+#if defined(PS2X_HAVE_METAL)
+    // GOW-Port (macOS): the panel is drawn in OpenGL under the GS's CAMetalLayer: hide the layer while it is open
+    GSMetalLayer::SetOverlayVisible(m_visible);
+#endif
 
     if (!m_visible)
     {
