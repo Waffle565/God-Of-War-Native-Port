@@ -97,6 +97,7 @@ GSMetalBackend::Impl::Texture &GSMetalBackend::Impl::textureFor(const GSDrawStat
     tex.tex = newTexture(MTLPixelFormatRGBA8Unorm, tex.width, tex.height, false);
     [tex.tex replaceRegion:MTLRegionMake2D(0, 0, tex.width, tex.height) mipmapLevel:0 withBytes:pixels.data() bytesPerRow:tex.width * 4u];
     tex.valid = true;
+    tex.repl = {}; // new data: the replacement names are computed again
     if (textures.size() > 6000u)
         evictOld();
     return textures[key];

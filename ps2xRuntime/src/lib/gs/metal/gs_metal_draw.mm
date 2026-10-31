@@ -419,7 +419,7 @@ void GSMetalBackend::Impl::draw(const GSDrawState &s, const std::vector<HwVertex
     id<MTLBuffer> ipal = zeroBuffer;
     uint32_t rpal[256];
     bool hasRpal = false;
-    bool linear = false, clampU = true, clampV = true;
+    bool linear = false, clampU = true, clampV = true, replaced = false;
     uint32_t anisotropy = 1u;
     if (s.prim.tme)
     {
@@ -445,6 +445,7 @@ void GSMetalBackend::Impl::draw(const GSDrawState &s, const std::vector<HwVertex
         Texture *tex = (src || rsrc || zsrc) ? nullptr : paletted ? &indexTextureFor(s) : &textureFor(s);
         // converted to RGBA with the CLUT (depalTextureFor): sampled like a direct-colour texture
         bool indexed = paletted;
+        Texture *indexTex = paletted ? tex : nullptr;
         if (paletted && depalEnabled && tex->indices.size() == static_cast<size_t>(tex->width) * tex->height)
         {
             tex = &depalTextureFor(s, *tex);
@@ -497,7 +498,14 @@ void GSMetalBackend::Impl::draw(const GSDrawState &s, const std::vector<HwVertex
         else if (rsrc)
             rtColor = sampleable(rsrc->color, rt);
         else
+        {
             texture = tex->tex;
+            // a pack's replacement (PCSX2 names): larger, sampled through the same normalised coordinates (texSize below
+            // stays the GS size); paletted textures only through their RGBA conversion
+            if (repl && !indexed)
+                if (id<MTLTexture> r = replacementFor(s, *tex, indexTex))
+                    texture = r, replaced = true;
+        }
         u.zTex = !zsrc ? 0 : c.tex0.psm == 0x32 || c.tex0.psm == 0x3A ? 16 : c.tex0.psm == 0x31 ? 24 : 32;
         u.zMax = zsrc ? zMaxFor(static_cast<uint8_t>(c.tex0.psm)) : 1.0f;
         u.rtTex24 = !(src || rsrc) ? 0 : c.tex0.psm == GS_PSM_CT24 ? 1 : family16(c.tex0.psm) ? 2 : 0;
@@ -567,7 +575,7 @@ void GSMetalBackend::Impl::draw(const GSDrawState &s, const std::vector<HwVertex
     [enc setFragmentTexture:texture atIndex:0];
     [enc setFragmentTexture:ztexture atIndex:1];
     [enc setFragmentTexture:rtColor atIndex:2];
-    [enc setFragmentSamplerState:samplerFor(linear, clampU, clampV, anisotropy) atIndex:0];
+    [enc setFragmentSamplerState:samplerFor(linear, clampU, clampV, anisotropy, replaced && texture.mipmapLevelCount > 1) atIndex:0];
     [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:dverts.size()];
     static const bool noFailPass = std::getenv("GOW_GS_HW_NOFAIL") != nullptr;
     if (ate && afail != 0u && !noFailPass)

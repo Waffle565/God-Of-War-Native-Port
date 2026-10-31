@@ -16,6 +16,8 @@ PresentationFrame GSMetalBackend::Impl::present(const GSPresentationRequest &req
     ++presentCount;
     frameBatch = 0;
     reportStats();
+    if (repl)
+        repl->frame();
     const auto decode = [&](uint64_t dispfb, uint64_t display, uint32_t &fbp, uint32_t &dbx, uint32_t &dby, uint32_t &w, uint32_t &h)
     {
         fbp = static_cast<uint32_t>(dispfb & 0x1FFu);

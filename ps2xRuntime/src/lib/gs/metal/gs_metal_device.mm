@@ -80,6 +80,9 @@ bool GSMetalBackend::Impl::ensure()
         scale = std::max(1.0f, static_cast<float>(std::atof(s)));
     std::fprintf(stderr, "[gs-hw] render-target renderer ready, scale %.2f (Metal: %s)\n", scale, device.name.UTF8String);
     readGfxOptions();
+    repl = std::make_unique<gsrepl::Store>();
+    if (!repl->init(device))
+        repl.reset();
     initialized = true;
     return true;
 }
@@ -312,10 +315,11 @@ id<MTLDepthStencilState> GSMetalBackend::Impl::depthState(Compare compare, bool 
     return state;
 }
 
-id<MTLSamplerState> GSMetalBackend::Impl::samplerFor(bool linear, bool clampU, bool clampV, uint32_t anisotropy)
+id<MTLSamplerState> GSMetalBackend::Impl::samplerFor(bool linear, bool clampU, bool clampV, uint32_t anisotropy, bool mipmapped)
 {
     anisotropy = linear ? std::clamp<uint32_t>(anisotropy, 1u, 16u) : 1u;
-    const uint32_t key = (linear ? 1u : 0u) | (clampU ? 2u : 0u) | (clampV ? 4u : 0u) | (anisotropy << 3);
+    mipmapped = mipmapped && linear;
+    const uint32_t key = (linear ? 1u : 0u) | (clampU ? 2u : 0u) | (clampV ? 4u : 0u) | (anisotropy << 3) | (mipmapped ? 0x100u : 0u);
     if (const auto it = samplers.find(key); it != samplers.end())
         return it->second;
     MTLSamplerDescriptor *d = [MTLSamplerDescriptor new];
@@ -323,6 +327,8 @@ id<MTLSamplerState> GSMetalBackend::Impl::samplerFor(bool linear, bool clampU, b
     d.sAddressMode = clampU ? MTLSamplerAddressModeClampToEdge : MTLSamplerAddressModeRepeat;
     d.tAddressMode = clampV ? MTLSamplerAddressModeClampToEdge : MTLSamplerAddressModeRepeat;
     d.maxAnisotropy = anisotropy;
+    if (mipmapped) // replacement textures carry a mip chain (the GS textures are sampled at level 0 only)
+        d.mipFilter = MTLSamplerMipFilterLinear;
     id<MTLSamplerState> state = [device newSamplerStateWithDescriptor:d];
     samplers[key] = state;
     return state;

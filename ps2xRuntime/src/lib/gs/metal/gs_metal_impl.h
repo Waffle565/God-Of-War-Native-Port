@@ -15,8 +15,10 @@
 #include "runtime/gs/gs_swizzle.h"
 #include "../gpu/gs_texture_store.h"
 #include "../gs_gpu_helpers.h"
+#include "gs_metal_texrepl_store.h"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -98,6 +100,11 @@ namespace gsmtl
         uint64_t lastUse = 0;
         uint64_t generation = 0;        // decode number (paletted textures: keys the converted RGBA copies)
         std::vector<uint8_t> indices;   // paletted textures: the indices, kept to convert them with a CLUT on the CPU
+        // the pack's replacement for this decode (direct / depal entries) per CLAMP region + mip registers, which are part
+        // of the PCSX2 name too (a few, so draws that alternate between clamp modes do not hash the texture each time)
+        struct Repl { uint64_t key = ~0ull; gsrepl::Slot *slot = nullptr; };
+        std::array<Repl, 4> repl{};
+        uint8_t replNext = 0;
     };
 
     struct RenderTarget
@@ -232,7 +239,7 @@ struct GSMetalBackend::Impl
     bool specialize = [] { const char *v = std::getenv("GOW_GS_MTL_SPECIALIZE"); return !(v && *v == '0'); }();
     id<MTLDepthStencilState> depthState(gsmtl::Compare compare, bool write);
     // anisotropy > 1: GOW_GS_MTL_ANISO, linear 3D textures only (draw)
-    id<MTLSamplerState> samplerFor(bool linear, bool clampU, bool clampV, uint32_t anisotropy = 1u);
+    id<MTLSamplerState> samplerFor(bool linear, bool clampU, bool clampV, uint32_t anisotropy = 1u, bool mipmapped = false);
     void setPso(id<MTLRenderPipelineState> pso);
     void setDss(id<MTLDepthStencilState> dss);
     // copies `bytes` into the vertex arena; returns the buffer and the offset
@@ -273,6 +280,12 @@ struct GSMetalBackend::Impl
     uint64_t textureGeneration = 0;
     bool depalEnabled = [] { const char *v = std::getenv("GOW_GS_MTL_DEPAL"); return !(v && *v == '0'); }();
     Texture &depalTextureFor(const GSDrawState &s, const Texture &index);
+    // ---- replacement texture packs (gs_metal_texrepl*.{h,cpp,mm}) ----
+    // PCSX2-named replacement of the texture `entry` holds (the depal entry for paletted ones, `index` = their indices),
+    // nil when there is none or it is still loading; dumps the texture in dump mode
+    id<MTLTexture> replacementFor(const GSDrawState &s, Texture &entry, const Texture *index);
+    std::unique_ptr<gsrepl::Store> repl; // null: no pack and no dump
+    std::vector<uint8_t> replScratch;
     void evictOld();
     void invalidateBlocks(uint32_t lo, uint32_t hi);
     RenderTarget *findReinterpretSource(uint32_t tbp, uint8_t tpsm);

@@ -579,14 +579,20 @@ if(APPLE)
         src/lib/gs/metal/gs_metal_present.mm
         src/lib/gs/metal/gs_metal_post.mm
         src/lib/gs/metal/gs_metal_layer.mm
-        src/lib/gs/metal/gs_metal_backend.mm)
+        src/lib/gs/metal/gs_metal_backend.mm
+        src/lib/gs/metal/gs_metal_texrepl_backend.mm
+        src/lib/gs/metal/gs_metal_texrepl_store.mm
+        src/lib/gs/metal/gs_metal_texrepl_load.mm)
     target_sources(ps2_runtime PRIVATE ${PS2X_METAL_GS_SOURCES})
+    # GOW-Port: PCSX2-compatible texture pack names (plain C++, macOS only like the renderer that uses them)
+    target_sources(ps2_runtime PRIVATE src/lib/gs/metal/gs_metal_xxh3.cpp src/lib/gs/metal/gs_metal_texhash.cpp src/lib/gs/metal/gs_metal_texname.cpp)
     set_source_files_properties(${PS2X_METAL_GS_SOURCES} PROPERTIES
         COMPILE_OPTIONS "-fobjc-arc"
         SKIP_UNITY_BUILD_INCLUSION ON
         SKIP_PRECOMPILE_HEADERS ON)
     target_compile_definitions(ps2_runtime PUBLIC PS2X_HAVE_METAL=1)
-    target_link_libraries(ps2_runtime PUBLIC "-framework Metal" "-framework MetalFX" "-framework QuartzCore" "-framework Foundation" "-framework AppKit")
+    target_link_libraries(ps2_runtime PUBLIC "-framework Metal" "-framework MetalFX" "-framework QuartzCore" "-framework Foundation" "-framework AppKit"
+        "-framework ImageIO" "-framework CoreGraphics")
 endif()
 target_link_libraries(ps2EntryRunner
     PRIVATE
