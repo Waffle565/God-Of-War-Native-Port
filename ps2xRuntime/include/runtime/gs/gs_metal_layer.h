@@ -25,6 +25,12 @@ namespace GSMetalLayer
     void DrawableSize(uint32_t &width, uint32_t &height);
     // GS worker: pixel size of the screen the window is on (0 x 0 until the host reported it), what F11 fullscreen fills
     void ScreenSize(uint32_t &width, uint32_t &height);
+
+    // host thread, right after InitWindow: a normal macOS window (title bar with close/minimise/zoom kept on screen,
+    // fitted to the screen's visible area, centred; the green button enters macOS fullscreen). Works without a layer.
+    void SetupWindow(void *nsWindow);
+    // host thread: macOS fullscreen in its own Space (never GLFW's exclusive mode, which changes the display mode)
+    void ToggleFullscreen(void *nsWindow);
 }
 
 #if defined(__OBJC__)

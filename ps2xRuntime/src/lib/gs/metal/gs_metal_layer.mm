@@ -7,7 +7,9 @@
 #import <Metal/Metal.h>
 #import <QuartzCore/CAMetalLayer.h>
 
+#include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <mutex>
@@ -156,6 +158,54 @@ namespace GSMetalLayer
     {
         width = s_screenWidth.load(std::memory_order_acquire);
         height = s_screenHeight.load(std::memory_order_acquire);
+    }
+
+    void SetupWindow(void *nsWindow)
+    {
+        if (!nsWindow)
+            return;
+        @autoreleasepool
+        {
+            NSWindow *window = (__bridge NSWindow *)nsWindow;
+            window.styleMask |= NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskMiniaturizable |
+                                NSWindowStyleMaskResizable;
+            window.collectionBehavior |= NSWindowCollectionBehaviorFullScreenPrimary;
+            NSScreen *screen = window.screen ?: NSScreen.mainScreen;
+            if (!screen)
+                return;
+            // the visible area leaves out the menu bar and the Dock: a 1920x1080 window on a 1080p screen would otherwise
+            // put its title bar (and its buttons) under the menu bar
+            const NSRect visible = screen.visibleFrame;
+            NSRect frame = window.frame;
+            if (frame.size.width > visible.size.width || frame.size.height > visible.size.height)
+            {
+                const NSRect content = [window contentRectForFrameRect:frame];
+                const NSRect room = [window contentRectForFrameRect:visible];
+                const CGFloat fit = std::min(room.size.width / content.size.width, room.size.height / content.size.height);
+                frame = [window frameRectForContentRect:NSMakeRect(0, 0, std::floor(content.size.width * fit),
+                                                                   std::floor(content.size.height * fit))];
+            }
+            frame.origin.x = visible.origin.x + std::floor((visible.size.width - frame.size.width) / 2);
+            frame.origin.y = visible.origin.y + std::floor((visible.size.height - frame.size.height) / 2);
+            [window setFrame:frame display:YES];
+            const NSRect content = [window contentRectForFrameRect:frame];
+            std::fprintf(stderr, "[window] %.0fx%.0f content at (%.0f,%.0f), screen visible area %.0fx%.0f\n",
+                         content.size.width, content.size.height, frame.origin.x, frame.origin.y, visible.size.width,
+                         visible.size.height);
+        }
+    }
+
+    void ToggleFullscreen(void *nsWindow)
+    {
+        if (!nsWindow)
+            return;
+        @autoreleasepool
+        {
+            NSWindow *window = (__bridge NSWindow *)nsWindow;
+            const bool entering = (window.styleMask & NSWindowStyleMaskFullScreen) == 0;
+            [window toggleFullScreen:nil];
+            std::fprintf(stderr, "[window] %s macOS fullscreen\n", entering ? "entering" : "leaving");
+        }
     }
 
     CAMetalLayer *Layer()
