@@ -1112,3 +1112,11 @@ Run: `python -I tools/zones.py --slots 1,2,3,4` (scale: `PS2X_GS_HW_SCALE`); sav
   /root/elf_dips13.elf, dips7-state originals of the touched files /root/dips8-orig). Tried and dropped: 36-byte
   vertex stream (slower), IOP on its own thread (core 0 or 3: slower), VIF prefetch 1536 (slower).
 
+- 2026-10-31 (sw-dips4): **update_dips15** = update_dips13 sources + port/switch/dips15.patch (exact: VU1 scheduler
+  fast path after native runs, one register copy per native run instead of two, `[vu1nat-run]` misc family per entry;
+  docs/performance.md "Switch VU1 thread, sw-dips4"). VU1 thread time per VU1 run vs two dips13 runs (port/switch/sweep/
+  ab6_*, base_dips13): ATHN04C -3.7 %, ATHN06C -3.8 %, OLYMP02 -7.9 %, ATHN01D unchanged; x86 / a64 natcheck identical
+  on all 40 recordings; SEMO01 30.0 pictures/s; screenshots correct; title boots clean. **Console default =
+  update_dips15 + FAILGT** (exefs md5 56b7fe4e; tree /root/src-mlang = dips13 tree + dips15, ELF /root/elf_dips15.elf,
+  dips13-state originals of the touched files /root/dips14-orig). Tried and dropped: VU1 programs on their own thread
+  with VIF on core 3 (`PS2X_VU1_ASYNC=1`, ATHN01D 32 -> 19 fps).

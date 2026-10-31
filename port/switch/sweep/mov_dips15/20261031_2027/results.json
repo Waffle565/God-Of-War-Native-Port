@@ -1,0 +1,24 @@
+[
+ {
+  "name": "movies_SEMO01",
+  "kind": "movies",
+  "fail": [],
+  "slow": [],
+  "warn": [],
+  "shots": [
+   "movies_SEMO01\\shots\\s005_75.jpg",
+   "movies_SEMO01\\shots\\s009_135.jpg"
+  ],
+  "run_s": 180,
+  "movies": [
+   {
+    "movie": "SEMO01",
+    "fail": [],
+    "slow": [],
+    "pictures": 1410,
+    "pps": 30.0,
+    "dub": true
+   }
+  ]
+ }
+]

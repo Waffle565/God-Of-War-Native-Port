@@ -1,0 +1,6 @@
+[sweep] package update_dips15
+[sweep] 20:28:12 movies_SEMO01
+[sweep] movies_SEMO01 PASS  
+[sweep] default restored
+[sweep] exefs md5 bff8abe9 = default
+[sweep] report port/switch/sweep/mov_dips15\20261031_2027\report.md

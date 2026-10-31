@@ -826,3 +826,32 @@ Details: docs/native-render-study.md "step 7 on the renderer side, part 3".
   stepped, so the next reset skips ~1 KB of clearing and `pipelinesPending()` returns at once (a native run never
   queues anything); `tryRun` runs on `vu.m_state` with one backup copy instead of copying the registers in and out.
   Harness: tools/vu1_harness/stubs.cpp has the dips8 gifDirectBuffer / gifDirectCommit stubs (ctx.memory is null there).
+- dips15 = dips14 + `[vu1nat-run] ... misc by entry: part N x us kind<k> N x us`: the misc family split into the
+  particle program (`part`, nat-vu1f npart) and the nmisc entries (`kind<k>` = nrun::CodeInfo::kind, 7 = the first
+  entry of ps2_vu1_nat_misc.inl kEntries). A/B, VU1 thread us per VU1 program run (`[gsw-split]` job_ms / runs, windows
+  from the warp's arrival to its end, stay 60 s):
+  | zone | dips13 (base, ab6) | dips14 (ab6) | dips15 (ab6) | mean fps dips13 -> dips14 / 15 |
+  |---|---|---|---|---|
+  | ATHN01D | 11.46 / 11.46 | 11.54 | 11.42 | 32.4 / 33.0 -> 33.0 / 33.8 |
+  | ATHN04C | 10.29 / 10.21 | 9.81 | 9.94 | 41.9 / 42.2 -> 44.8 / 43.4 |
+  | ATHN06C | 9.28 / 9.00 | 8.48 | 9.10 | 37.8 / 32.3 -> 33.1 / 39.1 |
+  | OLYMP02 | 10.60 / 11.02 | 9.98 | 9.94 | 37.5 / 51.2 -> 37.8 / 46.3 |
+  Run-to-run noise of this metric is ~3-4 %, so the gain is small (~4 % in three zones), but it never lost.
+  **Installed 2026-10-31: update_dips15 + FAILGT** (exefs md5 56b7fe4e; SEMO01 30.0 pictures/s, port/switch/sweep/mov_dips15).
+- The misc family by entry (dips15, one window each, runs x us per 5 s): ATHN01D **part 17 k x 57 us = ~0.98 s**
+  (~20 % of the VU1 thread), kind21 25 k x 10 us, kind12 12 k x 9, kind8 + kind9 2 k x 35 each, kind10 4.8 k x 22;
+  ATHN04C kind12 34 k x 9.3 us = 0.31 s, part 4 k x 55, kind10 7.6 k x 20.5, kind8 / 9 2.8 k x 35; ATHN06C part 7.4 k
+  x 44, kind12 19 k x 9.5, kind21 17 k x 9; OLYMP02 kind10 8.9 k x 20, part 2.8 k x 83, kind8 / 9 3 k x 36.
+- **Handoff (sw-dips4 stopped here)**: sources /root/src-mlang (= dips15), build /root/gow-switch-mlang (needs
+  `DEVKITPRO=/opt/devkitpro` when bash is not a login shell), ELFs /root/elf_dips{14,15}.elf, originals of the touched
+  files /root/dips14-orig (mkpatch: diff -u --strip-trailing-cr per file against /root/src-mlang). Harness tree
+  /root/natvu1x (= src-mlang's ps2xRuntime; generated blocks from /root/natvu1w), harnesses /root/vu1h/d4b (dips13),
+  d4c (dips14), natcheck outputs /root/vu1h/nca_d4{b,c}*.txt. Do not run more than one heavy build at a time in WSL:
+  two harness builds + ninja -j8 hung the WSL VM (16 GB) and needed `wsl --shutdown`. Next levers, by size:
+  (1) npart (the particle program, ~20 % of the VU1 thread in ATHN01D at ~57 us per run): Run::go / element /
+  keyRandom / random keep every VU register in VU1State memory (W<M> = load, blend, store; the next R() waits on the
+  store), the hot samples are those register loads and eexp's divide; a register-resident rewrite (locals for the
+  registers each loop uses, written back at the end) as the lit loops got; check with natcheck (ATHN01F recordings
+  need `GOW_VU1NAT_ORACLE_CYCLES=0x10000000`, nca.sh sets it). (2) kind8 / kind9 (35 us per run) and kind10 (21 us):
+  nmisc entries through runLit + nmisc::loop. (3) the VIF command loop's misses on the chain data (EE core -> worker
+  core), (4) core 1 (EE + IOP ~4.2 s per 5 s in ATHN06C).
