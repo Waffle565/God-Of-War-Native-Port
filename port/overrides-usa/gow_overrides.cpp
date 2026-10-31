@@ -280,6 +280,8 @@ namespace
 
     void gowPad2ReadState(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime);
 
+    constexpr uint32_t kGowApertureFactor = 0x3F100000u; // 0.5625f = 9/16, see gowPad2ReadState
+
     void gowPad2Read(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
         gowPad2ReadState(rdram, ctx, runtime);
@@ -300,6 +302,11 @@ namespace
             put32(0x002FD968u, 0x3FE38E39u);
             put32(0x0032F1B0u, 0x3FE38E39u);
         }
+        // GOW-Port: the USA recompile (port/usa/recomp.toml [patches], 0x169298-0x1692F4) makes the camera projection
+        // (0x169238) multiply its aperture by factor x aspect, with the factor read from 0x000FFFF0 (free RAM below the
+        // ELF). 9/16 x the 16:9 aspect above = 1, the game's own projection. Without it the factor is 0, m00/m11 become
+        // +-FLT_MAX and the VU1 clip test rejects (ADC) nearly every vertex.
+        std::memcpy(rdram + 0x000FFFF0u, &kGowApertureFactor, sizeof(kGowApertureFactor));
         auto *buffer = padBuffer(rdram, GPR_U32(ctx, 5), 18);
         const auto *socket = padSocket(ctx);
         uint8_t state[32]{};

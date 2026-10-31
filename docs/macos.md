@@ -1,9 +1,8 @@
 # macOS (Apple Silicon)
 
-Status (2026-10-30): the USA game (SCUS-97399) builds natively for arm64 and runs headless at full speed
-(speed 1.00, 60 guest flips/s on an M4) with native VU1 and native IOP code. There is no picture yet: the GS
-renderer needs OpenGL 4.3 and macOS stops at 4.1, so the GS runs as a null backend until the Metal renderer
-exists. Tracking: `odd/tasks/macos-port.md`.
+Status (2026-10-31): the USA game (SCUS-97399) builds natively for arm64 with native VU1 and IOP code and a Metal
+GS renderer (`src/lib/gs/metal/`, the default on macOS; `PS2X_GS_NULL=1` runs headless). Title, menu and gameplay
+render with geometry and textures. The GL renderer needs OpenGL 4.3 and is not used on macOS (it stops at 4.1). Tracking: `odd/tasks/macos-port.md`.
 
 ## Layout
 - Main checkout, branch `macos-port`. Runtime worktree `ext/PS2Recomp-kl`, branch `macos-runtime` (from `runtime`).
@@ -49,10 +48,17 @@ Speed diagnostics: `GOW_PERF_DIAG=1 GOW_DELTA_DIAG=1 GOW_PERF_FRAME_PC=0x001837B
 
 ## macOS-specific build settings
 In the top-level CMakeLists (`APPLE AND aarch64` only): `-fsigned-char` (x86 `char`), `-ffp-contract=off` (Apple clang
-fuses `a*b+c`; x86 and the PS2 round twice), sse2neon precise min/max, division, square root and dot product.
+fuses `a*b+c`; x86 and the PS2 round twice), sse2neon precise min/max, division and dot product. Not
+`SSE2NEON_PRECISE_SQRT`: on AArch64 it swaps the exact `vsqrtq_f32` for an estimate plus Newton steps (1 ulp off for
+~45% of inputs). The EE FPU's round-to-nearest div.s/sqrt.s are computed in double and rounded in software on arm64
+(`ps2_runtime_macros.h`), because clang does not order float code against FPCR writes.
 
 ## Known issues
-- VU1 A/B check (`GOW_VU1N_VERIFY=1`): ~4% of runs differ between the native blocks and the interpreter on arm64
-  (0 on x86): values near FLT_MAX and memory -0/+0, deterministic. Suspects: NEON min/max ordering of signed zeros
-  versus SSE `minps`/`maxps`, and `fmacLaneT` / execUpper MADD near overflow. Not yet checked against a PCSX2 or
-  Windows reference.
+- The USA config's widescreen patches read a camera aperture factor from 0x000FFFF0; the override must write it
+  (9/16) every frame, else the projection is +-FLT_MAX and VU1 culls every vertex (fixed in port/overrides-usa).
+- VU1 A/B check (`GOW_VU1N_VERIFY=1`): 0.038% of runs differ (383 in 998k), the same classes docs/vu1-native-flags.md
+  lists for x86 (1-unit rounding, ffff/0000 words) plus end-MAC 12/0.
+- Test suite on macOS (`-DPS2X_BUILD_TEST=ON -DPS2X_TEST_SKIP_STALE=ON`): 452 tests, 62 fail, none in VU or float
+  math: 53 PS2GS + 1 PS2VU1 read CPU-side GS VRAM that this runtime no longer rasterises, the rest are stale upstream
+  tests.
+- Speed with the Metal renderer is not measured per zone yet (see the performance task).
