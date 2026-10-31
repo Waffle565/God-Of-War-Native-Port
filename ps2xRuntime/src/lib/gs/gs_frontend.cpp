@@ -20,6 +20,28 @@
 #include <string>
 #include <vector>
 
+// GOW-Port: GOW_GS_ADC_STATS=1: every 5 s, packed XYZ(F)2 vertices that kick a primitive vs those with ADC set (VU1
+// culling writes ADC on rejected vertices): tells "the GS got no geometry" from "the renderer dropped it".
+static void gowAdcStat(bool adc, uint8_t prim)
+{
+    static const bool enabled = std::getenv("GOW_GS_ADC_STATS") != nullptr;
+    if (!enabled)
+        return;
+    static uint64_t counts[8][2] = {};
+    static auto last = std::chrono::steady_clock::now();
+    ++counts[prim & 7][adc ? 1 : 0];
+    const auto now = std::chrono::steady_clock::now();
+    if (now - last < std::chrono::seconds(5))
+        return;
+    last = now;
+    std::fprintf(stderr, "[gs-adc] kick/adc per prim:");
+    for (int i = 0; i < 8; ++i)
+        if (counts[i][0] || counts[i][1])
+            std::fprintf(stderr, " p%d=%llu/%llu", i, (unsigned long long)counts[i][0], (unsigned long long)counts[i][1]);
+    std::fprintf(stderr, "\n");
+    std::memset(counts, 0, sizeof(counts));
+}
+
 namespace
 {
     static constexpr uint32_t kHostFrameWidth = 640u;
@@ -1233,6 +1255,7 @@ void GS::writeRegisterPacked(uint8_t regDesc, uint64_t lo, uint64_t hi)
         vtx.u = m_curU;
         vtx.v = m_curV;
         vtx.fog = f;
+        gowAdcStat(adk, static_cast<uint8_t>(m_prim.type));
         vertexKick(!adk);
         break;
     }
@@ -1271,6 +1294,7 @@ void GS::writeRegisterPacked(uint8_t regDesc, uint64_t lo, uint64_t hi)
         vtx.u = m_curU;
         vtx.v = m_curV;
         vtx.fog = m_curFog;
+        gowAdcStat(adk, static_cast<uint8_t>(m_prim.type));
         vertexKick(!adk);
         break;
     }
