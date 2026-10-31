@@ -16,6 +16,9 @@ target_include_directories(ps2_test_function_table PRIVATE
     ${CMAKE_SOURCE_DIR}/ps2xRuntime/include
     ${CMAKE_SOURCE_DIR}/ps2xIOP/include
 )
+# GOW-Port: same public definitions as ps2_runtime (e.g. PS2X_HAVE_METAL changes GS/EeScheduler layouts), so this object
+# sees the runtime's class layouts.
+target_compile_definitions(ps2_test_function_table PRIVATE $<TARGET_PROPERTY:ps2_runtime,INTERFACE_COMPILE_DEFINITIONS>)
 
 add_library(ps2_test_lib STATIC
     src/code_generator_tests.cpp
