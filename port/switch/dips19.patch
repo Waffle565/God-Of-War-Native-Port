@@ -1,0 +1,383 @@
+--- a/ps2xRuntime/src/lib/vu/ps2_vu1_nat.inl
++++ b/ps2xRuntime/src/lib/vu/ps2_vu1_nat.inl
+@@ -1016,7 +1016,42 @@
+                 const uint64_t previousFpMode = vu_fpmode::get();
+                 vu_fpmode::set((previousFpMode & ~vu_fpmode::kRoundMask) | vu_fpmode::kRoundZero | vu_fpmode::kFlushZero); // as the native blocks (FTZ + DAZ)
+                 const auto tN0 = std::chrono::steady_clock::now();
+-                const bool ok = vu1nat::runNative(ns, nm.data(), r.code.data(), r.startPC, npk, dpc);
++                // GOW_VU1NAT_GENTEST=1 (sw-dips7): the runtime's cached path instead of gen 0: a code key from trackGen
++                // (changed range = the bytes that differ from the code of the run before) and tryRun's classification
++                // handed over as nrun::Pre, so the cache invalidation and the Pre path are checked against the oracle
++                static const bool genTest = std::getenv("GOW_VU1NAT_GENTEST") != nullptr;
++                bool ok;
++                if (genTest)
++                {
++                    static std::vector<uint8_t> prevCode;
++                    static uint64_t raw = 0;
++                    bool ranged = false;
++                    uint32_t lo = 0u, hi = 0u;
++                    if (prevCode.size() == r.code.size())
++                    {
++                        ranged = true;
++                        size_t a = 0, b = r.code.size();
++                        while (a < b && prevCode[a] == r.code[a])
++                            ++a;
++                        while (b > a && prevCode[b - 1u] == r.code[b - 1u])
++                            --b;
++                        if (a < b)
++                            lo = static_cast<uint32_t>(a) & ~7u, hi = (static_cast<uint32_t>(b) + 7u) & ~7u, ++raw;
++                    }
++                    else
++                        ++raw;
++                    prevCode = r.code;
++                    const uint64_t key = vu1nat::trackGen(r.code.data(), raw, ranged, lo, hi);
++                    const uint32_t entry =
++                        (static_cast<uint32_t>(vu1n::ldWordm(r.data.data(), ((r.state.itop + 69u) & 0x3FFu) * 16u, 1)) & 0x7FFu) * 8u;
++                    vu1nat::nrun::CodeInfo &gci = vu1nat::nrun::codeInfoFor(r.code.data(), key);
++                    const uint8_t gkind = vu1nat::nrun::kindOf(gci, r.code.data(), entry, key);
++                    const bool gpart = vu1nat::npart::isProgram(r.code.data(), key);
++                    const vu1nat::nrun::Pre gpre{gpart, &gci, gkind};
++                    ok = vu1nat::runNative(ns, nm.data(), r.code.data(), r.startPC, npk, dpc, key, &gpre);
++                }
++                else
++                    ok = vu1nat::runNative(ns, nm.data(), r.code.data(), r.startPC, npk, dpc);
+                 const double tNat = std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - tN0).count();
+                 if (ok)
+                 {
+@@ -1437,87 +1472,20 @@
+     // several KB of byte-wise FNV each) were recomputed on every swap (nat-vu1j: ~2 % of the VU1 thread in nv2ap).
+     // canonicalGen maps a generation to the first generation seen with the same micro memory bytes (memcmp against a few
+     // saved images: ~1 us per swap), so those caches stay valid across swaps. Same results: equal bytes, equal hashes.
+-    // sw-dips6: with the micro memory's change log (PS2Memory::vu1CodeChangedRange, mem non-null) the code can differ from
+-    // the image of the previous generation (cur) only in bytes [lo, hi), and an image m differs from image cur only inside
+-    // their saved diff range (dlo / dhi, computed when an image is filled): m equals the code iff that diff range lies in
+-    // [lo, hi) and m's bytes [lo, hi) equal the code's. One memcmp of the MPG's range instead of 16 KB per swap (the 16 KB
+-    // compares were ~1.4 % of the VU1 thread in ATHN01D, profile prof_dips16_lrmemcmp). Same images, same LRU, same result.
++    // sw-dips7: the code key of this generation (vu1nat::trackGen): the change log (PS2Memory::vu1CodeChangedRange) gives
++    // the bytes changed since the last call; an unknown range (more than the log keeps, a whole-memory write) starts a
++    // new key. (sw-dips6 had compared against four saved images with precomputed diff ranges: slower, the images
++    // rarely repeat.)
+     inline uint64_t canonicalGen(const uint8_t *code, uint64_t gen, const PS2Memory *mem = nullptr)
+     {
+-        constexpr uint32_t kSize = PS2_VU1_CODE_SIZE;
+-        struct Image
+-        {
+-            uint64_t canon = 0, lastUse = 0;
+-            alignas(64) uint8_t bytes[kSize];
+-        };
+-        struct State
+-        {
+-            Image img[4];
+-            uint32_t dlo[4][4] = {}, dhi[4][4] = {}; // bytes [dlo, dhi) hold every difference of images a and b (empty: equal)
+-            int cur = -1;                            // the image equal to the code of generation curGen
+-            uint64_t curGen = 0, curCanon = 0, tick = 0;
+-        };
+-        thread_local std::unique_ptr<State> stp; // 64 KB on the heap, not in every thread's static TLS block
+-        if (stp && gen == stp->curGen)
+-            return stp->curCanon;
+-        if (!stp)
+-            stp.reset(new State());
+-        State &st = *stp;
+-        ++st.tick;
+-        uint32_t lo = 0u, hi = kSize; // where the code can differ from img[cur]
+-        if (mem && st.cur >= 0 && st.curGen && gen > st.curGen)
+-        {
+-            uint32_t pl = 0u, ph = 0u;
+-            mem->vu1CodeChangedRange(st.curGen - 1u, gen - 1u, pl, ph); // (the generations here are the memory's + 1)
+-            lo = pl * 8u, hi = ph * 8u;
+-            if (lo >= hi)
+-                lo = hi = 0u;
+-        }
+-        const bool ranged = lo != 0u || hi != kSize;
+-        Image *victim = &st.img[0];
+-        for (int k = 0; k < 4; ++k)
+-        {
+-            Image &m = st.img[k];
+-            bool same;
+-            if (!m.canon)
+-                same = false;
+-            else if (!ranged)
+-                same = std::memcmp(m.bytes, code, kSize) == 0;
+-            else
+-            {
+-                const uint32_t a = st.dlo[k][st.cur], b = st.dhi[k][st.cur];
+-                same = (k == st.cur || a >= b || (a >= lo && b <= hi)) && std::memcmp(m.bytes + lo, code + lo, hi - lo) == 0;
+-            }
+-            if (same)
+-            {
+-                m.lastUse = st.tick;
+-                st.cur = k;
+-                return st.curGen = gen, st.curCanon = m.canon;
+-            }
+-            if (m.lastUse < victim->lastUse)
+-                victim = &m;
+-        }
+-        std::memcpy(victim->bytes, code, kSize);
+-        victim->canon = gen, victim->lastUse = st.tick;
+-        const int v = static_cast<int>(victim - st.img);
+-        for (int k = 0; k < 4; ++k)
+-        {
+-            uint32_t a = 0u, b = 0u;
+-            if (k != v && st.img[k].canon)
+-            {
+-                const uint8_t *x = st.img[k].bytes, *y = victim->bytes;
+-                while (a < kSize && x[a] == y[a])
+-                    ++a;
+-                b = kSize;
+-                while (b > a && x[b - 1u] == y[b - 1u])
+-                    --b;
+-                if (a >= b)
+-                    a = b = 0u;
+-            }
+-            st.dlo[k][v] = st.dlo[v][k] = a, st.dhi[k][v] = st.dhi[v][k] = b;
+-        }
+-        st.cur = v;
+-        return st.curGen = gen, st.curCanon = gen;
++        nrun::CodeTrack &t = nrun::codeTrack();
++        if (t.key && gen == t.raw)
++            return t.key;
++        uint32_t pl = 0u, ph = PS2_VU1_CODE_SIZE / 8u;
++        if (mem && t.key && gen > t.raw)
++            mem->vu1CodeChangedRange(t.raw - 1u, gen - 1u, pl, ph);
++        const bool ranged = !(pl == 0u && ph == PS2_VU1_CODE_SIZE / 8u);
++        return trackGen(code, gen, ranged, pl * 8u, ph * 8u);
+     }
+ }
+ 
+@@ -1543,7 +1511,8 @@
+         return false;
+     }
+     const uint32_t entry = (static_cast<uint32_t>(vu1n::ldWordm(ctx.vuData, ((vu.m_state.itop + 69u) & 0x3FFu) * 16u, 1)) & 0x7FFu) * 8u;
+-    const uint64_t gen = ctx.memory ? vu1nat::canonicalGen(ctx.vuCode, ctx.memory->getVU1CodeGeneration() + 1u, ctx.memory) : 0u;
++    const uint64_t rawGen = ctx.memory ? ctx.memory->getVU1CodeGeneration() + 1u : 0u; // census: the raw generation (sw-dips7)
++    const uint64_t gen = ctx.memory ? vu1nat::canonicalGen(ctx.vuCode, rawGen, ctx.memory) : 0u;
+     vu1nat::nrun::CodeInfo &ci = vu1nat::nrun::codeInfoFor(ctx.vuCode, gen);
+     const uint8_t kind = vu1nat::nrun::kindOf(ci, ctx.vuCode, entry, gen);
+     const bool partProgram = vu1nat::npart::isProgram(ctx.vuCode, gen);
+@@ -1551,7 +1520,7 @@
+     if (mode == 2 || fam < 0 || !((vu1nat::liveFamilies() >> fam) & 1u))
+     {
+         if (mode == 1 && fam < 0) // census: entries without native code (not the families GOW_VU1_NATIVE_FAMS leaves out)
+-            vu1nat::census::note(vu.m_state, ctx, gen, entry, entry, vu1nat::census::kNoEntry);
++            vu1nat::census::note(vu.m_state, ctx, rawGen, entry, entry, vu1nat::census::kNoEntry);
+         st.pend = fam, st.pendT0 = ps2_perf::nowNanos();
+         return false;
+     }
+@@ -1591,7 +1560,7 @@
+             std::abort();
+         }
+         ++st.declined[fam][dpc];
+-        vu1nat::census::note(vu.m_state, ctx, gen, entry, dpc, vu1nat::census::kDeclined);
++        vu1nat::census::note(vu.m_state, ctx, rawGen, entry, dpc, vu1nat::census::kDeclined);
+         const uint64_t t1 = ps2_perf::nowNanos();
+         st.declineNs += t1 - tRun;
+         st.pend = fam, st.pendT0 = t1;
+--- a/ps2xRuntime/src/lib/vu/ps2_vu1_nat_misc.inl
++++ b/ps2xRuntime/src/lib/vu/ps2_vu1_nat_misc.inl
+@@ -403,6 +403,30 @@
+         }
+ 
+         // A loop call (jalr vi14, vi15 from the fixed code, returning to retPc): the loop at vi15 by its code hash.
++        // the loop's kind per loop pc, tagged with the code key it was computed under (nat-vu1j; sw-dips7: at namespace
++        // scope for invalidateLoops)
++        struct LoopKinds
++        {
++            uint64_t gen[PS2_VU1_CODE_SIZE / 8u] = {};
++            uint8_t kind[PS2_VU1_CODE_SIZE / 8u] = {};
++        };
++        inline LoopKinds &loopKinds()
++        {
++            thread_local std::unique_ptr<LoopKinds> p; // 18 KB on the heap, not in every thread's static TLS block
++            if (!p)
++                p.reset(new LoopKinds());
++            return *p;
++        }
++        // sw-dips7: drop the loop kinds under key that read a byte in [lo, hi) (canonicalGen's code tracking)
++        inline void invalidateLoops(uint64_t key, uint32_t lo, uint32_t hi)
++        {
++            LoopKinds &kc = loopKinds();
++            uint32_t p0, p1;
++            nrun::kindWindow(lo, hi, p0, p1);
++            for (uint32_t p = p0; p < p1; ++p)
++                if (kc.gen[p] == key)
++                    kc.gen[p] = 0;
++        }
+         inline bool loop(Op &v, uint8_t *mem, const uint8_t *code, uint32_t at, uint32_t retPc)
+         {
+             if (at + 160u > PS2_VU1_CODE_SIZE)
+@@ -412,15 +436,7 @@
+             const uint8_t *p = code + at;
+             // the loop's kind by its code hashes (~1.2 KB of byte-wise FNV when nothing matches early: ~5 us on the A57),
+             // cached per micro memory generation and loop address (nat-vu1j)
+-            struct KindCache
+-            {
+-                uint64_t gen[PS2_VU1_CODE_SIZE / 8u] = {};
+-                uint8_t kind[PS2_VU1_CODE_SIZE / 8u] = {};
+-            };
+-            thread_local std::unique_ptr<KindCache> kcp; // 18 KB on the heap, not in every thread's static TLS block
+-            if (!kcp)
+-                kcp.reset(new KindCache());
+-            KindCache &kc = *kcp;
++            LoopKinds &kc = loopKinds();
+             const uint64_t gen = nrun::runGen();
+             uint8_t kind = gen && kc.gen[at / 8u] == gen ? kc.kind[at / 8u] : 0u;
+             thread_local nrun::KindMemo memo; // nat-vu1s: by content on a generation miss
+--- a/ps2xRuntime/src/lib/vu/ps2_vu1_nat_part.inl
++++ b/ps2xRuntime/src/lib/vu/ps2_vu1_nat_part.inl
+@@ -78,12 +78,36 @@
+     inline bool &e40Ok() { return gates().e40; }
+     // is this micro memory the particle program (cached per generation in the runtime, codeGen 0: hashed every call)
+     // (four generations remembered, nat-vu1j: the particle and the main program alternate, see canonicalGen)
++    struct ProgSlots
++    {
++        uint64_t gen[4] = {~0ull, ~0ull, ~0ull, ~0ull};
++        bool ok[4] = {}, ext[4] = {}, d10[4] = {}, d88[4] = {}, e40[4] = {};
++        unsigned next = 0;
++    };
++    inline ProgSlots &progSlots()
++    {
++        thread_local ProgSlots p;
++        return p;
++    }
++    // sw-dips7: the micro memory under key changed in bytes [lo, hi): its slot is dropped when isProgram reads one of them
++    inline void invalidate(uint64_t key, uint32_t lo, uint32_t hi)
++    {
++        if (!nrun::overlapsAny(kCodeRanges, lo, hi) && !nrun::overlapsAny(kExtRanges, lo, hi) &&
++            !nrun::overlaps(0x0d10u, 0x0d88u, lo, hi) && !nrun::overlaps(0x0d88u, 0x0db0u, lo, hi) &&
++            !nrun::overlaps(0x0e48u, 0x0f28u, lo, hi))
++            return;
++        ProgSlots &p = progSlots();
++        for (int k = 0; k < 4; ++k)
++            if (p.gen[k] == key)
++                p.gen[k] = ~0ull;
++    }
+     inline bool isProgram(const uint8_t *code, uint64_t codeGen)
+     {
+         // (nat-vu1l merge: nat-vu1j's four generations with nat-vu1k's snippet gates d10 / d88 / e40)
+-        thread_local uint64_t gen[4] = {~0ull, ~0ull, ~0ull, ~0ull};
+-        thread_local bool ok[4] = {}, ext[4] = {}, d10[4] = {}, d88[4] = {}, e40[4] = {};
+-        thread_local unsigned next = 0;
++        ProgSlots &ps = progSlots();
++        uint64_t *const gen = ps.gen;
++        bool *const ok = ps.ok, *const ext = ps.ext, *const d10 = ps.d10, *const d88 = ps.d88, *const e40 = ps.e40;
++        unsigned &next = ps.next;
+         if (codeGen)
+             for (int k = 0; k < 4; ++k)
+                 if (gen[k] == codeGen)
+--- a/ps2xRuntime/src/lib/vu/ps2_vu1_nat_run.inl
++++ b/ps2xRuntime/src/lib/vu/ps2_vu1_nat_run.inl
+@@ -420,6 +420,24 @@
+                 return e.kind = compute();
+             }
+         };
++        // sw-dips7: bytes [a0, a1) and [lo, hi) overlap
++        inline bool overlaps(uint32_t a0, uint32_t a1, uint32_t lo, uint32_t hi) { return a0 < hi && lo < a1; }
++        template <size_t N>
++        inline bool overlapsAny(const uint32_t (&r)[N][2], uint32_t lo, uint32_t hi)
++        {
++            for (auto &x : r)
++                if (overlaps(x[0], x[1], lo, hi))
++                    return true;
++            return false;
++        }
++        // the entry / loop pcs (pair indices [p0, p1)) whose kind reads a byte in [lo, hi): KindMemo's window
++        // [at - kBefore, at + kAfter) covers every byte a kind reads (nrun / nlit / nmisc entry kinds, nmisc::loop's chain)
++        inline void kindWindow(uint32_t lo, uint32_t hi, uint32_t &p0, uint32_t &p1)
++        {
++            p0 = lo > KindMemo::kAfter ? (lo - KindMemo::kAfter) / 8u : 0u;
++            p1 = std::min<uint32_t>(PS2_VU1_CODE_SIZE / 8u, (hi + KindMemo::kBefore + 7u) / 8u);
++        }
++
+         // FNV of the fixed-code ranges this file transliterates (coveredHash): the main version of the fight and the menu
+         // (pcfight / pcmenu recordings, 2026-10-24). Another version falls back.
+         inline uint64_t kCoveredFixedValue = 0x57882ece8537340cull;
+@@ -461,6 +479,7 @@
+             uint64_t lastUse[4] = {};
+             uint64_t tick = 0;
+             CodeInfo *cur = &slot[0];
++            RangeMemo<> mCov, mClip; // the coarse hashes memoised by content (were thread_locals in codeInfoFor)
+         };
+         inline CodeInfoSlots &codeInfoSlots()
+         {
+@@ -508,9 +527,8 @@
+             if (!codeGen || ci.gen != codeGen)
+             {
+                 ci.gen = codeGen ? codeGen : ~0ull;
+-                thread_local RangeMemo<> mCov, mClip;
+-                ci.fixedOk = mCov.get(code, kCoveredRanges, coveredHash) == kCoveredFixedValue;
+-                ci.clipOk = mClip.get(code, kClipRanges, clipHash) == kClipFixedValue;
++                ci.fixedOk = cs.mCov.get(code, kCoveredRanges, coveredHash) == kCoveredFixedValue;
++                ci.clipOk = cs.mClip.get(code, kClipRanges, clipHash) == kClipFixedValue;
+                 ci.litFixed = -1;
+             }
+             return ci;
+@@ -534,6 +552,29 @@
+                 ci.kind[entry / 8u] = kind, ci.kindGen[entry / 8u] = codeGen;
+             return kind;
+         }
++        // sw-dips7 (canonicalGen's code tracking): the micro memory under `key` changed in bytes [lo, hi). Everything
++        // cached under key that reads one of those bytes is dropped (entry kinds in every slot: a slot that held key
++        // before may get it back) or recomputed (the coarse hashes of key's slot); the rest stays valid.
++        inline void invalidateCodeInfo(uint64_t key, const uint8_t *code, uint32_t lo, uint32_t hi)
++        {
++            CodeInfoSlots &cs = codeInfoSlots();
++            uint32_t p0, p1;
++            kindWindow(lo, hi, p0, p1);
++            for (CodeInfo &ci : cs.slot)
++            {
++                for (uint32_t p = p0; p < p1; ++p)
++                    if (ci.kindGen[p] == key)
++                        ci.kindGen[p] = 0;
++                if (ci.gen != key)
++                    continue;
++                if (overlapsAny(kCoveredRanges, lo, hi))
++                    ci.fixedOk = cs.mCov.get(code, kCoveredRanges, coveredHash) == kCoveredFixedValue;
++                if (overlapsAny(kClipRanges, lo, hi))
++                    ci.clipOk = cs.mClip.get(code, kClipRanges, clipHash) == kClipFixedValue;
++                if (overlapsAny(nlit::kFixedRanges, lo, hi))
++                    ci.litFixed = -1;
++            }
++        }
+     }
+ 
+     // One MSCAL run natively. s / mem: the run's start state and VU data memory (modified in place: callers pass copies);
+@@ -1150,4 +1191,39 @@
+             declinePc |= 0x80000000u;
+         return false;
+     }
++
++    // sw-dips7: one code key while the micro memory changes. The game uploads modules into the micro memory hundreds of
++    // times a second and its contents rarely repeat (the recordings: ~45 distinct images in 51 swaps), so the old
++    // canonical images (four, compared and copied whole: 16 KB memcmp + 16 KB memcpy per swap) and every cache keyed by
++    // them missed on almost every swap. Now a swap with a known changed range [lo, hi) keeps the key and drops only
++    // what reads those bytes (entry / loop kinds near them, the coarse hashes and isProgram's slot when their ranges
++    // overlap); an unknown range starts a new key (raw, unique: the generations only grow).
++    namespace nrun
++    {
++        struct CodeTrack
++        {
++            uint64_t raw = 0, key = 0;
++        };
++        inline CodeTrack &codeTrack()
++        {
++            thread_local CodeTrack t;
++            return t;
++        }
++    }
++    inline uint64_t trackGen(const uint8_t *code, uint64_t raw, bool ranged, uint32_t lo, uint32_t hi)
++    {
++        nrun::CodeTrack &t = nrun::codeTrack();
++        if (t.key && raw == t.raw)
++            return t.key;
++        if (!t.key || !ranged)
++            t.key = raw;
++        else if (lo < hi)
++        {
++            nrun::invalidateCodeInfo(t.key, code, lo, hi);
++            npart::invalidate(t.key, lo, hi);
++            nmisc::invalidateLoops(t.key, lo, hi);
++        }
++        t.raw = raw;
++        return t.key;
++    }
+ }

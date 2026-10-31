@@ -1,0 +1,117 @@
+--- a/ps2xRuntime/src/lib/vu/ps2_vu1_nat_lit.inl
++++ b/ps2xRuntime/src/lib/vu/ps2_vu1_nat_lit.inl
+@@ -824,8 +824,9 @@
+     {
+         using namespace nrun;
+         using nlit::Op;
++        nrun::Tls &tl = nrun::tls(); // sw-dips6: one TLS lookup (pkBase, the undo log)
+         declinePc = 0;
+-        packets.resize(nrun::pkBase());
++        packets.resize(tl.pkBase);
+         if (!litKind)
+             litKind = nlit::entryKind(code, entry);
+         const bool lit = litKind == 1, skin = litKind == 2, skin28 = litKind == 3;
+@@ -837,7 +838,7 @@
+             fixedOk = nlit::fixedHashM(code) == nlit::kFixedValue ? 1 : 0;
+         if (!fixedOk)
+             return declinePc = 2u, false;
+-        Op v{{s, mem}};
++        Op v{{s, mem, tl.u}};
+         uint32_t mac51 = 0, mac73 = 0, mac74 = 0, mac78 = 0, mac79 = 0, mac = 0;
+         v.seti(1, startPC == 0x00u ? 0 : startPC == 0x18u ? 341 : 683);
+         v.seti(12, static_cast<int32_t>(s.itop & 0x3FFu));
+--- a/ps2xRuntime/src/lib/vu/ps2_vu1_nat_run.inl
++++ b/ps2xRuntime/src/lib/vu/ps2_vu1_nat_run.inl
+@@ -67,15 +67,6 @@
+     {
+         inline __m128 vf0() { return _mm_setr_ps(0.0f, 0.0f, 0.0f, 1.0f); }
+ 
+-        // GOW-Port (sw-dips3): where this run's packets start in the packet buffer. The runtime lets a run append its
+-        // XGKICKs straight to the GS stage's buffer (PS2Memory::gifDirectBuffer), which already holds earlier runs'
+-        // packets: a run "clears" its packets back to here, not to 0. 0 for the harness / oracle / replay callers.
+-        inline size_t &pkBase()
+-        {
+-            thread_local size_t base = 0;
+-            return base;
+-        }
+-
+         // Undo of a declined run's memory writes (runNative leaves memory as it found it when it returns false, so the
+         // runtime needs no 16 KB copy per run): the batch code's single stores are logged (old qword), the vertex loops'
+         // writes are not, so a run decides every decline before its first loop; the clip path (whose decline after the
+@@ -171,18 +162,27 @@
+                 return !overflow;
+             }
+         };
+-        inline Undo &undo()
++        // sw-dips6: the per-thread run state in one thread_local (each TLS lookup is a call under -mtp=soft; a run
++        // fetches this once where it needs several of them)
++        struct Tls
++        {
++            Undo u;
++            // GOW-Port (sw-dips3): where this run's packets start in the packet buffer. The runtime lets a run append its
++            // XGKICKs straight to the GS stage's buffer (PS2Memory::gifDirectBuffer), which already holds earlier runs'
++            // packets: a run "clears" its packets back to here, not to 0. 0 for the harness / oracle / replay callers.
++            size_t pkBase = 0;
++            // the micro memory generation of the run in progress (runNativeBody sets it; 0: no caching, hash every call)
++            uint64_t gen = 0;
++        };
++        inline Tls &tls()
+         {
+-            thread_local Undo u;
+-            return u;
++            thread_local Tls t;
++            return t;
+         }
++        inline Undo &undo() { return tls().u; }
++        inline size_t &pkBase() { return tls().pkBase; }
+         inline void Undo::logHook(const uint8_t *m, uint32_t q) { undo().log(m, q); }
+-        // the micro memory generation of the run in progress (runNativeBody sets it; 0: no caching, hash every call)
+-        inline uint64_t &runGen()
+-        {
+-            thread_local uint64_t g = 0;
+-            return g;
+-        }
++        inline uint64_t &runGen() { return tls().gen; }
+         // GOW_VU1NAT_FORCE_DECLINE=1 (harness check of the undo, nat-vu1l): every finished run declines at its end, and the
+         // lit path logs / snapshots as if a decline could follow every loop (natcheck: "memory not restored" must stay 0)
+         inline bool forceDecline()
+@@ -554,16 +554,17 @@
+                               uint32_t &declinePc, uint64_t codeGen, const nrun::Pre *pre = nullptr)
+     {
+         using namespace nrun;
++        Tls &tl = tls();
+         declinePc = 0;
+-        packets.resize(nrun::pkBase());
+-        runGen() = codeGen;
++        packets.resize(tl.pkBase);
++        tl.gen = codeGen;
+         if (startPC != 0x00u && startPC != 0x18u && startPC != 0x30u)
+             return declinePc = startPC, false;
+         if (pre ? pre->part : npart::isProgram(code, codeGen)) return npart::run(s, mem, startPC, packets, declinePc); // nat-vu1f
+         CodeInfo &ci = pre ? *pre->ci : codeInfoFor(code, codeGen);
+         if (!ci.fixedOk)
+             return declinePc = 1u, false;
+-        Vu v{s, mem};
++        Vu v{s, mem, tl.u};
+         uint32_t mac51 = 0, mac73 = 0, mac74 = 0, mac78 = 0, mac79 = 0, mac = 0;
+         // 0x00 / 0x18 / 0x30: vi1 = input buffer; xitop vi12
+         v.seti(1, startPC == 0x00u ? 0 : startPC == 0x18u ? 341 : 683);
+@@ -1135,7 +1136,8 @@
+     inline bool runNative(VU1State &s, uint8_t *mem, const uint8_t *code, uint32_t startPC, std::vector<uint8_t> &packets,
+                           uint32_t &declinePc, uint64_t codeGen = 0, const nrun::Pre *pre = nullptr)
+     {
+-        nrun::Undo &u = nrun::undo();
++        nrun::Tls &tl = nrun::tls();
++        nrun::Undo &u = tl.u;
+         u.reset();
+         if (runNativeBody(s, mem, code, startPC, packets, declinePc, codeGen, pre))
+         {
+@@ -1143,7 +1145,7 @@
+                 return true;
+             declinePc = 0x7FFFFFFFu;
+         }
+-        packets.resize(nrun::pkBase());
++        packets.resize(tl.pkBase);
+         if (!u.restore(mem))
+             declinePc |= 0x80000000u;
+         return false;

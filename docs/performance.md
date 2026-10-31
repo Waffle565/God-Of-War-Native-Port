@@ -886,3 +886,33 @@ Details: docs/native-render-study.md "step 7 on the renderer side, part 3".
   short nmisc runs (kind21 25 k x 10 us, kind12 12 k x 9 us in ATHN01D: their inner loops are already
   register-resident in ps2_vu1_nat_wind.inl, so the per-run overhead is the target). (3) VIF command loop misses on
   the chain data, (4) core 1 (EE + IOP).
+
+## Switch VU1 thread, sw-dips6: where ATHN01D's VU1 thread goes after dips16; per-run overhead (2026-10-31)
+- Profile port/switch/logs/prof_dips16_ATHN01D (update_dips16, `GOW_PC_SAMPLE=1000` on GSWorker, windows 105-170 s =
+  after the warp, 63.5 k samples; ~92 k VU1 runs per second, so 100 ns per run = ~1 % of the thread): npart::run 13.9 %,
+  litLoopT 9.8 %, runLit itself 9.4 % (~3.2 % of it the per-run prologue 0x00e0-0x02a8: batch switch + sphere test),
+  vu1hle::kCullClip 6.3 %, kUnlitSt 5.4 %, VIF 14 % (processVIF1Data 5.3 %, a third of it the first read of each VIF
+  command; unpackFast / unpackLoop ~8.5 %, the samples on the store after the source load: misses on the chain the EE
+  thread has just copied), memmove 4.9 % (the XGKICK copy into the GS stage), skinLoopT 3.6 %, texDivLoop 2.7 %, idle 6 %.
+  Per-run overhead outside the programs ~8 %: tryRun 2.5 %, memcmp 1.8 %, __aarch64_read_tp 1.7 % (TLS under
+  -mtp=soft), kindOf 1.1 %, codeInfoFor 0.5 %, isProgram 0.4 % (tryRun and runNativeBody both classified each run),
+  VU1Interpreter::run 2 % (most of it ps2_perf::Scope, on only with GOW_PERF_DIAG, which the sweep sets).
+- `GOW_PC_SAMPLE_LR` profiles (prof_dips16_lrmemcmp / _lrtp): memcmp is canonicalGen's 16 KB compare per micro-memory
+  swap (~1.4 %; the rest the KindMemo / RangeMemo compares on generation misses); __aarch64_read_tp is called most from
+  npart::run (each snippet gate extOk() / d10Ok() / ... was a TLS lookup inside the element loop), then tryRun,
+  isProgram, kCullClip's undo hook.
+- tools: `switch_pchot.sh` now batches addr2line (one call) and must run through `wsl --exec bash` (plain `wsl -- bash -c`
+  expands `$VAR` on the Windows side).
+- dips17 (port/switch/dips17.patch; natcheck identical to dips16 on all 40 recordings, x86 plain / forced decline and
+  a64): tryRun hands its classification (isProgram / codeInfoFor / kindOf) to runNativeBody as `nrun::Pre` instead of
+  runNativeBody asking again; npart reads its snippet gates once per run (`npart::Gates`, one thread_local); canonicalGen
+  compared only the changed range of the micro memory against saved images with precomputed diff ranges. A/B (ab8_dips16
+  vs ab8_dips17): inconclusive in fps (the walk moves the scene: VU1 us per run 11.05 / 9.84 / 8.10 / 9.55 -> 10.95 /
+  9.95 / 8.92 / 10.71). The profile (prof_dips17_ATHN01D) showed why: kindOf 1.13 -> 0.80 %, codeInfoFor 0.50 -> 0.31 %,
+  isProgram 0.40 -> 0.26 %, memcmp 1.81 -> 0.76 %, but canonicalGen itself 2.84 %: its diff-range scans run on every
+  swap, because **the micro memory almost never returns to an earlier image** (torec of the recordings, 3000 runs each:
+  pcfight 14 swaps / 15 distinct images, pcolymp 51 / 45, pcwalk 31 / 30; an LRU of 4, 8, 16 or 32 images misses every
+  time). So the four-image canonicalGen of nat-vu1j never hit either: every swap paid 16 KB memcmp + 16 KB memcpy and
+  re-ran every per-generation cache (through the content memos). Not installed.
+- dips18 (port/switch/dips18.patch, on dips17): the run state thread_locals (undo log, packet base, run generation) in
+  one `nrun::Tls`, fetched once per run in runNative / runNativeBody / runLit. Natcheck identical. Superseded by dips19.

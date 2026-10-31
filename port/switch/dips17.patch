@@ -1,0 +1,345 @@
+--- a/ps2xRuntime/src/lib/vu/ps2_vu1_nat.inl
++++ b/ps2xRuntime/src/lib/vu/ps2_vu1_nat.inl
+@@ -1437,35 +1437,87 @@
+     // several KB of byte-wise FNV each) were recomputed on every swap (nat-vu1j: ~2 % of the VU1 thread in nv2ap).
+     // canonicalGen maps a generation to the first generation seen with the same micro memory bytes (memcmp against a few
+     // saved images: ~1 us per swap), so those caches stay valid across swaps. Same results: equal bytes, equal hashes.
+-    inline uint64_t canonicalGen(const uint8_t *code, uint64_t gen)
++    // sw-dips6: with the micro memory's change log (PS2Memory::vu1CodeChangedRange, mem non-null) the code can differ from
++    // the image of the previous generation (cur) only in bytes [lo, hi), and an image m differs from image cur only inside
++    // their saved diff range (dlo / dhi, computed when an image is filled): m equals the code iff that diff range lies in
++    // [lo, hi) and m's bytes [lo, hi) equal the code's. One memcmp of the MPG's range instead of 16 KB per swap (the 16 KB
++    // compares were ~1.4 % of the VU1 thread in ATHN01D, profile prof_dips16_lrmemcmp). Same images, same LRU, same result.
++    inline uint64_t canonicalGen(const uint8_t *code, uint64_t gen, const PS2Memory *mem = nullptr)
+     {
++        constexpr uint32_t kSize = PS2_VU1_CODE_SIZE;
+         struct Image
+         {
+             uint64_t canon = 0, lastUse = 0;
+-            alignas(64) uint8_t bytes[PS2_VU1_CODE_SIZE];
++            alignas(64) uint8_t bytes[kSize];
+         };
+-        thread_local std::unique_ptr<Image[]> img; // 64 KB on the heap, not in every thread's static TLS block
+-        thread_local uint64_t curGen = 0, curCanon = 0, tick = 0;
+-        if (gen == curGen)
+-            return curCanon;
+-        if (!img)
+-            img.reset(new Image[4]);
+-        ++tick;
+-        Image *victim = &img[0];
++        struct State
++        {
++            Image img[4];
++            uint32_t dlo[4][4] = {}, dhi[4][4] = {}; // bytes [dlo, dhi) hold every difference of images a and b (empty: equal)
++            int cur = -1;                            // the image equal to the code of generation curGen
++            uint64_t curGen = 0, curCanon = 0, tick = 0;
++        };
++        thread_local std::unique_ptr<State> stp; // 64 KB on the heap, not in every thread's static TLS block
++        if (stp && gen == stp->curGen)
++            return stp->curCanon;
++        if (!stp)
++            stp.reset(new State());
++        State &st = *stp;
++        ++st.tick;
++        uint32_t lo = 0u, hi = kSize; // where the code can differ from img[cur]
++        if (mem && st.cur >= 0 && st.curGen && gen > st.curGen)
++        {
++            uint32_t pl = 0u, ph = 0u;
++            mem->vu1CodeChangedRange(st.curGen - 1u, gen - 1u, pl, ph); // (the generations here are the memory's + 1)
++            lo = pl * 8u, hi = ph * 8u;
++            if (lo >= hi)
++                lo = hi = 0u;
++        }
++        const bool ranged = lo != 0u || hi != kSize;
++        Image *victim = &st.img[0];
+         for (int k = 0; k < 4; ++k)
+         {
+-            Image &m = img[k];
+-            if (m.canon && std::memcmp(m.bytes, code, PS2_VU1_CODE_SIZE) == 0)
++            Image &m = st.img[k];
++            bool same;
++            if (!m.canon)
++                same = false;
++            else if (!ranged)
++                same = std::memcmp(m.bytes, code, kSize) == 0;
++            else
++            {
++                const uint32_t a = st.dlo[k][st.cur], b = st.dhi[k][st.cur];
++                same = (k == st.cur || a >= b || (a >= lo && b <= hi)) && std::memcmp(m.bytes + lo, code + lo, hi - lo) == 0;
++            }
++            if (same)
+             {
+-                m.lastUse = tick;
+-                return curGen = gen, curCanon = m.canon;
++                m.lastUse = st.tick;
++                st.cur = k;
++                return st.curGen = gen, st.curCanon = m.canon;
+             }
+             if (m.lastUse < victim->lastUse)
+                 victim = &m;
+         }
+-        std::memcpy(victim->bytes, code, PS2_VU1_CODE_SIZE);
+-        victim->canon = gen, victim->lastUse = tick;
+-        return curGen = gen, curCanon = gen;
++        std::memcpy(victim->bytes, code, kSize);
++        victim->canon = gen, victim->lastUse = st.tick;
++        const int v = static_cast<int>(victim - st.img);
++        for (int k = 0; k < 4; ++k)
++        {
++            uint32_t a = 0u, b = 0u;
++            if (k != v && st.img[k].canon)
++            {
++                const uint8_t *x = st.img[k].bytes, *y = victim->bytes;
++                while (a < kSize && x[a] == y[a])
++                    ++a;
++                b = kSize;
++                while (b > a && x[b - 1u] == y[b - 1u])
++                    --b;
++                if (a >= b)
++                    a = b = 0u;
++            }
++            st.dlo[k][v] = st.dlo[v][k] = a, st.dhi[k][v] = st.dhi[v][k] = b;
++        }
++        st.cur = v;
++        return st.curGen = gen, st.curCanon = gen;
+     }
+ }
+ 
+@@ -1491,7 +1543,7 @@
+         return false;
+     }
+     const uint32_t entry = (static_cast<uint32_t>(vu1n::ldWordm(ctx.vuData, ((vu.m_state.itop + 69u) & 0x3FFu) * 16u, 1)) & 0x7FFu) * 8u;
+-    const uint64_t gen = ctx.memory ? vu1nat::canonicalGen(ctx.vuCode, ctx.memory->getVU1CodeGeneration() + 1u) : 0u;
++    const uint64_t gen = ctx.memory ? vu1nat::canonicalGen(ctx.vuCode, ctx.memory->getVU1CodeGeneration() + 1u, ctx.memory) : 0u;
+     vu1nat::nrun::CodeInfo &ci = vu1nat::nrun::codeInfoFor(ctx.vuCode, gen);
+     const uint8_t kind = vu1nat::nrun::kindOf(ci, ctx.vuCode, entry, gen);
+     const bool partProgram = vu1nat::npart::isProgram(ctx.vuCode, gen);
+@@ -1526,7 +1578,8 @@
+     uint32_t dpc = 0;
+     const uint64_t savedFp = vu_fpmode::get();
+     vu_fpmode::set((savedFp & ~vu_fpmode::kRoundMask) | vu_fpmode::kRoundZero | vu_fpmode::kFlushZero); // FTZ + DAZ as the native blocks
+-    const bool ok = vu1nat::runNative(s, ctx.vuData, ctx.vuCode, pc, packets, dpc, gen);
++    const vu1nat::nrun::Pre pre{partProgram, &ci, kind}; // sw-dips6: classified once per run (above)
++    const bool ok = vu1nat::runNative(s, ctx.vuData, ctx.vuCode, pc, packets, dpc, gen, &pre);
+     vu_fpmode::set(savedFp);
+     if (!ok)
+     {
+--- a/ps2xRuntime/src/lib/vu/ps2_vu1_nat_part.inl
++++ b/ps2xRuntime/src/lib/vu/ps2_vu1_nat_part.inl
+@@ -55,32 +55,27 @@
+             h = fnv(code + x[0], x[1] - x[0], h);
+         return h;
+     }
+-    inline bool &extOk()
++    // the snippet gates of the current generation (isProgram sets them), one thread_local (sw-dips6: Run reads them once
++    // per run; every gate test was a TLS lookup, a call under -mtp=soft)
++    struct Gates
+     {
+-        thread_local bool ok = false;
+-        return ok;
++        bool ext = false, d10 = false, d88 = false, e40 = false;
++    };
++    inline Gates &gates()
++    {
++        thread_local Gates g;
++        return g;
+     }
++    inline bool &extOk() { return gates().ext; }
+     // nat-vu1k (census, ARENA20 / ATHN06A): the snippets 0x0d10-0x0d88 (keyframe lookup) and 0x0d88-0x0db0, gated by
+     // their own hashes
+     constexpr uint64_t kSnipD10Value = 0x50d282863b1a8774ull;
+     constexpr uint64_t kSnipD88Value = 0x8f1cda174f6555f5ull;
+-    inline bool &d88Ok()
+-    {
+-        thread_local bool ok = false;
+-        return ok;
+-    }
+-    inline bool &d10Ok()
+-    {
+-        thread_local bool ok = false;
+-        return ok;
+-    }
++    inline bool &d88Ok() { return gates().d88; }
++    inline bool &d10Ok() { return gates().d10; }
+     // nat-vu1k (census, ATHN01F / 02C): the builder 0x0e40 -> point element 0x0ea0 (0x0e48-0x0f28), its own hash
+     constexpr uint64_t kPointE40Value = 0xc622a332f58e66f4ull;
+-    inline bool &e40Ok()
+-    {
+-        thread_local bool ok = false;
+-        return ok;
+-    }
++    inline bool &e40Ok() { return gates().e40; }
+     // is this micro memory the particle program (cached per generation in the runtime, codeGen 0: hashed every call)
+     // (four generations remembered, nat-vu1j: the particle and the main program alternate, see canonicalGen)
+     inline bool isProgram(const uint8_t *code, uint64_t codeGen)
+@@ -93,7 +88,8 @@
+             for (int k = 0; k < 4; ++k)
+                 if (gen[k] == codeGen)
+                 {
+-                    extOk() = ext[k], d10Ok() = d10[k], d88Ok() = d88[k], e40Ok() = e40[k];
++                    Gates &g = gates();
++                    g.ext = ext[k], g.d10 = d10[k], g.d88 = d88[k], g.e40 = e40[k];
+                     return ok[k];
+                 }
+         const unsigned k = next++ & 3u;
+@@ -104,7 +100,8 @@
+         d10[k] = ok[k] && fnv(code + 0x0d10u, 0x78u) == kSnipD10Value;
+         d88[k] = ok[k] && fnv(code + 0x0d88u, 0x28u) == kSnipD88Value;
+         e40[k] = ok[k] && fnv(code + 0x0e48u, 0xe0u) == kPointE40Value;
+-        extOk() = ext[k], d10Ok() = d10[k], d88Ok() = d88[k], e40Ok() = e40[k];
++        Gates &g = gates();
++        g.ext = ext[k], g.d10 = d10[k], g.d88 = d88[k], g.e40 = e40[k];
+         return ok[k];
+     }
+ 
+@@ -114,9 +111,10 @@
+         uint8_t *m;
+         std::vector<uint8_t> &pk;
+         uint32_t &dpc;
+-        nrun::Vu v{s, m};
++        nrun::Undo &u = nrun::undo(); // one TLS lookup per run (also v's: sw-dips6)
++        nrun::Vu v{s, m, u};
+         uint32_t mac = 0;
+-        nrun::Undo &u = nrun::undo(); // one TLS lookup per run
++        const Gates gt = gates(); // the snippet gates, once per run (sw-dips6)
+ 
+         // registers (sw-dips5): a private copy of the register file, read from VU1State at the run's start and written back
+         // at its end (load / store). Every member function is forced inline into run(), all register numbers are constants
+@@ -407,7 +405,7 @@
+                 return true;
+             case 0x07d8u: // nat-vu1h: vf9 = a - c t - (b - c t) * (P - t) form with the age terms 31(XTOP).x and P
+             {
+-                if (!extOk())
++                if (!gt.ext)
+                     return decline(pc);
+                 lq<15>(1, vi(2));
+                 lq<15>(2, vi(2) + 1);
+@@ -426,7 +424,7 @@
+             case 0x0d10u: // nat-vu1k (census, ARENA20): keyframe lookup: k = vf1 * t; vf9 = frac(k); the key qw at vi2 +
+                           // int(1 + vf1 * frac(k).w).y -> vf17, vf7 = mr32(vf17), vf18 = mr32(vf7)
+             {
+-                if (!d10Ok())
++                if (!gt.d10)
+                     return decline(pc);
+                 lq<15>(1, vi(2));                          // lq vf1, 0(vi2)
+                 W<15>(8, mul<15>(R(1), bc<0>(R(31))));     // mulx vf8, vf1, vf31x
+@@ -445,7 +443,7 @@
+             }
+             case 0x0d88u: // nat-vu1k (census, ATHN06A): vf9 = a; vf8 = a - b * 21(XTOP).z (stored to vi3++)
+             {
+-                if (!d88Ok())
++                if (!gt.d88)
+                     return decline(pc);
+                 lq<15>(9, vi(2));                          // lq vf9, 0(vi2)
+                 lq<15>(2, vi(2) + 1);                      // lq vf2, 1(vi2)
+@@ -581,7 +579,7 @@
+                 seti(14, 0x1a68 / 8);
+                 return true;
+             case 0x0e40u: // nat-vu1k: one point from 547 (element 0x0ea0); the same set-up code as 0x0f28
+-                if (!e40Ok())
++                if (!gt.e40)
+                     return decline(pc);
+                 matLoad(0x0e50u);
+                 lq<15>(28, xtop() + 4);
+@@ -594,7 +592,7 @@
+                 seti(14, 0x0ea0 / 8);
+                 return true;
+             case 0x0f28u: // nat-vu1h: two-vertex streak from 548 / 549 (element 0x0f88)
+-                if (!extOk())
++                if (!gt.ext)
+                     return decline(pc);
+                 matLoad(0x0f38u);
+                 lq<15>(28, xtop() + 4);
+@@ -607,7 +605,7 @@
+                 seti(14, 0x0f88 / 8);
+                 return true;
+             case 0x1ed0u: // nat-vu1h: strip of vf17.z quads, two axes vf17 / vf18 (element 0x1f78)
+-                if (!extOk())
++                if (!gt.ext)
+                     return decline(pc);
+                 matLoad(0x1ee0u);
+                 lq<15>(28, xtop() + 4);
+@@ -915,7 +913,7 @@
+             }
+             case 0x0ea0u: // nat-vu1k: one point at 547 (colour 546), clip-tested
+             {
+-                if (!e40Ok())
++                if (!gt.e40)
+                     return decline(pc);
+                 seti(7, vi(11));                         // iaddiu vi7, vi11, 0
+                 sqi<15>(16, 11);                         // sqi vf16, (vi11++)
+@@ -942,7 +940,7 @@
+             }
+             case 0x0f88u: // nat-vu1h: streak between the points 548 / 549, the second end at min(t / 21.z, 548.w)
+             {
+-                if (!extOk())
++                if (!gt.ext)
+                     return decline(pc);
+                 lq<4>(5, xtop() + 21);
+                 seti(7, vi(11));
+@@ -997,7 +995,7 @@
+             }
+             case 0x1f78u: // nat-vu1h: strip of vi5 = vf17.z quads along the axes vf17 / vf18
+             {
+-                if (!extOk())
++                if (!gt.ext)
+                     return decline(pc);
+                 lq<15>(1, 548);
+                 WA<15>(add<15>(R(27), bc<0>(R(0)))); // addax | mfir.zw vf19, vi0
+--- a/ps2xRuntime/src/lib/vu/ps2_vu1_nat_run.inl
++++ b/ps2xRuntime/src/lib/vu/ps2_vu1_nat_run.inl
+@@ -539,8 +539,19 @@
+     // One MSCAL run natively. s / mem: the run's start state and VU data memory (modified in place: callers pass copies);
+     // packets: the XGKICKed GIF packets in order. false: an uncovered path (declinePc names it); s / mem are then partial.
+     // codeGen: the micro memory's generation (the runtime: hashes cached per generation); 0: hash on every call (harness)
++    namespace nrun
++    {
++        // sw-dips6: the classification VU1NatAccess::tryRun has already done for this run (same code generation, same
++        // entry): runNativeBody takes it instead of asking isProgram / codeInfoFor / kindOf a second time
++        struct Pre
++        {
++            bool part;
++            CodeInfo *ci;
++            uint8_t kind;
++        };
++    }
+     inline bool runNativeBody(VU1State &s, uint8_t *mem, const uint8_t *code, uint32_t startPC, std::vector<uint8_t> &packets,
+-                              uint32_t &declinePc, uint64_t codeGen)
++                              uint32_t &declinePc, uint64_t codeGen, const nrun::Pre *pre = nullptr)
+     {
+         using namespace nrun;
+         declinePc = 0;
+@@ -548,8 +559,8 @@
+         runGen() = codeGen;
+         if (startPC != 0x00u && startPC != 0x18u && startPC != 0x30u)
+             return declinePc = startPC, false;
+-        if (npart::isProgram(code, codeGen)) return npart::run(s, mem, startPC, packets, declinePc); // nat-vu1f
+-        CodeInfo &ci = codeInfoFor(code, codeGen);
++        if (pre ? pre->part : npart::isProgram(code, codeGen)) return npart::run(s, mem, startPC, packets, declinePc); // nat-vu1f
++        CodeInfo &ci = pre ? *pre->ci : codeInfoFor(code, codeGen);
+         if (!ci.fixedOk)
+             return declinePc = 1u, false;
+         Vu v{s, mem};
+@@ -566,7 +577,7 @@
+         // The entry's code (the classifier's entryHash). 3d0d1206: prologue + the unlit_st loop (kUnlitSt) + return.
+         // 7ab32108: prologue + the no-divide loop (noDivLoop below); it sits 0xd8 after a 3d0d1206 entry in the same
+         // module, whose loop it switches to through the module callbacks at 0x02d8 / 0x02f8 (both must match).
+-        const uint8_t kind = kindOf(ci, code, entry, codeGen);
++        const uint8_t kind = pre ? pre->kind : kindOf(ci, code, entry, codeGen);
+         const bool e3d0d = kind == 2u, e7ab = kind == 3u;
+         if (kind >= 4u)
+         {
+@@ -1122,11 +1133,11 @@
+     // false: an uncovered path (declinePc names it; bit 31 set: the undo log overflowed and mem is NOT restored).
+     // codeGen: the micro memory's generation (hashes cached per generation), 0: hash on every call.
+     inline bool runNative(VU1State &s, uint8_t *mem, const uint8_t *code, uint32_t startPC, std::vector<uint8_t> &packets,
+-                          uint32_t &declinePc, uint64_t codeGen = 0)
++                          uint32_t &declinePc, uint64_t codeGen = 0, const nrun::Pre *pre = nullptr)
+     {
+         nrun::Undo &u = nrun::undo();
+         u.reset();
+-        if (runNativeBody(s, mem, code, startPC, packets, declinePc, codeGen))
++        if (runNativeBody(s, mem, code, startPC, packets, declinePc, codeGen, pre))
+         {
+             if (!nrun::forceDecline())
+                 return true;

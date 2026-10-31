@@ -1,0 +1,6 @@
+[sweep] package update_dips17 env GOW_PC_SAMPLE=1000,GOW_PC_SAMPLE_THREADS=GSWorker
+[sweep] 22:25:47 ATHN01D
+[sweep] ATHN01D PASS  
+[sweep] default restored
+[sweep] exefs md5 0b1119b1 = default
+[sweep] report port/switch/sweep/prof_dips17\20261031_2225\report.md
