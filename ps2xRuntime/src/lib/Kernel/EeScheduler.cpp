@@ -433,6 +433,25 @@ uint64_t EeScheduler::catchUpToHost(uint64_t maxCycles) noexcept
     return added;
 }
 
+uint64_t EeScheduler::advanceQuietRepeated(uint32_t cycles, uint64_t maxRepeats) noexcept
+{
+    const uint64_t step = std::max<uint64_t>(1u, cycles);
+    uint64_t taken = 0u;
+    while (taken < maxRepeats)
+    {
+        if (m_checkpointPending.load(std::memory_order_acquire) ||
+            m_stopRequested.load(std::memory_order_acquire))
+            break;
+        const uint64_t nextEventCycle = m_nextDeadlineCycle.load(std::memory_order_acquire);
+        if ((nextEventCycle != 0u && m_eeCycle + step >= nextEventCycle) || m_eeCycle + step >= m_sliceEndCycle)
+            break;
+        // Per iteration, so an EE timer interrupt is raised at the iteration it falls in.
+        accountCycles(cycles);
+        ++taken;
+    }
+    return taken;
+}
+
 bool EeScheduler::isExecutingGuest() const noexcept
 {
     return m_guestExecuting.load(std::memory_order_acquire);

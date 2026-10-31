@@ -2,6 +2,7 @@
 // Origen: PS2Recomp sotc-port, ac9efa070638ad3b3accd284de6f898d5ab271d1.
 #include "runtime/gs/gs_threaded_backend.h"
 #include "runtime/gs/gs_hw_backend.h"
+#include "runtime/gs/gs_null_backend.h"
 #include "runtime/gs/gs_shared_present.h"
 #include "gs_inventory.h"
 #include "ThreadPriority.h"
@@ -32,6 +33,18 @@ namespace
             return value && *value && *value != '0';
         }();
         return discard;
+    }
+
+    // GOW-Port: PS2X_GS_NULL=1 runs the GS headless (GSNullBackend, no GL context). Default on macOS until the Metal
+    // renderer exists: the GL renderer needs OpenGL 4.3 and macOS stops at 4.1. PS2X_GS_NULL=0 tries GL anyway.
+    bool useNullRenderer()
+    {
+        const char *value = std::getenv("PS2X_GS_NULL");
+#if defined(__APPLE__)
+        return !value || !*value || *value != '0';
+#else
+        return value && *value && *value != '0';
+#endif
     }
 
     struct LoadClutArgs
@@ -87,6 +100,11 @@ GSThreadedBackend::~GSThreadedBackend()
 
 std::unique_ptr<GSRasterBackend> GSThreadedBackend::MakeDefault()
 {
+    if (useNullRenderer())
+    {
+        std::fprintf(stderr, "[gs] headless: null GS renderer (PS2X_GS_NULL)\n");
+        return std::make_unique<GSNullBackend>();
+    }
     // GOW-Port: the native render-target renderer is the only GS renderer (no VRAM-emulating rasteriser).
     return std::make_unique<GSThreadedBackend>(std::make_unique<GSHwBackend>());
 }

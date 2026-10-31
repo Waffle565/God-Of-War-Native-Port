@@ -284,6 +284,10 @@ public:
     // host clock (a scheduled event's host deadline has passed but its guest cycle is not reached), account the
     // missing cycles (at most maxCycles) so guest time, EE timers and the IOP keep real time. Returns cycles added.
     uint64_t catchUpToHost(uint64_t maxCycles) noexcept;
+    // GOW-Port: a guest countdown loop with one checkpoint of `cycles` per iteration (gow_overrides.cpp): account up
+    // to maxRepeats iterations at once, stopping before the first one whose checkpoint would not take the fast path
+    // (pending event or stop, scheduler deadline, end of the time slice). Returns the iterations taken.
+    uint64_t advanceQuietRepeated(uint32_t cycles, uint64_t maxRepeats) noexcept;
     [[nodiscard]] bool isExecutingGuest() const noexcept;
 
     // Kernel object API. All calls except postEvent/requestStop execute on the

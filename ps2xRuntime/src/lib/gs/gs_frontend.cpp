@@ -2,6 +2,7 @@
 #include "runtime/gs/gs_backend.h"
 // GOW-Port: CPU de referencia por defecto; OpenGL/cola seleccionables.
 #include "runtime/gs/gs_threaded_backend.h"
+#include "runtime/gs/gs_null_backend.h"
 #include "runtime/gs/gs_shared_present.h"
 #include "ps2_log.h"
 #include "runtime/ps2_perf.h"
@@ -22,29 +23,6 @@
 namespace
 {
     static constexpr uint32_t kHostFrameWidth = 640u;
-
-    // GOW-Port: what setRasterBackend(nullptr) installs (host shutdown): it releases the renderer and its GL context
-    // and ignores the GS packets the EE may still send while the process exits. The GS memory image stays as it is.
-    class GSNullBackend final : public GSRasterBackend
-    {
-    public:
-        void Initialize(uint8_t *, uint32_t) override {}
-        void Reset() override {}
-        void Submit(const GSPrimitiveBatch &) override {}
-        void LoadClut(const GSTex0Reg &, const GSTexClutReg &) override {}
-        void BeginTransfer(const GSTransferCommand &) override {}
-        void UploadImage(const uint8_t *, uint32_t) override {}
-        void Flush() override {}
-        void TextureFlush() override {}
-        void Sync(GSSyncReason) override {}
-        PresentationFrame Present(const GSPresentationRequest &) override { return {}; }
-        bool ClearFramebuffer(const GSContext &, uint32_t) override { return false; }
-        uint32_t ConsumeLocalToHostBytes(uint8_t *, uint32_t) override { return 0u; }
-        uint32_t ReadVram(uint32_t, uint32_t, uint32_t, uint32_t, uint32_t) const override { return 0u; }
-        void WriteVram(uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t) override {}
-        void SnapshotVram(std::vector<uint8_t> &out) const override { out.clear(); }
-        GSTransferSnapshot GetTransferSnapshot() const override { return {}; }
-    };
 
     // GOW-Port: fog/haze colour diagnostics (Desert of Lost Souls purple haze).
     //   PS2X_GS_FOG_DIAG=<s>      FOGCOL writes ([gs:fogcol]) and, from <s> seconds after the first draw, six
