@@ -746,3 +746,22 @@ Details: docs/native-render-study.md "step 7 on the renderer side, part 3".
   - `mergeShuffleUnits` (gs_hw_backend.cpp): the cached 8x8 unit quads of a shuffle map are merged into rectangles
     (same half combination and source offset, touching in the destination: rows, then equal rows below each other),
     once per map shape. `GOW_GS_HW_SHUFFLE_MERGE=0`: off.
+- Result dips8 (A/B same session, port/switch/sweep/ab4_dips7 vs ab4_dips8, stay 60 s; the mean fps of a zone moves
+  with where the walk takes Kratos, so the VU1 thread's time per VU1 run is the A/B metric for these VU1-bound zones):
+  | zone | dips7 fps min/mean | dips8 fps min/mean | VU1 thread us per run dips7 -> dips8 |
+  |---|---|---|---|
+  | ATHN01D | 34.0 / 38.0 | 35.2 / 39.5 | 11.05 -> 10.13 (-8 %) |
+  | ATHN02A | 48.6 / 49.4 | 50.4 / 50.8 | 9.72 -> 9.18 (-6 %) |
+  | ATHN04C | 42.6 / 45.8 | 44.6 / 47.9 | 9.77 -> 9.22 (-6 %) |
+  | ATHN06C | 34.0 / 36.2 | 34.8 / 35.8 | 8.45 -> 8.26 (-2 %) |
+  | OLYMP02 | 37.2 / 52.8 | 38.8 / 47.9 | 10.43 -> 9.33 (-11 %; other scene: 352 k vs 433 k runs) |
+  | ATHN07B | 46.8 / 47.4 | 47.4 / 47.8 | 10.80 -> 10.34 (-4 %) |
+  GS thread stream_ms per 5 s (the shuffle merge): ATHN02A 539 -> 418, ATHN07B 352 -> 242, ATHN01D 437 -> 384.
+  SEMO01 30.0 pictures/s both; warp captures differ only in rain / ripples (animation), no block artifacts.
+- 36-byte vertex stream (`vaoCompact`, deko3d only, `GOW_GS_HW_COMPACT=0` off): triangles / lines / points never carry
+  the sprite clamp range, so they stream HwVertex without its last 16 bytes and read the range from a stride-0 binding
+  of a constant buffer. First version (update_dips9) wrote each 36-byte vertex straight into the CpuUncached stream
+  buffer: stream_ms per 5 s 384 -> 1172 (ATHN01D), 418 -> 1349 (ATHN02A), the GS thread got slower. Lesson: write
+  CpuUncached memory only in large aligned bulk copies. update_dips11 packs into a cached buffer, then one bulk copy
+  (A/B in one binary with `GOW_GS_HW_COMPACT=0`, port/switch/sweep/ab5_*). dips11 also prints `[gs-stage] full_waits=
+  full_ms=` every 5 s (GOW_PERF_DIAG): the worker waiting for room in the GS stage queue.

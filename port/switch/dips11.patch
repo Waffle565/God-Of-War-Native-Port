@@ -82,7 +82,7 @@
      // GOW-Port: the draw program's uniforms by id (locXxx = uniform uXxx). u1i/u4i/u1f/u2f record values; before each
      // draw, useDrawProgram picks the program variant for them and sends that program the values it does not have yet.
  #define GS_DRAW_UNIFORMS(X) X(InvSize) X(Tex) X(TexSize) X(TexDim) X(Tme) X(Fst) X(Tfx) X(Tcc) X(Iip) X(Ate) X(FailTint) X(Atst) \
-@@ -1102,6 +1109,31 @@
+@@ -1102,6 +1109,36 @@
          return static_cast<GLint>(at / step);
      }
  
@@ -102,9 +102,14 @@
 +            at = 0;
 +            ++stats.orphans;
 +        }
++        // packed in a cached buffer first, then one bulk copy: 36-byte stores straight into the uncached stream buffer
++        // made the stream 3x slower than the 52-byte bulk copy (console, update_dips9: stream_ms 384 -> 1172 per 5 s)
++        thread_local std::vector<uint8_t> packed;
++        packed.resize(static_cast<size_t>(length));
++        for (size_t i = 0; i < n; ++i)
++            std::memcpy(packed.data() + i * kCompactVertexBytes, &v[i], kCompactVertexBytes);
 +        if (uint8_t *dst = static_cast<uint8_t *>(g.MapBufferRange(kArrayBuffer, at, length, 0x0002u)))
-+            for (size_t i = 0; i < n; ++i)
-+                std::memcpy(dst + i * kCompactVertexBytes, &v[i], kCompactVertexBytes);
++            std::memcpy(dst, packed.data(), static_cast<size_t>(length));
 +        sb.used = at + length;
 +        stats.uploadBytes += static_cast<uint64_t>(length);
 +        cpuTiming.streamNanos += nanosSince(streamStart);
@@ -114,7 +119,7 @@
      GLuint compile(GLenum type, const char *src) { return compile(type, {src}); }
      GLuint compile(GLenum type, std::initializer_list<const char *> parts)
      {
-@@ -1180,6 +1212,36 @@
+@@ -1180,6 +1217,36 @@
              g.GenBuffers(1, &ibo);
              g.BindBuffer(kElementArrayBuffer, ibo); // vertex-array state: comes back with vao
          }
@@ -151,7 +156,7 @@
          buildTables();
          {
              const GLuint sv = compile(GSGL::kVertexShader, kShuffleVs), sfs = compile(GSGL::kFragmentShader, kShuffleFs);
-@@ -1426,7 +1488,7 @@
+@@ -1426,7 +1493,7 @@
          g.BindVertexArray(presentVao);
          g.DrawArrays(kTriangles, 0, 3);
          ++stats.glDraws;
@@ -160,7 +165,7 @@
          g.BindBuffer(kArrayBuffer, vbo);
          g.ColorMask(kTrue, kTrue, kTrue, kTrue);
          g.DeleteTextures(1, &t.depth);
-@@ -2168,7 +2230,7 @@
+@@ -2168,7 +2235,7 @@
          g.DrawArrays(kTriangles, 0, 3);
          g.PixelStorei(kPackAlignment, 4);
          g.ReadPixels(0, 0, static_cast<GLsizei>(count), 1, kRgba, kUnsignedByte, words);
@@ -169,7 +174,7 @@
          g.BindBuffer(kArrayBuffer, vbo);
          if (clutCache.size() > 4096u)
              clutCache.clear();
-@@ -2312,9 +2374,58 @@
+@@ -2312,9 +2379,58 @@
                  m.maxX = std::max(m.maxX, dx + 8u);
                  m.maxY = std::max(m.maxY, dy + 8u);
              }
@@ -228,7 +233,7 @@
      static uint32_t fbmsk16(uint32_t m)
      {
          return ((m >> 3) & 0x1Fu) | ((m >> 6) & 0x3E0u) | ((m >> 9) & 0x7C00u) | ((m >> 16) & 0x8000u);
-@@ -2487,7 +2598,7 @@
+@@ -2487,7 +2603,7 @@
              q.clear();
          }
          g.ColorMask(kTrue, kTrue, kTrue, kTrue);
@@ -237,7 +242,7 @@
          g.BindBuffer(kArrayBuffer, vbo);
          ++stats.batches;
      }
-@@ -3790,7 +3901,19 @@
+@@ -3790,7 +3906,19 @@
                  g.BlendFuncSeparate(toColor(sf), toColor(df), kSrc1Alpha, kOneMinusSrc1Alpha);
              dualSource = true;
          }
@@ -258,7 +263,7 @@
          g.BindBuffer(kArrayBuffer, vbo);
          thread_local std::vector<HwVertex> grouped;
          if (wrapGroupsBuilt)
-@@ -3809,7 +3932,8 @@
+@@ -3809,7 +3937,8 @@
          }
          const bool regrouped = wrapGroupsBuilt || (aplan.kind == AlphaPlan::Split && !indexed);
          const std::vector<HwVertex> &sverts = regrouped ? grouped : dverts;
