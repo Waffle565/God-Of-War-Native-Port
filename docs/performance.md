@@ -712,3 +712,7 @@ Details: docs/native-render-study.md "step 7 on the renderer side, part 3".
   vertex buffer), draw 10 %, unchangedSinceDecode 7 % (range hashes). ATHN01D is VU1-bound instead (GSWorker ~93 %
   busy, GS thread 32 % idle). port/switch/dips6.patch (full, from bugs1) = dips5 + vertex path: per-run vertex
   constants, reserved vectors, push_back instead of the range insert, prefetch of the kicks (in A/B).
+- dips6 regression found in the movies (sw-dips2): hashing each upload's blocks right when it completed was quadratic
+  (a movie picture arrives as ~40 strips whose transfer ranges all start at the picture's first row): upload time
+  222 -> 3760 ms per 5 s, SEMO01 30 -> 22.9 pictures/s. port/switch/dips7.patch = dips6 without that eager hash (block
+  hashes only on demand). dips5/dips6 are superseded.
