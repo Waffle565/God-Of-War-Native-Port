@@ -153,8 +153,21 @@ PresentationFrame GSMetalBackend::Impl::present(const GSPresentationRequest &req
         presentToLayer(presentTex, outW, outH);
         return frame;
     }
-    frame.pixels.resize(static_cast<size_t>(outW) * outH * 4u);
-    readback(presentTex, 0, 0, outW, outH, frame.pixels.data());
+    id<MTLTexture> shown = presentTex;
+    uint32_t dw = 0, dh = 0;
+    GSMetalLayer::DrawableSize(dw, dh);
+    if (gfx.capturePost && request.forceReadback && GSMetalLayer::Active() && dw != 0u && dh != 0u)
+    {
+        // GOW_GS_MTL_CAPTURE_POST=1: a capture shows the window's picture (the output chain at the drawable's 16:9 size)
+        double rx = 0.0, ry = 0.0, rw = 0.0, rh = 0.0;
+        fitRect(dw, dh, rx, ry, rw, rh);
+        frame.width = static_cast<uint32_t>(std::lround(rw));
+        frame.height = static_cast<uint32_t>(std::lround(rh));
+        shown = postTarget(3, frame.width, frame.height);
+        runPost(presentTex, outW, outH, shown, 0.0, 0.0, frame.width, frame.height);
+    }
+    frame.pixels.resize(static_cast<size_t>(frame.width) * frame.height * 4u);
+    readback(shown, 0, 0, frame.width, frame.height, frame.pixels.data());
     // the displayed image is opaque (the host draws it with blending)
     for (size_t i = 3; i < frame.pixels.size(); i += 4)
         frame.pixels[i] = 0xFFu;
@@ -196,46 +209,14 @@ void GSMetalBackend::Impl::presentToLayer(id<MTLTexture> src, uint32_t width, ui
         commit(false);
         return;
     }
-    endEncoder();
-    MTLRenderPassDescriptor *pass = [MTLRenderPassDescriptor renderPassDescriptor];
-    pass.colorAttachments[0].texture = drawable.texture;
-    pass.colorAttachments[0].loadAction = MTLLoadActionClear;
-    pass.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 1);
-    pass.colorAttachments[0].storeAction = MTLStoreActionStore;
-    id<MTLRenderCommandEncoder> e = [c renderCommandEncoderWithDescriptor:pass];
     if (src && width != 0u && height != 0u)
     {
-        // the PS2 picture is shown at 16:9 (the game renders widescreen, gow_overrides.cpp), centred, black bars
-        constexpr double kAspect = 16.0 / 9.0;
-        const double rw = std::min<double>(dw, dh * kAspect), rh = rw / kAspect;
-        const double rx = std::floor((dw - rw) * 0.5), ry = std::floor((dh - rh) * 0.5);
-        static const bool bilinearOnly = []
-        {
-            const char *v = std::getenv("GOW_SCALER");
-            return v && std::strcmp(v, "bilinear") == 0;
-        }();
-        static const float sharpen = []
-        {
-            const char *v = std::getenv("GOW_SHARPEN");
-            return v ? static_cast<float>(std::atof(v)) : 0.5f;
-        }();
-        ScaleUniforms u{};
-        u.originX = static_cast<float>(rx);
-        u.originY = static_cast<float>(ry);
-        u.sizeX = static_cast<float>(rw);
-        u.sizeY = static_cast<float>(rh);
-        u.srcW = static_cast<float>(width);
-        u.srcH = static_cast<float>(height);
-        u.sharpen = sharpen;
-        // the bicubic + sharpen pass only when the frame is magnified (as the raylib host scaler)
-        u.plain = (bilinearOnly || (width >= rw && height >= rh)) ? 1.0f : 0.0f;
-        [e setViewport:MTLViewport{rx, ry, rw, rh, 0.0, 1.0}];
-        [e setRenderPipelineState:pipelineFor(Pso::Scale, kMaskAll, false)];
-        [e setFragmentBytes:&u length:sizeof(u) atIndex:0];
-        [e setFragmentTexture:src atIndex:0];
-        [e drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+        double rx = 0.0, ry = 0.0, rw = 0.0, rh = 0.0;
+        fitRect(dw, dh, rx, ry, rw, rh);
+        runPost(src, width, height, drawable.texture, rx, ry, rw, rh);
     }
-    [e endEncoding];
+    else
+        clearPass(drawable.texture, nil, MTLClearColorMake(0, 0, 0, 1));
     // GOW_HOST_SHOT=<n>: the n-th window frame as it is presented -> host_shot.ppm (working directory)
     static const long shotAt = [] { const char *v = std::getenv("GOW_HOST_SHOT"); return v ? std::atol(v) : -1L; }();
     if (static_cast<long>(layerPresents++) == shotAt && !layer.framebufferOnly)

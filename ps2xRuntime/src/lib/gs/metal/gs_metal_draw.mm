@@ -420,6 +420,7 @@ void GSMetalBackend::Impl::draw(const GSDrawState &s, const std::vector<HwVertex
     uint32_t rpal[256];
     bool hasRpal = false;
     bool linear = false, clampU = true, clampV = true;
+    uint32_t anisotropy = 1u;
     if (s.prim.tme)
     {
         // a texture that lives in a render target of the same format is sampled straight from it
@@ -507,6 +508,11 @@ void GSMetalBackend::Impl::draw(const GSDrawState &s, const std::vector<HwVertex
         u.ta1 = static_cast<float>(s.texa.ta1);
         u.aem = s.texa.aem ? 1 : 0;
         linear = s.linearFilter && !indexed && !zsrc;
+        // GOW_GS_MTL_ANISO: perspective-mapped (STQ) triangles from an uploaded texture only; sprites, UI (UV), render-target
+        // sources, shuffles, palette indices and nearest filtering keep one bilinear / point tap
+        const bool triangles = s.prim.type == GS_PRIM_TRIANGLE || s.prim.type == GS_PRIM_TRISTRIP || s.prim.type == GS_PRIM_TRIFAN;
+        if (linear && tex && !s.prim.fst && triangles)
+            anisotropy = gfx.aniso;
         clampU = (c.clamp & 3u) != 0u;
         clampV = ((c.clamp >> 2) & 3u) != 0u;
         u.texDimX = static_cast<float>(std::max<uint16_t>(s.textureWidth, 1));
@@ -561,7 +567,7 @@ void GSMetalBackend::Impl::draw(const GSDrawState &s, const std::vector<HwVertex
     [enc setFragmentTexture:texture atIndex:0];
     [enc setFragmentTexture:ztexture atIndex:1];
     [enc setFragmentTexture:rtColor atIndex:2];
-    [enc setFragmentSamplerState:samplerFor(linear, clampU, clampV) atIndex:0];
+    [enc setFragmentSamplerState:samplerFor(linear, clampU, clampV, anisotropy) atIndex:0];
     [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:dverts.size()];
     static const bool noFailPass = std::getenv("GOW_GS_HW_NOFAIL") != nullptr;
     if (ate && afail != 0u && !noFailPass)

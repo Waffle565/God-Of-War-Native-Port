@@ -374,8 +374,8 @@ fragment float4 fs_present(FullOut in [[stage_in]], constant PresentUniforms &u 
 }
 
 // window output (CAMetalLayer): the composed frame scaled into its 16:9 rectangle (the viewport) with the host's
-// scaler (gs_host_present.cpp kScalerFragment): 5-tap Catmull-Rom bicubic + contrast-adaptive sharpen when magnified,
-// one bilinear tap otherwise
+// scaler (gs_host_present.cpp kScalerFragment): 5-tap Catmull-Rom bicubic + contrast-adaptive sharpen when magnified
+// (sharpen < 0: bicubic only), one bilinear tap otherwise. The output chain is in gs_metal_post.mm.
 struct ScaleUniforms { float2 origin, size, srcSize; float sharpen, plain; };
 constexpr sampler kLinear(coord::normalized, filter::linear, address::clamp_to_edge);
 
@@ -404,6 +404,8 @@ fragment float4 fs_scale(FullOut in [[stage_in]], constant ScaleUniforms &u [[bu
              + src.sample(kLinear, float2(tc12.x, tc3.y)) * (w12.x * w3.y);
     float norm = (w12.x * w0.y) + (w0.x * w12.y) + (w12.x * w12.y) + (w3.x * w12.y) + (w12.x * w3.y);
     c /= norm;
+    if (u.sharpen < 0.0)
+        return float4(clamp(c.rgb, 0.0, 1.0), 1.0); // the sharpen runs later in the chain (fs_cas) or is off
     float2 px = 1.0 / u.srcSize;
     float3 n = src.sample(kLinear, uvIn + float2(0.0, -px.y)).rgb, s = src.sample(kLinear, uvIn + float2(0.0, px.y)).rgb;
     float3 e = src.sample(kLinear, uvIn + float2(px.x, 0.0)).rgb, w = src.sample(kLinear, uvIn + float2(-px.x, 0.0)).rgb;
@@ -413,6 +415,99 @@ fragment float4 fs_scale(FullOut in [[stage_in]], constant ScaleUniforms &u [[bu
     float3 wgt = sqrt(amp) * peak;
     float3 sharp = (c.rgb + (n + s + e + w) * wgt) / (1.0 + 4.0 * wgt);
     return float4(clamp(sharp, 0.0, 1.0), 1.0);
+}
+
+static float fxLuma(float3 c) { return dot(c, float3(0.299, 0.587, 0.114)); }
+
+// GOW_GS_MTL_AA=fxaa: FXAA 3.11 (Lottes; the quality-preset walk as in Simon Rodriguez's write-up) on the composed frame at
+// render resolution, before scaling; subpixel blend 0.5 (HUD text stays readable)
+fragment float4 fs_fxaa(FullOut in [[stage_in]], constant ScaleUniforms &u [[buffer(0)]], texture2d<float> src [[texture(0)]])
+{
+    const float kQuality[12] = {1.0, 1.0, 1.0, 1.0, 1.0, 1.5, 2.0, 2.0, 2.0, 2.0, 4.0, 8.0};
+    float2 px = 1.0 / u.srcSize;
+    float2 uv = (in.pos.xy - u.origin) / u.size;
+    float3 rgbM = src.sample(kLinear, uv).rgb;
+    float lM = fxLuma(rgbM);
+    float lN = fxLuma(src.sample(kLinear, uv + float2(0.0, -px.y)).rgb), lS = fxLuma(src.sample(kLinear, uv + float2(0.0, px.y)).rgb);
+    float lW = fxLuma(src.sample(kLinear, uv + float2(-px.x, 0.0)).rgb), lE = fxLuma(src.sample(kLinear, uv + float2(px.x, 0.0)).rgb);
+    float lMin = min(lM, min(min(lN, lS), min(lW, lE))), lMax = max(lM, max(max(lN, lS), max(lW, lE)));
+    float range = lMax - lMin;
+    if (range < max(0.0312, lMax * 0.125))
+        return float4(rgbM, 1.0);
+    float lNW = fxLuma(src.sample(kLinear, uv + float2(-px.x, -px.y)).rgb), lNE = fxLuma(src.sample(kLinear, uv + float2(px.x, -px.y)).rgb);
+    float lSW = fxLuma(src.sample(kLinear, uv + float2(-px.x, px.y)).rgb), lSE = fxLuma(src.sample(kLinear, uv + float2(px.x, px.y)).rgb);
+    float lNS = lN + lS, lWE = lW + lE;
+    float lWC = lNW + lSW, lEC = lNE + lSE, lNC = lNW + lNE, lSC = lSW + lSE;
+    float edgeH = abs(-2.0 * lW + lWC) + abs(-2.0 * lM + lNS) * 2.0 + abs(-2.0 * lE + lEC);
+    float edgeV = abs(-2.0 * lN + lNC) + abs(-2.0 * lM + lWE) * 2.0 + abs(-2.0 * lS + lSC);
+    bool horz = edgeH >= edgeV;
+    float l1 = horz ? lN : lW, l2 = horz ? lS : lE;
+    float g1 = l1 - lM, g2 = l2 - lM;
+    bool steep1 = abs(g1) >= abs(g2);
+    float gScaled = 0.25 * max(abs(g1), abs(g2));
+    float step = horz ? px.y : px.x;
+    float lLocal;
+    if (steep1)
+    {
+        step = -step;
+        lLocal = 0.5 * (l1 + lM);
+    }
+    else
+        lLocal = 0.5 * (l2 + lM);
+    float2 cur = uv;
+    if (horz)
+        cur.y += step * 0.5;
+    else
+        cur.x += step * 0.5;
+    float2 off = horz ? float2(px.x, 0.0) : float2(0.0, px.y);
+    float2 uv1 = cur - off, uv2 = cur + off;
+    float e1 = fxLuma(src.sample(kLinear, uv1).rgb) - lLocal, e2 = fxLuma(src.sample(kLinear, uv2).rgb) - lLocal;
+    bool r1 = abs(e1) >= gScaled, r2 = abs(e2) >= gScaled;
+    if (!r1) uv1 -= off;
+    if (!r2) uv2 += off;
+    for (int i = 2; i < 12 && !(r1 && r2); ++i)
+    {
+        if (!r1) e1 = fxLuma(src.sample(kLinear, uv1).rgb) - lLocal;
+        if (!r2) e2 = fxLuma(src.sample(kLinear, uv2).rgb) - lLocal;
+        r1 = abs(e1) >= gScaled;
+        r2 = abs(e2) >= gScaled;
+        if (!r1) uv1 -= off * kQuality[i];
+        if (!r2) uv2 += off * kQuality[i];
+    }
+    float d1 = horz ? (uv.x - uv1.x) : (uv.y - uv1.y), d2 = horz ? (uv2.x - uv.x) : (uv2.y - uv.y);
+    bool dir1 = d1 < d2;
+    float pixelOffset = -min(d1, d2) / (d1 + d2) + 0.5;
+    bool centreSmaller = lM < lLocal;
+    float finalOffset = (((dir1 ? e1 : e2) < 0.0) != centreSmaller) ? pixelOffset : 0.0;
+    float lAvg = (1.0 / 12.0) * (2.0 * (lNS + lWE) + lWC + lEC);
+    float sub1 = clamp(abs(lAvg - lM) / range, 0.0, 1.0);
+    float sub2 = (-2.0 * sub1 + 3.0) * sub1 * sub1;
+    finalOffset = max(finalOffset, sub2 * sub2 * 0.5);
+    float2 fuv = uv;
+    if (horz)
+        fuv.y += finalOffset * step;
+    else
+        fuv.x += finalOffset * step;
+    return float4(src.sample(kLinear, fuv).rgb, 1.0);
+}
+
+// GOW_SHARPEN (when not folded into fs_scale): AMD FidelityFX CAS, no-scaling path, on a frame at output size; u.sharpen is
+// CAS's sharpness 0..1
+fragment float4 fs_cas(FullOut in [[stage_in]], constant ScaleUniforms &u [[buffer(0)]], texture2d<float> src [[texture(0)]])
+{
+    float2 px = 1.0 / u.srcSize;
+    float2 uv = (in.pos.xy - u.origin) / u.size;
+    float3 a = src.sample(kLinear, uv + float2(-px.x, -px.y)).rgb, b = src.sample(kLinear, uv + float2(0.0, -px.y)).rgb;
+    float3 c = src.sample(kLinear, uv + float2(px.x, -px.y)).rgb, d = src.sample(kLinear, uv + float2(-px.x, 0.0)).rgb;
+    float3 e = src.sample(kLinear, uv).rgb, f = src.sample(kLinear, uv + float2(px.x, 0.0)).rgb;
+    float3 g = src.sample(kLinear, uv + float2(-px.x, px.y)).rgb, h = src.sample(kLinear, uv + float2(0.0, px.y)).rgb;
+    float3 i = src.sample(kLinear, uv + float2(px.x, px.y)).rgb;
+    float3 mn = min(min(min(d, e), min(f, b)), h), mx = max(max(max(d, e), max(f, b)), h);
+    mn += min(mn, min(min(a, c), min(g, i)));
+    mx += max(mx, max(max(a, c), max(g, i)));
+    float3 amp = sqrt(clamp(min(mn, 2.0 - mx) / max(mx, float3(0.0001)), 0.0, 1.0));
+    float3 w = amp * (-1.0 / mix(8.0, 5.0, u.sharpen));
+    return float4(clamp(((b + d + f + h) * w + e) / (1.0 + 4.0 * w), 0.0, 1.0), 1.0);
 }
 
 fragment float4 fs_color(FullOut in [[stage_in]], constant float4 &color [[buffer(0)]])

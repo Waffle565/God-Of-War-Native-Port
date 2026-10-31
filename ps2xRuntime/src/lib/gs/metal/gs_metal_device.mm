@@ -79,6 +79,7 @@ bool GSMetalBackend::Impl::ensure()
     if (const char *s = std::getenv("PS2X_GS_HW_SCALE"))
         scale = std::max(1.0f, static_cast<float>(std::atof(s)));
     std::fprintf(stderr, "[gs-hw] render-target renderer ready, scale %.2f (Metal: %s)\n", scale, device.name.UTF8String);
+    readGfxOptions();
     initialized = true;
     return true;
 }
@@ -227,8 +228,7 @@ id<MTLRenderPipelineState> GSMetalBackend::Impl::pipelineFor(Pso kind, uint8_t w
     if (const auto it = pipelines.find(key); it != pipelines.end())
         return it->second;
     static const char *const names[][2] = {{"vs_main", "fs_main"}, {"vs_main", "fs_fetch"}, {"vs_shuffle", "fs_shuffle"},
-                                           {"vs_full", "fs_present"}, {"vs_full", "fs_color"}, {"vs_full", "fs_clut"},
-                                           {"vs_full", "fs_scale"}};
+                                           {"vs_full", "fs_present"}, {"vs_full", "fs_color"}, {"vs_full", "fs_clut"}};
     const auto *pair = names[static_cast<int>(kind)];
     std::shared_ptr<SpecSlot> slot;
     if (texPath >= 0)
@@ -251,7 +251,7 @@ id<MTLRenderPipelineState> GSMetalBackend::Impl::pipelineFor(Pso kind, uint8_t w
     MTLRenderPipelineDescriptor *d = [MTLRenderPipelineDescriptor new];
     d.vertexFunction = [library newFunctionWithName:[NSString stringWithUTF8String:pair[0]]];
     MTLRenderPipelineColorAttachmentDescriptor *c = d.colorAttachments[0];
-    c.pixelFormat = kind == Pso::Scale ? MTLPixelFormatBGRA8Unorm : MTLPixelFormatRGBA8Unorm; // Scale: the window layer
+    c.pixelFormat = MTLPixelFormatRGBA8Unorm;
     c.writeMask = ((writeMask & kMaskR) ? MTLColorWriteMaskRed : 0) | ((writeMask & kMaskG) ? MTLColorWriteMaskGreen : 0) |
                   ((writeMask & kMaskB) ? MTLColorWriteMaskBlue : 0) | ((writeMask & kMaskA) ? MTLColorWriteMaskAlpha : 0);
     c.blendingEnabled = b.enabled ? YES : NO;
@@ -312,15 +312,17 @@ id<MTLDepthStencilState> GSMetalBackend::Impl::depthState(Compare compare, bool 
     return state;
 }
 
-id<MTLSamplerState> GSMetalBackend::Impl::samplerFor(bool linear, bool clampU, bool clampV)
+id<MTLSamplerState> GSMetalBackend::Impl::samplerFor(bool linear, bool clampU, bool clampV, uint32_t anisotropy)
 {
-    const uint32_t key = (linear ? 1u : 0u) | (clampU ? 2u : 0u) | (clampV ? 4u : 0u);
+    anisotropy = linear ? std::clamp<uint32_t>(anisotropy, 1u, 16u) : 1u;
+    const uint32_t key = (linear ? 1u : 0u) | (clampU ? 2u : 0u) | (clampV ? 4u : 0u) | (anisotropy << 3);
     if (const auto it = samplers.find(key); it != samplers.end())
         return it->second;
     MTLSamplerDescriptor *d = [MTLSamplerDescriptor new];
     d.minFilter = d.magFilter = linear ? MTLSamplerMinMagFilterLinear : MTLSamplerMinMagFilterNearest;
     d.sAddressMode = clampU ? MTLSamplerAddressModeClampToEdge : MTLSamplerAddressModeRepeat;
     d.tAddressMode = clampV ? MTLSamplerAddressModeClampToEdge : MTLSamplerAddressModeRepeat;
+    d.maxAnisotropy = anisotropy;
     id<MTLSamplerState> state = [device newSamplerStateWithDescriptor:d];
     samplers[key] = state;
     return state;

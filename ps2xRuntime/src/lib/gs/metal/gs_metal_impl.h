@@ -9,6 +9,7 @@
 #endif
 
 #import <Metal/Metal.h>
+#import <MetalFX/MetalFX.h>
 
 #include "runtime/gs/gs_metal_backend.h"
 #include "runtime/gs/gs_swizzle.h"
@@ -113,7 +114,7 @@ namespace gsmtl
     };
 
     // pipeline kinds (vertex + fragment function pairs)
-    enum class Pso : uint8_t { Main, Fetch, Shuffle, Present, Color, Clut, Scale };
+    enum class Pso : uint8_t { Main, Fetch, Shuffle, Present, Color, Clut }; // window output: postPipeline
     // blend factors (0-5 are also the codes fs_fetch understands)
     enum Factor : uint8_t { kZero = 0, kOne, kSrc1Alpha, kOneMinusSrc1Alpha, kConstant, kOneMinusConstant, kSrcAlpha, kOneMinusSrcAlpha };
     // depth compare functions
@@ -230,7 +231,8 @@ struct GSMetalBackend::Impl
     std::unordered_map<uint64_t, std::shared_ptr<SpecSlot>> specPending;
     bool specialize = [] { const char *v = std::getenv("GOW_GS_MTL_SPECIALIZE"); return !(v && *v == '0'); }();
     id<MTLDepthStencilState> depthState(gsmtl::Compare compare, bool write);
-    id<MTLSamplerState> samplerFor(bool linear, bool clampU, bool clampV);
+    // anisotropy > 1: GOW_GS_MTL_ANISO, linear 3D textures only (draw)
+    id<MTLSamplerState> samplerFor(bool linear, bool clampU, bool clampV, uint32_t anisotropy = 1u);
     void setPso(id<MTLRenderPipelineState> pso);
     void setDss(id<MTLDepthStencilState> dss);
     // copies `bytes` into the vertex arena; returns the buffer and the offset
@@ -349,4 +351,29 @@ struct GSMetalBackend::Impl
     // without waiting
     void presentToLayer(id<MTLTexture> frame, uint32_t width, uint32_t height);
     bool clearFramebuffer(const GSContext &context, uint32_t rgba);
+
+    // ---- graphics options and the output chain (gs_metal_post.mm) ------------------------------------------------------
+    // read once (ensure): GOW_GS_MTL_ANISO=0|2|4|8|16, GOW_GS_MTL_METALFX=off|spatial, GOW_GS_MTL_AA=off|fxaa, the window
+    // scaler's GOW_SCALER=bilinear and its one sharpen knob GOW_SHARPEN=off|0..1 (CAS sharpness, default 0.5),
+    // GOW_GS_MTL_CAPTURE_POST=1 (captures go through the window chain)
+    struct GfxOptions
+    {
+        uint32_t aniso = 1u;
+        bool metalfx = false, fxaa = false, bilinearOnly = false, capturePost = false;
+        float sharpen = 0.5f; // < 0: off
+        bool post() const { return metalfx || fxaa; }
+    } gfx;
+    void readGfxOptions();
+    // the 16:9 picture rectangle inside a dw x dh output, centred (black bars)
+    static void fitRect(uint32_t dw, uint32_t dh, double &rx, double &ry, double &rw, double &rh);
+    // the composed frame (srcW x srcH) through FXAA, MetalFX or the window scaler and CAS into `dst` (cleared to black) at
+    // the rectangle (rx, ry, rw, rh)
+    void runPost(id<MTLTexture> src, uint32_t srcW, uint32_t srcH, id<MTLTexture> dst, double rx, double ry, double rw, double rh);
+    id<MTLRenderPipelineState> postPipeline(int stage, MTLPixelFormat format);
+    id<MTLTexture> postTarget(int slot, uint32_t width, uint32_t height);
+    bool spatialScale(id<MTLTexture> src, uint32_t srcW, uint32_t srcH, uint32_t outW, uint32_t outH);
+    std::unordered_map<uint32_t, id<MTLRenderPipelineState>> postPipelines;
+    id<MTLTexture> postTex[4] = {nil, nil, nil, nil}; // 0 MetalFX output, 1-2 intermediate passes, 3 RAM-path output
+    id<MTLFXSpatialScaler> spatialScaler = nil;
+    bool spatialFailed = false;
 };
