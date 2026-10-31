@@ -36,7 +36,14 @@ enum Paths {
 struct Settings {
     var width = 1920, height = 1080
     var fullscreen = false
-    var scale = 2 // PS2X_GS_HW_SCALE, 1-4
+    var scale = 3 // PS2X_GS_HW_SCALE, 1-4 (3: 60 fps with headroom on an M4, docs/macos.md)
+    // graphics options (docs/macos.md "Graphics options"); defaults are the ones measured on an M4 at 1080p
+    var fxaa = true          // GOW_GS_MTL_AA=fxaa|off
+    var aniso = 16           // GOW_GS_MTL_ANISO=0|2|4|8|16
+    var metalFX = false      // GOW_GS_MTL_METALFX=spatial|off (for Retina/4K output)
+    var sharpen = 0.5        // GOW_SHARPEN=0..1, < 0 = off
+    var wideView = false     // GOW_PANORAMICO=ampliado (wider field of view in gameplay)
+    static let anisoLevels = [0, 2, 4, 8, 16]
     var discFolder = ""
     var importOffered = false
     var text = "en", voice = "en" // overlay lang/<text>_<voice>.layout made by tools/lang_pack.py (docs/settings.md)
@@ -58,6 +65,11 @@ struct Settings {
         if let v = values["Video.Height"].flatMap(Int.init), v >= 240 { s.height = v }
         if let v = values["Video.Fullscreen"] { s.fullscreen = v == "1" }
         if let v = values["Video.Scale"].flatMap(Int.init) { s.scale = min(4, max(1, v)) }
+        if let v = values["Graphics.FXAA"] { s.fxaa = v == "1" }
+        if let v = values["Graphics.Aniso"].flatMap(Int.init), anisoLevels.contains(v) { s.aniso = v }
+        if let v = values["Graphics.MetalFX"] { s.metalFX = v == "1" }
+        if let v = values["Graphics.Sharpen"].flatMap(Double.init) { s.sharpen = min(1, max(-1, v)) }
+        if let v = values["Graphics.WideView"] { s.wideView = v == "1" }
         if let v = values["Game.DiscFolder"] { s.discFolder = v }
         if let v = values["Game.ImportOffered"] { s.importOffered = v == "1" }
         let codes = Set(languages.map { $0.0 })
@@ -78,6 +90,12 @@ struct Settings {
         Height=\(height)
         Fullscreen=\(fullscreen ? 1 : 0)
         Scale=\(scale)
+        [Graphics]
+        FXAA=\(fxaa ? 1 : 0)
+        Aniso=\(aniso)
+        MetalFX=\(metalFX ? 1 : 0)
+        Sharpen=\(sharpen)
+        WideView=\(wideView ? 1 : 0)
         [Game]
         DiscFolder=\(discFolder)
         ImportOffered=\(importOffered ? 1 : 0)

@@ -281,6 +281,12 @@ namespace
     void gowPad2ReadState(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime);
 
     constexpr uint32_t kGowApertureFactor = 0x3F100000u; // 0.5625f = 9/16, see gowPad2ReadState
+    // GOW_PANORAMICO=ampliado (KIexster's override, read once): 0.75f in gameplay, a wider view (x4/3 aperture, nothing
+    // cropped vertically). Menus keep 9/16: their 3D backdrops are framed for it (the difficulty menu shows the set's edge).
+    const bool kGowWideView = [] {
+        const char *v = std::getenv("GOW_PANORAMICO");
+        return v && std::strcmp(v, "ampliado") == 0;
+    }();
 
     void gowPad2Read(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
@@ -306,7 +312,8 @@ namespace
         // (0x169238) multiply its aperture by factor x aspect, with the factor read from 0x000FFFF0 (free RAM below the
         // ELF). 9/16 x the 16:9 aspect above = 1, the game's own projection. Without it the factor is 0, m00/m11 become
         // +-FLT_MAX and the VU1 clip test rejects (ADC) nearly every vertex.
-        std::memcpy(rdram + 0x000FFFF0u, &kGowApertureFactor, sizeof(kGowApertureFactor));
+        const uint32_t aperture = (kGowWideView && readGuest32(rdram, 0x29E560u) == 11u) ? 0x3F400000u : kGowApertureFactor;
+        std::memcpy(rdram + 0x000FFFF0u, &aperture, sizeof(aperture));
         auto *buffer = padBuffer(rdram, GPR_U32(ctx, 5), 18);
         const auto *socket = padSocket(ctx);
         uint8_t state[32]{};

@@ -1,6 +1,7 @@
 // The launcher window: disc folder, resolution, fullscreen, internal resolution, controls, Play/Quit.
 // Text and voice language come from the disc folder's lang/ overlays (tools/lang_pack.py with the European disc).
-// 120 Hz (S7) and graphics options (S8) are shown greyed out until they exist.
+// Graphics: anti-aliasing, anisotropic filtering, MetalFX, sharpening, wider view (docs/macos.md). 120 Hz (S7) is
+// shown greyed out until it exists.
 import AppKit
 
 final class LauncherWindowController: NSWindowController {
@@ -13,6 +14,11 @@ final class LauncherWindowController: NSWindowController {
     private let textLanguage = NSPopUpButton()
     private let voiceLanguage = NSPopUpButton()
     private let languageNote = NSTextField(labelWithString: "")
+    private let fxaa = NSButton(checkboxWithTitle: "Anti-aliasing (FXAA)", target: nil, action: nil)
+    private let aniso = NSPopUpButton()
+    private let metalFX = NSButton(checkboxWithTitle: "MetalFX upscaling (Retina/4K)", target: nil, action: nil)
+    private let sharpen = NSSlider(value: 0.5, minValue: 0, maxValue: 1, target: nil, action: nil)
+    private let wideView = NSButton(checkboxWithTitle: "Wider field of view", target: nil, action: nil)
     private let discPath = NSTextField(labelWithString: "")
     private let playButton = NSButton(title: "Play", target: nil, action: nil)
 
@@ -29,7 +35,7 @@ final class LauncherWindowController: NSWindowController {
     init(settings: Settings, onPlay: @escaping () -> Void) {
         self.settings = settings
         self.onPlay = onPlay
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 520, height: 580),
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 540, height: 740),
                               styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
         window.title = "God of War"
         super.init(window: window)
@@ -79,8 +85,19 @@ final class LauncherWindowController: NSWindowController {
         updateLanguageState()
         let hz = NSButton(checkboxWithTitle: "120 Hz frame rate", target: nil, action: nil)
         hz.isEnabled = false
-        let graphics = NSButton(title: "Graphics options…", target: nil, action: nil)
-        graphics.isEnabled = false
+        fxaa.state = settings.fxaa ? .on : .off
+        aniso.addItems(withTitles: Settings.anisoLevels.map { $0 == 0 ? "Off" : "\($0)×" })
+        aniso.selectItem(at: Settings.anisoLevels.firstIndex(of: settings.aniso) ?? 0)
+        metalFX.state = settings.metalFX ? .on : .off
+        sharpen.doubleValue = max(0, settings.sharpen)
+        wideView.state = settings.wideView ? .on : .off
+        for control in [fxaa, aniso, metalFX, sharpen, wideView] as [NSControl] {
+            control.target = self
+            control.action = #selector(changed)
+        }
+        sharpen.widthAnchor.constraint(equalToConstant: 140).isActive = true
+        let anisoRow = NSStackView(views: [label("Texture filtering"), aniso])
+        let sharpenRow = NSStackView(views: [label("Sharpen"), sharpen])
 
         let grid = NSGridView(views: [
             [label("Disc folder:"), discRow],
@@ -90,7 +107,11 @@ final class LauncherWindowController: NSWindowController {
             [label("Language:"), languageRow],
             [NSGridCell.emptyContentView, languageNote],
             [label("Frame rate:"), soon(hz)],
-            [label("Graphics:"), soon(graphics)],
+            [label("Graphics:"), fxaa],
+            [NSGridCell.emptyContentView, anisoRow],
+            [NSGridCell.emptyContentView, sharpenRow],
+            [NSGridCell.emptyContentView, metalFX],
+            [NSGridCell.emptyContentView, wideView],
         ])
         grid.rowSpacing = 10
         grid.columnSpacing = 10
@@ -171,6 +192,11 @@ final class LauncherWindowController: NSWindowController {
         settings.scale = scale.indexOfSelectedItem + 1
         settings.text = Settings.languages[max(0, textLanguage.indexOfSelectedItem)].0
         settings.voice = Settings.languages[max(0, voiceLanguage.indexOfSelectedItem)].0
+        settings.fxaa = fxaa.state == .on
+        settings.aniso = Settings.anisoLevels[max(0, aniso.indexOfSelectedItem)]
+        settings.metalFX = metalFX.state == .on
+        settings.sharpen = sharpen.doubleValue
+        settings.wideView = wideView.state == .on
         settings.save()
     }
 
