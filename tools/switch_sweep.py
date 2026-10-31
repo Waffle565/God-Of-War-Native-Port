@@ -470,7 +470,7 @@ def main():
         return
     outdir = args.resume or os.path.join(args.out, datetime.datetime.now().strftime('%Y%m%d_%H%M'))
     os.makedirs(outdir, exist_ok=True)
-    EXTRA_ENV[:] = [e for e in args.env.split(',') if e]
+    EXTRA_ENV[:] = [e for e in re.split(r',(?=[A-Za-z0-9_]+=)', args.env) if e]  # a value may hold commas
     if args.package:
         for _ in range(3):  # FTP can be briefly unreachable right after a previous run closed the game
             rc, out = sh(f'TRANSFER=ftp sw_transfer && sw_push_update port/switch/nsp/out/{args.package}', timeout=600)
