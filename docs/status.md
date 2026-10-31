@@ -1120,3 +1120,11 @@ Run: `python -I tools/zones.py --slots 1,2,3,4` (scale: `PS2X_GS_HW_SCALE`); sav
   update_dips15 + FAILGT** (exefs md5 56b7fe4e; tree /root/src-mlang = dips13 tree + dips15, ELF /root/elf_dips15.elf,
   dips13-state originals of the touched files /root/dips14-orig). Tried and dropped: VU1 programs on their own thread
   with VIF on core 3 (`PS2X_VU1_ASYNC=1`, ATHN01D 32 -> 19 fps).
+
+- 2026-10-31 (sw-dips5): **update_dips16** = update_dips15 sources + port/switch/dips16.patch (exact: the particle
+  program npart on a private register file kept in NEON registers, docs/performance.md "Switch VU1 thread, sw-dips5").
+  Particle program per run 21-33 % faster (ATHN01D 57 -> 45 us); VU1 thread per VU1 run ATHN01D -10.6 %, ATHN04C /
+  ATHN06C / OLYMP02 -1.5 to -2.4 %; ATHN01D mean fps 39.7 -> 41.3 (report), others equal; x86 / a64 natcheck identical
+  on all 40 recordings; SEMO01 30.0 pictures/s; screenshots correct; title boots clean. **Console default =
+  update_dips16 + FAILGT** (exefs md5 0b1119b1; tree /root/src-mlang = dips15 tree + dips16, ELF /root/elf_dips16.elf,
+  dips15-state original of the touched file /root/dips15-orig).

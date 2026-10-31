@@ -1,0 +1,8 @@
+[sweep] package update_dips16
+[sweep] 21:10:40 movies_SEMO01
+[sweep] movies_SEMO01 PASS  
+[sweep] 21:14:47 OLYMP02
+[sweep] OLYMP02 PASS  
+[sweep] default restored
+[sweep] exefs md5 56b7fe4e = default
+[sweep] report port/switch/sweep/ab7b_dips16\20261031_2110\report.md

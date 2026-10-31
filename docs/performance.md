@@ -855,3 +855,23 @@ Details: docs/native-render-study.md "step 7 on the renderer side, part 3".
   need `GOW_VU1NAT_ORACLE_CYCLES=0x10000000`, nca.sh sets it). (2) kind8 / kind9 (35 us per run) and kind10 (21 us):
   nmisc entries through runLit + nmisc::loop. (3) the VIF command loop's misses on the chain data (EE core -> worker
   core), (4) core 1 (EE + IOP ~4.2 s per 5 s in ATHN06C).
+
+## Switch VU1 thread, sw-dips5: the particle program register-resident (2026-10-31, update_dips16)
+- dips16 (port/switch/dips16.patch, ps2_vu1_nat_part.inl only): `npart::Run` keeps a private register file (`rf[32]`,
+  `racc`, `rvi[16]`, I / Q / P / CLIP as members), read from VU1State once at the run's start (`load`) and written back
+  once at its end (`store`, also on a decline). Every member function is `VU1N_INLINE`, register loops are unrolled
+  (index_sequence), the quad corner lambda became a member (its out-of-line operator() let the register file escape):
+  the whole program is one function (`npart::run`, 54 KB a64) and GCC's SRA keeps the registers in NEON registers
+  (the remaining memory traffic is literal-pool constants and stack spills). Same operations in the same order:
+  natcheck identical to dips14 (d4c) on all 40 recordings, x86 plain + forced decline and a64 (harness d5d / d5da;
+  note: nca.sh treats a harness name ending in `a` as a64, so x86 harness names must not end in `a`).
+- A/B (port/switch/sweep/ab6_dips15 vs ab7_dips16, `tools/switch_ab.py`, warp windows, stay 60 s):
+  | zone | part us / run dips15 -> 16 | VU1 thread us / run | mean fps (ab) | report fps min / mean |
+  |---|---|---|---|---|
+  | ATHN01D | 57.1 -> 44.8 | 11.42 -> 10.21 | 33.8 -> 38.2 | 36.4 / 39.7 -> 37.0 / 41.3 |
+  | ATHN04C | 52.9 -> 41.0 | 9.94 -> 9.79 | 43.4 -> 43.3 | 44.8 / 48.6 -> 45.6 / 48.7 |
+  | ATHN06C | 44.4 -> 34.6 | 9.10 -> 8.88 | 39.1 -> 39.1 | 35.6 / 51.9 -> 35.6 / 51.9 |
+  | OLYMP02 | 53.8 -> 36.3 | 9.94 -> 9.74 | 46.3 -> 36.8 | 40.0 / 52.1 -> 41.4 / 42.3 |
+  The particle program is 21-33 % faster per run in every zone. OLYMP02's fps varies run to run (dips13: 37.5 and
+  51.2 in two runs): the rerun (port/switch/sweep/ab7b_dips16) gave 44.4 mean (ab), report 39.6 / 53.9, VU1 9.77 us / run.
+  SEMO01 30.0 pictures/s. **Installed 2026-10-31: update_dips16 + FAILGT** (exefs md5 0b1119b1).

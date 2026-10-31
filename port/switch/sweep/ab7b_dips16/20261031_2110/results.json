@@ -1,0 +1,49 @@
+[
+ {
+  "name": "movies_SEMO01",
+  "kind": "movies",
+  "fail": [],
+  "slow": [],
+  "warn": [],
+  "shots": [
+   "movies_SEMO01\\shots\\s005_75.jpg",
+   "movies_SEMO01\\shots\\s009_135.jpg"
+  ],
+  "run_s": 180,
+  "movies": [
+   {
+    "movie": "SEMO01",
+    "fail": [],
+    "slow": [],
+    "pictures": 1410,
+    "pps": 30.0,
+    "dub": true
+   }
+  ]
+ },
+ {
+  "name": "OLYMP02",
+  "kind": "level",
+  "fail": [],
+  "slow": [],
+  "warn": [],
+  "shots": [
+   "OLYMP02\\gow_warp_1_OLYMP02_0.png",
+   "OLYMP02\\shots\\s004_60.jpg",
+   "OLYMP02\\shots\\s007_105.jpg",
+   "OLYMP02\\shots\\s010_150.jpg"
+  ],
+  "run_s": 165,
+  "load_s": 0.7,
+  "fps": [
+   39.6,
+   53.9
+  ],
+  "speed": 0.993,
+  "zones_seen": [
+   "Athn01A",
+   "olymp01",
+   "olymp02"
+  ]
+ }
+]

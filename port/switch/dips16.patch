@@ -1,0 +1,462 @@
+--- a/ps2xRuntime/src/lib/vu/ps2_vu1_nat_part.inl
++++ b/ps2xRuntime/src/lib/vu/ps2_vu1_nat_part.inl
+@@ -118,27 +118,79 @@
+         uint32_t mac = 0;
+         nrun::Undo &u = nrun::undo(); // one TLS lookup per run
+ 
+-        // registers
+-        __m128 R(int r) const { return v.V(r); } // operand view (Inf/NaN as +-FLT_MAX; denormals flushed by DAZ in arithmetic)
+-        __m128 Raw(int r) const { return r ? vu1n::ldr(s.vf[r]) : nrun::vf0(); }
+-        __m128 Iv() const { return _mm_set1_ps(s.i); }
+-        __m128 Qv() const { return _mm_set1_ps(s.q); }
++        // registers (sw-dips5): a private copy of the register file, read from VU1State at the run's start and written back
++        // at its end (load / store). Every member function is forced inline into run(), all register numbers are constants
++        // there, so GCC's SRA keeps the registers in NEON / general registers instead of VU1State memory (the old W<M>
++        // stored each result and the next R() reloaded it: store-to-load forwarding on the hot path).
++        __m128 rf[32];
++        __m128 racc;
++        int32_t rvi[16];
++        float ri, rq, rp;
++        uint32_t rclip;
++        // (constant indices only: one variable index would keep the whole array in memory)
++        template <std::size_t... K>
++        VU1N_INLINE void loadF(std::index_sequence<K...>) { ((rf[K + 1] = vu1n::ldr(s.vf[K + 1])), ...); }
++        template <std::size_t... K>
++        VU1N_INLINE void storeF(std::index_sequence<K...>) { (vu1n::str<15>(s.vf[K + 1], rf[K + 1]), ...); }
++        template <std::size_t... K>
++        VU1N_INLINE void loadI(std::index_sequence<K...>) { ((rvi[K] = s.vi[K]), ...); }
++        template <std::size_t... K>
++        VU1N_INLINE void storeI(std::index_sequence<K...>) { ((s.vi[K + 1] = rvi[K + 1]), ...); }
++        VU1N_INLINE void load()
++        {
++            rf[0] = nrun::vf0();
++            loadF(std::make_index_sequence<31>{});
++            loadI(std::make_index_sequence<16>{});
++            racc = vu1n::ldr(s.acc);
++            ri = s.i, rq = s.q, rp = s.p, rclip = s.clip;
++        }
++        VU1N_INLINE void store()
++        {
++            storeF(std::make_index_sequence<31>{});
++            storeI(std::make_index_sequence<15>{});
++            vu1n::str<15>(s.acc, racc);
++            s.i = ri, s.q = rq, s.p = rp, s.clip = rclip;
++        }
++        template <int C>
++        static VU1N_INLINE float lane(__m128 x) { return ((vu1n::vf4)x)[C]; }
++        VU1N_INLINE __m128 R(int r) const { return r ? vu1n::nrm(rf[r]) : nrun::vf0(); } // operand view (Inf/NaN as +-FLT_MAX; denormals flushed by DAZ in arithmetic)
++        VU1N_INLINE __m128 Raw(int r) const { return r ? rf[r] : nrun::vf0(); }
++        VU1N_INLINE __m128 Iv() const { return _mm_set1_ps(ri); }
++        VU1N_INLINE __m128 Qv() const { return _mm_set1_ps(rq); }
+         template <int M>
+-        void W(int r, __m128 x) { v.W<M>(r, x); }
++        VU1N_INLINE void W(int r, __m128 x)
++        {
++            if (!r)
++                return;
++            if constexpr (M == 15)
++                rf[r] = x;
++            else if constexpr (M != 0)
++                rf[r] = _mm_blend_ps(rf[r], x, M);
++        }
+         template <int M>
+-        void WA(__m128 x) { v.WA<M>(x); }
+-        __m128 A() const { return v.A(); }
+-        int32_t vi(int r) const { return s.vi[r]; }
+-        void seti(int r, int32_t x) { v.seti(r, x); }
++        VU1N_INLINE void WA(__m128 x)
++        {
++            if constexpr (M == 15)
++                racc = x;
++            else if constexpr (M != 0)
++                racc = _mm_blend_ps(racc, x, M);
++        }
++        VU1N_INLINE __m128 A() const { return racc; }
++        VU1N_INLINE int32_t vi(int r) const { return rvi[r]; }
++        VU1N_INLINE void seti(int r, int32_t x)
++        {
++            if (r)
++                rvi[r] = static_cast<int16_t>(x);
++        }
+         // FMAC
+         // MAC flags are computed only where the program reads them (addF: the op before FMAND at 0x02a0); the others
+         // only clamp (nat-vu1j: macBitsNeon after every FMAC was ~15 A57 instructions with a NEON -> GPR move)
+-        template <int M> __m128 add(__m128 a, __m128 b) { return vu1n::clampv(_mm_add_ps(a, b)); }
+-        template <int M> __m128 addF(__m128 a, __m128 b) { return nrun::fadd<M>(a, b, mac); }
+-        template <int M> __m128 sub(__m128 a, __m128 b) { return vu1n::clampv(_mm_sub_ps(a, b)); }
+-        template <int M> __m128 mul(__m128 a, __m128 b) { return vu1n::clampv(_mm_mul_ps(a, b)); }
+-        template <int M> __m128 madd(__m128 a, __m128 b) { __m128 raw; return vu1n::maddc<false>(A(), a, b, raw); }
+-        template <int M> __m128 msub(__m128 a, __m128 b) { __m128 raw; return vu1n::maddc<true>(A(), a, b, raw); }
++        template <int M> VU1N_INLINE __m128 add(__m128 a, __m128 b) { return vu1n::clampv(_mm_add_ps(a, b)); }
++        template <int M> VU1N_INLINE __m128 addF(__m128 a, __m128 b) { return nrun::fadd<M>(a, b, mac); }
++        template <int M> VU1N_INLINE __m128 sub(__m128 a, __m128 b) { return vu1n::clampv(_mm_sub_ps(a, b)); }
++        template <int M> VU1N_INLINE __m128 mul(__m128 a, __m128 b) { return vu1n::clampv(_mm_mul_ps(a, b)); }
++        template <int M> VU1N_INLINE __m128 madd(__m128 a, __m128 b) { __m128 raw; return vu1n::maddc<false>(A(), a, b, raw); }
++        template <int M> VU1N_INLINE __m128 msub(__m128 a, __m128 b) { __m128 raw; return vu1n::maddc<true>(A(), a, b, raw); }
+         template <int C> static __m128 bc(__m128 x) { return vu1n::bc<C>(x); }
+         static __m128 yzx(__m128 x) { return _mm_shuffle_ps(x, x, _MM_SHUFFLE(3, 0, 2, 1)); }
+         static __m128 zxy(__m128 x) { return _mm_shuffle_ps(x, x, _MM_SHUFFLE(3, 1, 0, 2)); }
+@@ -148,23 +200,28 @@
+             return _mm_castsi128_ps(_mm_set1_epi32(static_cast<int32_t>(static_cast<int16_t>(x))));
+         }
+         // memory
+-        template <int M> void lq(int r, int32_t qw) { v.lq<M>(r, qw); }
++        template <int M> VU1N_INLINE void lq(int r, int32_t qw) { W<M>(r, vu1n::ldm(m, nrun::Vu::qa(qw))); }
+         // stores: the old qword saved once per run for a decline (Undo::touch, nat-vu1j: no 16 KB snapshot)
+-        template <int M> void sq(int r, int32_t qw) { u.touch(m, static_cast<uint32_t>(qw)); vu1n::stmT<M>(m, nrun::Vu::qa(qw), Raw(r)); }
+-        template <int M> void lqi(int r, int ip) { lq<M>(r, vi(ip)); seti(ip, vi(ip) + 1); }
+-        template <int M> void sqi(int r, int ip) { sq<M>(r, vi(ip)); seti(ip, vi(ip) + 1); }
+-        int32_t ilw(int32_t qw, int c) const { return v.ilw(qw, c); }
+-        void isw(int32_t qw, int c, int32_t x) { u.touch(m, static_cast<uint32_t>(qw)); vu1n::stWordsT(m, nrun::Vu::qa(qw), x, 8 >> c); }
+-        void loi(uint32_t b) { v.loi(b); }
+-        void clip(int r) { s.clip = vu1n::clipValv(R(r), R(r), s.clip); }
+-        bool fcand(uint32_t mask) const { return (s.clip & mask) != 0u; }
+-        void div(float num, float den) { s.q = vu1n::divv(num, den); }
+-        void kick(int32_t qw) { nrun::kick(m, qw, pk); }
+-        int32_t xtop() const { return vi(12); }
++        template <int M> VU1N_INLINE void sq(int r, int32_t qw) { u.touch(m, static_cast<uint32_t>(qw)); vu1n::stmT<M>(m, nrun::Vu::qa(qw), Raw(r)); }
++        template <int M> VU1N_INLINE void lqi(int r, int ip) { lq<M>(r, vi(ip)); seti(ip, vi(ip) + 1); }
++        template <int M> VU1N_INLINE void sqi(int r, int ip) { sq<M>(r, vi(ip)); seti(ip, vi(ip) + 1); }
++        VU1N_INLINE int32_t ilw(int32_t qw, int c) const { return v.ilw(qw, c); }
++        VU1N_INLINE void isw(int32_t qw, int c, int32_t x) { u.touch(m, static_cast<uint32_t>(qw)); vu1n::stWordsT(m, nrun::Vu::qa(qw), x, 8 >> c); }
++        VU1N_INLINE void loi(uint32_t b)
++        {
++            float f;
++            std::memcpy(&f, &b, 4);
++            ri = vu1n::qnorm(f);
++        }
++        VU1N_INLINE void clip(int r) { rclip = vu1n::clipValv(R(r), R(r), rclip); }
++        VU1N_INLINE bool fcand(uint32_t mask) const { return (rclip & mask) != 0u; }
++        VU1N_INLINE void div(float num, float den) { rq = vu1n::divv(num, den); }
++        VU1N_INLINE void kick(int32_t qw) { nrun::kick(m, qw, pk); }
++        VU1N_INLINE int32_t xtop() const { return vi(12); }
+ 
+         // EFU (the exact engine's formulas; P as queueP leaves it)
+         static float sf(__m128 x) { return _mm_cvtss_f32(x); }
+-        void eexp(float x)
++        VU1N_INLINE void eexp(float x)
+         {
+             static const float c[6] = {0.249998688697815f, 0.031257584691048f, 0.002591371303424f,
+                                        0.000171562001924f, 0.000005430199963f, 0.000000690600018f};
+@@ -176,19 +233,19 @@
+             p = _mm_mul_ss(p, p);
+             p = _mm_mul_ss(p, p);
+             const float pf = sf(p);
+-            s.p = vu1n::qfinish(pf != 0.0f ? sf(_mm_div_ss(_mm_set_ss(1.0f), p)) : FLT_MAX);
++            rp = vu1n::qfinish(pf != 0.0f ? sf(_mm_div_ss(_mm_set_ss(1.0f), p)) : FLT_MAX);
+         }
+-        void erleng(int r)
++        VU1N_INLINE void erleng(int r)
+         {
+             alignas(16) float f[4];
+             _mm_store_ps(f, Raw(r));
+             const __m128 x = _mm_set_ss(vu1n::qnorm(f[0])), y = _mm_set_ss(vu1n::qnorm(f[1])), z = _mm_set_ss(vu1n::qnorm(f[2]));
+             const __m128 sum = _mm_add_ss(_mm_add_ss(_mm_mul_ss(x, x), _mm_mul_ss(y, y)), _mm_mul_ss(z, z));
+             const __m128 len = _mm_sqrt_ss(sum);
+-            s.p = vu1n::qfinish(sf(len) != 0.0f ? sf(_mm_div_ss(_mm_set_ss(1.0f), len)) : sf(len));
++            rp = vu1n::qfinish(sf(len) != 0.0f ? sf(_mm_div_ss(_mm_set_ss(1.0f), len)) : sf(len));
+         }
+ 
+-        bool decline(uint32_t pc)
++        VU1N_INLINE bool decline(uint32_t pc)
+         {
+             dpc = pc;
+             return false;
+@@ -198,7 +255,7 @@
+         // 0x0088 / 0x00f8 (copy: lqi vf1 from the element, sq to XTOP + key) and 0x0368 / 0x03d0 (scatter: lqi vf1 from qw
+         // 265+, sq to the key as an absolute qw): mask M of the load / store. One iteration per 16-bit key field.
+         template <int M, bool Abs>
+-        void keyCopy()
++        VU1N_INLINE void keyCopy()
+         {
+             for (;;)
+             {
+@@ -226,7 +283,7 @@
+             }
+         }
+         // 0x04c8 (bal from the random key lists): vf1 = vf2 + vf3 * vf30 (vf2 / vf3 from vi2++), vf30 = next seed
+-        void random()
++        VU1N_INLINE void random()
+         {
+             W<15>(4, sub<15>(R(0), R(0))); // sub.xyzw vf4, vf0, vf0 | loi 128
+             loi(0x43000000u);
+@@ -247,7 +304,7 @@
+         }
+         // 0x0168 / 0x01e0: keys with a random value; M the store mask, ret the bal's return pc
+         template <int M>
+-        void keyRandom(uint32_t ret)
++        VU1N_INLINE void keyRandom(uint32_t ret)
+         {
+             for (;;)
+             {
+@@ -271,7 +328,7 @@
+             }
+         }
+         // the per-track snippets (0x0340: jalr vi15, vi1; vi2 = the track's data)
+-        bool snippet(uint32_t pc)
++        VU1N_INLINE bool snippet(uint32_t pc)
+         {
+             switch (pc)
+             {
+@@ -356,7 +413,7 @@
+                 lq<15>(2, vi(2) + 1);
+                 lq<15>(3, vi(2) + 2);
+                 lq<15>(4, xtop() + 31);
+-                W<8>(31, _mm_set1_ps(s.p));               // waitp; mfp.w vf31, P
++                W<8>(31, _mm_set1_ps(rp));               // waitp; mfp.w vf31, P
+                 WA<15>(add<15>(R(2), bc<0>(R(0))));       // addax ACC, vf2, vf0x
+                 W<15>(5, msub<15>(R(3), bc<0>(R(4))));    // msubx vf5, vf3, vf4x
+                 WA<9>(mul<9>(R(0), bc<0>(R(4))));         // mulax.xw ACC, vf0, vf4x
+@@ -403,7 +460,7 @@
+             }
+         }
+         // 0x02d8-0x0360: keys 29 (snippet pc) / 30 (data offset), results sqi'd from qw 265
+-        bool tracks()
++        VU1N_INLINE bool tracks()
+         {
+             lq<15>(11, xtop() + 29);
+             lq<15>(12, xtop() + 30);
+@@ -438,7 +495,7 @@
+         }
+ 
+         // ---- builders ------------------------------------------------------------------------------------------
+-        void matLoad(uint32_t ret) // bal vi14, 0x0dc8
++        VU1N_INLINE void matLoad(uint32_t ret) // bal vi14, 0x0dc8
+         {
+             seti(14, static_cast<int32_t>(ret / 8u));
+             lq<15>(24, xtop() + 0);
+@@ -446,20 +503,21 @@
+             lq<15>(26, xtop() + 2);
+             lq<15>(27, xtop() + 3); // jr vi14; delay
+         }
+-        void matScale(uint32_t ret) // bal vi14, 0x0df0: rows * vf19, w -= z; vf27 = (vf27 * vf19).xyz, w = vf19.w - vf27.z
++        VU1N_INLINE void matScale(uint32_t ret) // bal vi14, 0x0df0: rows * vf19, w -= z; vf27 = (vf27 * vf19).xyz, w = vf19.w - vf27.z
+         {
+             seti(14, static_cast<int32_t>(ret / 8u));
+-            for (int r = 24; r <= 26; ++r)
+-            {
+-                W<8>(r, sub<8>(R(r), bc<2>(R(r))));
+-                W<7>(r, mul<7>(R(r), R(19)));
+-            }
++            W<8>(24, sub<8>(R(24), bc<2>(R(24))));
++            W<7>(24, mul<7>(R(24), R(19)));
++            W<8>(25, sub<8>(R(25), bc<2>(R(25))));
++            W<7>(25, mul<7>(R(25), R(19)));
++            W<8>(26, sub<8>(R(26), bc<2>(R(26))));
++            W<7>(26, mul<7>(R(26), R(19)));
+             WA<4>(add<4>(R(0), bc<3>(R(19))));          // addaw.z ACC, vf0, vf19w
+             WA<11>(sub<11>(R(0), R(0)));                // suba.xyw ACC, vf0, vf0
+             W<8>(27, msub<8>(R(0), bc<2>(R(27))));      // msubz.w vf27, vf0, vf27z | jr vi14
+             W<7>(27, madd<7>(R(27), R(19)));            // delay: madd.xyz vf27, vf27, vf19
+         }
+-        void loadConsts(int n) // ilw.z vi1, 22(vi12); vi1 += vi12; vf16-18 (+ vf14 / vf15)
++        VU1N_INLINE void loadConsts(int n) // ilw.z vi1, 22(vi12); vi1 += vi12; vf16-18 (+ vf14 / vf15)
+         {
+             seti(1, ilw(xtop() + 22, 2));
+             seti(1, vi(1) + xtop());
+@@ -473,7 +531,7 @@
+             }
+         }
+         // set-up at 22.y (called with vi15 = 0x0070): vi14 = the element routine
+-        bool setup(uint32_t pc)
++        VU1N_INLINE bool setup(uint32_t pc)
+         {
+             switch (pc)
+             {
+@@ -493,7 +551,7 @@
+                 W<4>(1, msub<4>(R(25), R(25)));          // msub.z vf1, vf25, vf25
+                 W<1>(15, add<1>(R(25), bc<1>(R(25))));   // addy.x vf15, vf25, vf25y
+                 W<2>(15, sub<2>(R(25), bc<0>(R(25))));   // subx.y vf15, vf25, vf25x
+-                s.q = vu1n::rsqrtv(s.vf[0][3], s.vf[1][2]); // rsqrt Q, vf0w, vf1z
++                rq = vu1n::rsqrtv(lane<3>(Raw(0)), lane<2>(Raw(1))); // rsqrt Q, vf0w, vf1z
+                 W<3>(1, vu1n::absv(R(15)));              // abs.xy vf1, vf15
+                 W<1>(1, _mm_max_ps(R(1), bc<1>(R(1))));  // maxy.x vf1, vf1, vf1y
+                 W<4>(15, add<4>(R(0), bc<0>(R(1))));     // addx.z vf15, vf0, vf1x | waitq
+@@ -563,9 +621,9 @@
+                 lq<15>(17, vi(1) + 2);
+                 W<2>(18, add<2>(R(0), bc<0>(R(17)))); // addx.y vf18, vf0, vf17x
+                 W<1>(18, sub<1>(R(0), bc<1>(R(17)))); // suby.x vf18, vf0, vf17y
+-                div(s.vf[19][1], s.vf[19][0]);        // div Q, vf19y, vf19x; waitq
++                div(lane<1>(Raw(19)), lane<0>(Raw(19)));        // div Q, vf19y, vf19x; waitq
+                 W<2>(17, mul<2>(R(17), Qv()));        // mulq.y vf17, vf17, Q | div Q, vf19x, vf19y
+-                div(s.vf[19][0], s.vf[19][1]);        // waitq
++                div(lane<0>(Raw(19)), lane<1>(Raw(19)));        // waitq
+                 W<1>(18, mul<1>(R(18), Qv()));        // mulq.x vf18, vf18, Q
+                 seti(14, 0x1f78 / 8);
+                 return true;
+@@ -580,7 +638,7 @@
+                 matScale(0x1d48u);
+                 seti(1, vi(1) + xtop());
+                 lq<15>(17, vi(1) + 2);
+-                div(s.vf[0][3], s.vf[1][0]);          // div Q, vf0w, vf1x
++                div(lane<3>(Raw(0)), lane<0>(Raw(1)));          // div Q, vf0w, vf1x
+                 lq<15>(15, vi(1));
+                 lq<15>(16, vi(1) + 1);
+                 W<2>(18, add<2>(R(0), bc<0>(R(17)))); // addx.y vf18, vf0, vf17x
+@@ -595,19 +653,27 @@
+                 return decline(pc);
+             }
+         }
++        VU1N_INLINE void qcHom(int r)
++        {
++            W<8>(r, msub<8>(R(0), bc<2>(R(r)))); // msubz.w vf(r), vf0, vf(r)z
++            W<7>(r, madd<7>(R(19), R(r)));       // madd.xyz vf(r), vf19, vf(r)
++        }
++        VU1N_INLINE void corner(int r) // (a member, not a lambda: a lambda's operator() was not inlined, so the register
++                                       // file escaped and stayed in memory)
++        {
++            div(lane<3>(Raw(28)), lane<3>(Raw(r)));        // div Q, vf28w, vf(r)w
++            WA<7>(mul<7>(R(29), bc<3>(R(r))));   // mulaw.xyz ACC, vf29, vf(r)w
++            W<7>(2, madd<7>(R(28), R(r)));       // madd.xyz vf2, vf28, vf(r)
++            W<7>(2, mul<7>(R(2), Qv()));         // waitq; mulq.xyz vf2, vf2, Q
++        }
+         // the four corners of the quad builders 0x1748 / 0x1a68 from 0x1820 (0x1b30): homogeneous, clip, colour, ST + XYZ
+         // per corner (0x18c0-0x19e8)
+-        bool quadCorners()
++        VU1N_INLINE bool quadCorners()
+         {
+             WA<11>(sub<11>(R(0), R(0)));        // suba.xyw ACC, vf0, vf0
+             WA<4>(add<4>(R(0), bc<3>(R(19))));  // addaw.z ACC, vf0, vf19w
+-            for (int r = 6; r <= 9; ++r)
+-            {
+-                W<8>(r, msub<8>(R(0), bc<2>(R(r)))); // msubz.w vf(r), vf0, vf(r)z
+-                W<7>(r, madd<7>(R(19), R(r)));       // madd.xyz vf(r), vf19, vf(r)
+-            }
+-            for (int r = 6; r <= 9; ++r)
+-                clip(r);
++            qcHom(6), qcHom(7), qcHom(8), qcHom(9);
++            clip(6), clip(7), clip(8), clip(9);
+             if (fcand(0xFFFFFFu)) // fcand vi1, 0xffffff; ibne -> 0x0db0 (delay: nop)
+             {
+                 seti(1, 1);
+@@ -618,13 +684,6 @@
+             W<15>(1, vu1n::ftoiv<0>(R(1)));
+             sqi<15>(1, 11);
+             W<8>(2, vu1n::ftoiv<15>(R(0))); // ftoi15.w vf2, vf0
+-            auto corner = [&](int r)
+-            {
+-                div(s.vf[28][3], s.vf[r][3]);        // div Q, vf28w, vf(r)w
+-                WA<7>(mul<7>(R(29), bc<3>(R(r))));   // mulaw.xyz ACC, vf29, vf(r)w
+-                W<7>(2, madd<7>(R(28), R(r)));       // madd.xyz vf2, vf28, vf(r)
+-                W<7>(2, mul<7>(R(2), Qv()));         // waitq; mulq.xyz vf2, vf2, Q
+-            };
+             corner(6);
+             sqi<3>(17, 11);
+             sqi<15>(2, 11);
+@@ -645,7 +704,7 @@
+             return true; // jr vi15 (delay: nop)
+         }
+         // the element routine at 22.x (called with vi15 = 0x0458). false + dpc 0: culled (-> 0x0db0); dpc != 0: declined
+-        bool element(uint32_t pc)
++        VU1N_INLINE bool element(uint32_t pc)
+         {
+             switch (pc)
+             {
+@@ -663,7 +722,7 @@
+                 W<15>(3, msub<15>(R(19), bc<3>(R(1)))); // msubw vf3, vf19, vf1w | lq vf4, 546
+                 lq<15>(4, 546);
+                 clip(2);                                // clip vf2 | div Q, vf28w, vf2w
+-                div(s.vf[28][3], s.vf[2][3]);
++                div(lane<3>(Raw(28)), lane<3>(Raw(2)));
+                 clip(3);
+                 WA<7>(mul<7>(R(29), bc<3>(R(2))));      // mulaw.xyz ACC, vf29, vf2w
+                 W<7>(2, madd<7>(R(28), R(2)));          // madd.xyz vf2, vf28, vf2
+@@ -703,7 +762,7 @@
+                 W<15>(4, msub<15>(R(19), bc<3>(R(15)))); // msubw vf4, vf19, vf15w | loi 2047.5
+                 loi(0x44fff000u);
+                 WA<7>(mul<7>(R(29), bc<3>(R(2))));      // mulaw.xyz ACC, vf29, vf2w | div Q, vf28w, vf2w
+-                div(s.vf[28][3], s.vf[2][3]);
++                div(lane<3>(Raw(28)), lane<3>(Raw(2)));
+                 W<7>(2, madd<7>(R(28), R(2)));          // madd.xyz vf2, vf28, vf2
+                 clip(3);
+                 clip(4);
+@@ -811,7 +870,7 @@
+                 WA<7>(mul<7>(yzx(R(3)), zxy(R(4))));    // opmula.xyz ACC, vf3, vf4
+                 W<7>(5, msub<7>(yzx(R(4)), zxy(R(3)))); // opmsub.xyz vf5, vf4, vf3
+                 erleng(5);                              // erleng P, vf5; waitp; mfp.w vf5, P
+-                W<8>(5, _mm_set1_ps(s.p));
++                W<8>(5, _mm_set1_ps(rp));
+                 W<7>(5, mul<7>(R(5), bc<3>(R(5))));
+                 W<7>(4, mul<7>(R(4), bc<3>(R(1))));
+                 W<7>(5, mul<7>(R(5), bc<3>(R(1))));
+@@ -867,7 +926,7 @@
+                 W<15>(2, madd<15>(R(26), bc<2>(R(1))));  // maddz vf2, vf26, vf1z | lq vf4, 546
+                 lq<15>(4, 546);
+                 clip(2);                                 // clip.xyz vf2, vf2w | div Q, vf28w, vf2w
+-                div(s.vf[28][3], s.vf[2][3]);
++                div(lane<3>(Raw(28)), lane<3>(Raw(2)));
+                 WA<7>(mul<7>(R(29), bc<3>(R(2))));       // mulaw.xyz ACC, vf29, vf2w
+                 W<7>(2, madd<7>(R(28), R(2)));           // madd.xyz vf2, vf28, vf2
+                 W<15>(4, vu1n::ftoiv<0>(R(4)));          // ftoi0 vf4, vf4
+@@ -890,7 +949,7 @@
+                 sqi<15>(16, 11);
+                 lq<15>(1, 548);
+                 lq<15>(2, 549);
+-                div(s.vf[31][0], s.vf[5][2]);           // div Q, vf31x, vf5z
++                div(lane<0>(Raw(31)), lane<2>(Raw(5)));           // div Q, vf31x, vf5z
+                 WA<15>(add<15>(R(27), bc<0>(R(0))));
+                 WA<15>(madd<15>(R(24), bc<0>(R(1))));
+                 WA<15>(madd<15>(R(25), bc<1>(R(1))));
+@@ -911,7 +970,7 @@
+                     W<15>(4, madd<15>(R(4), bc<0>(R(5))));
+                     W<15>(3, f6);
+                 }
+-                div(s.vf[28][3], s.vf[3][3]);           // div Q, vf28w, vf3w
++                div(lane<3>(Raw(28)), lane<3>(Raw(3)));           // div Q, vf28w, vf3w
+                 clip(3);
+                 WA<7>(mul<7>(R(29), bc<3>(R(3))));      // mulaw.xyz ACC, vf29, vf3w
+                 W<7>(3, madd<7>(R(28), R(3)));          // madd.xyz vf3, vf28, vf3 | lq vf5, 547
+@@ -921,7 +980,7 @@
+                 lq<15>(6, 546);
+                 W<7>(4, madd<7>(R(28), R(4)));          // madd.xyz vf4, vf28, vf4
+                 W<7>(3, mul<7>(R(3), Qv()));            // mulq.xyz vf3, vf3, Q | div Q, vf28w, vf4w
+-                div(s.vf[28][3], s.vf[4][3]);
++                div(lane<3>(Raw(28)), lane<3>(Raw(4)));
+                 W<15>(5, vu1n::ftoiv<0>(R(5)));         // ftoi0 vf5 | fcand vi1, 0xfff
+                 const bool cull = fcand(0xFFFu);
+                 seti(1, cull ? 1 : 0);
+@@ -954,7 +1013,7 @@
+                 W<15>(4, msub<15>(R(19), bc<3>(R(1)))); // msubw vf4 | loi 2047.5
+                 loi(0x44fff000u);
+                 WA<7>(mul<7>(R(29), bc<3>(R(2))));      // mulaw.xyz ACC, vf29, vf2w | div Q, vf28w, vf2w
+-                div(s.vf[28][3], s.vf[2][3]);
++                div(lane<3>(Raw(28)), lane<3>(Raw(2)));
+                 {
+                     const int32_t n = vu1n::laneBits16<2>(Raw(17)); // madd.xyz vf2 | mtir vi5, vf17z
+                     W<7>(2, madd<7>(R(28), R(2)));
+@@ -1060,7 +1119,7 @@
+                 W<15>(4, msub<15>(R(19), bc<3>(R(1)))); // msubw vf4 | loi 2047.5
+                 loi(0x44fff000u);
+                 WA<7>(mul<7>(R(29), bc<3>(R(2))));      // mulaw.xyz ACC, vf29, vf2w | div Q, vf28w, vf2w
+-                div(s.vf[28][3], s.vf[2][3]);
++                div(lane<3>(Raw(28)), lane<3>(Raw(2)));
+                 {
+                     const int32_t n = vu1n::laneBits16<2>(Raw(17)); // madd.xyz vf2 | mtir vi5, vf17z
+                     W<7>(2, madd<7>(R(28), R(2)));
+@@ -1114,7 +1173,16 @@
+             }
+         }
+ 
+-        bool go(uint32_t startPC)
++        // the run on the private register file: loaded once, written back once (also on a decline: the caller restores
++        // the registers it needs from its own copy)
++        VU1N_INLINE bool go(uint32_t startPC)
++        {
++            load();
++            const bool ok = body(startPC);
++            store();
++            return ok;
++        }
++        VU1N_INLINE bool body(uint32_t startPC)
+         {
+             if (startPC != 0x00u && startPC != 0x18u)
+                 return decline(startPC);
+@@ -1166,7 +1234,7 @@
+                 WA<15>(msub<15>(R(3), bc<3>(R(1))));     // msubaw ACC, vf3, vf1w
+                 WA<12>(msub<12>(R(3), bc<2>(R(2))));     // msubaz.zw ACC, vf3, vf2z
+                 {
+-                    const float pin = s.vf[31][2];       // eexp P, vf31z (the old vf31: the upper op writes it)
++                    const float pin = lane<2>(Raw(31));       // eexp P, vf31z (the old vf31: the upper op writes it)
+                     W<15>(31, madd<15>(R(4), R(4)));     // madd vf31, vf4, vf4
+                     eexp(pin);
+                 }
