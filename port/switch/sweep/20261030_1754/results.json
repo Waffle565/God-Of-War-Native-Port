@@ -1,0 +1,469 @@
+[
+ {
+  "name": "movies_SEMO01",
+  "kind": "movies",
+  "fail": [],
+  "slow": [],
+  "warn": [],
+  "shots": [
+   "movies_SEMO01\\shots\\s032_480.jpg",
+   "movies_SEMO01\\shots\\s063_945.jpg",
+   "movies_SEMO01\\shots\\s094_1410.jpg"
+  ],
+  "run_s": 1410,
+  "movies": [
+   {
+    "movie": "SEMO01",
+    "fail": [],
+    "slow": [],
+    "pictures": 1410,
+    "pps": 30.0,
+    "dub": true
+   },
+   {
+    "movie": "A01MP05",
+    "fail": [],
+    "slow": [],
+    "pictures": 240,
+    "pps": 29.7
+   },
+   {
+    "movie": "A01MP02",
+    "fail": [],
+    "slow": [],
+    "pictures": 990,
+    "pps": 30.0,
+    "dub": true
+   },
+   {
+    "movie": "MA360",
+    "fail": [],
+    "slow": [],
+    "pictures": 990,
+    "pps": 29.9,
+    "dub": true
+   },
+   {
+    "movie": "A01MP03",
+    "fail": [],
+    "slow": [],
+    "pictures": 1530,
+    "pps": 30.0,
+    "dub": true
+   },
+   {
+    "movie": "A01MP01",
+    "fail": [],
+    "slow": [],
+    "pictures": 780,
+    "pps": 29.9,
+    "dub": true
+   },
+   {
+    "movie": "A01MP04",
+    "fail": [],
+    "slow": [],
+    "pictures": 600,
+    "pps": 30.0,
+    "dub": true
+   },
+   {
+    "movie": "SEMO02",
+    "fail": [],
+    "slow": [],
+    "pictures": 4200,
+    "pps": 30.0,
+    "dub": true
+   },
+   {
+    "movie": "A02MP02",
+    "fail": [],
+    "slow": [],
+    "pictures": 750,
+    "pps": 30.0,
+    "dub": true
+   },
+   {
+    "movie": "A03MP02",
+    "fail": [],
+    "slow": [],
+    "pictures": 870,
+    "pps": 29.9,
+    "dub": true
+   },
+   {
+    "movie": "MEWINTRO",
+    "fail": [],
+    "slow": [],
+    "pictures": 1500,
+    "pps": 30.0,
+    "dub": true
+   },
+   {
+    "movie": "A03MP01",
+    "fail": [],
+    "slow": [],
+    "pictures": 870,
+    "pps": 29.9,
+    "dub": true
+   },
+   {
+    "movie": "A04MP01",
+    "fail": [],
+    "slow": [],
+    "pictures": 780,
+    "pps": 29.9,
+    "dub": true
+   },
+   {
+    "movie": "A04MP04",
+    "fail": [],
+    "slow": [],
+    "pictures": 480,
+    "pps": 29.9,
+    "dub": true
+   },
+   {
+    "movie": "MATBOLT",
+    "fail": [],
+    "slow": [],
+    "pictures": 990,
+    "pps": 29.9,
+    "dub": true
+   },
+   {
+    "movie": "SKDINTRO",
+    "fail": [],
+    "slow": [],
+    "pictures": 720,
+    "pps": 29.9
+   },
+   {
+    "movie": "A06MP01",
+    "fail": [],
+    "slow": [],
+    "pictures": 690,
+    "pps": 29.9,
+    "dub": true
+   },
+   {
+    "movie": "A06MP04",
+    "fail": [],
+    "slow": [],
+    "pictures": 1770,
+    "pps": 30.0,
+    "dub": true
+   }
+  ]
+ },
+ {
+  "name": "movies_SEMO03",
+  "kind": "movies",
+  "fail": [],
+  "slow": [],
+  "warn": [],
+  "shots": [
+   "movies_SEMO03\\shots\\s030_450.jpg",
+   "movies_SEMO03\\shots\\s059_885.jpg",
+   "movies_SEMO03\\shots\\s088_1320.jpg"
+  ],
+  "run_s": 1335,
+  "movies": [
+   {
+    "movie": "SEMO03",
+    "fail": [],
+    "slow": [],
+    "pictures": 3600,
+    "pps": 30.0,
+    "dub": true
+   },
+   {
+    "movie": "A06MP03",
+    "fail": [],
+    "slow": [],
+    "pictures": 750,
+    "pps": 29.9,
+    "dub": true
+   },
+   {
+    "movie": "A06MP02",
+    "fail": [],
+    "slow": [],
+    "pictures": 450,
+    "pps": 29.8,
+    "dub": true
+   },
+   {
+    "movie": "A06MP05B",
+    "fail": [],
+    "slow": [],
+    "pictures": 420,
+    "pps": 29.8
+   },
+   {
+    "movie": "SEMO04",
+    "fail": [],
+    "slow": [],
+    "pictures": 2310,
+    "pps": 30.0,
+    "dub": true
+   },
+   {
+    "movie": "D01MP01",
+    "fail": [],
+    "slow": [],
+    "pictures": 960,
+    "pps": 29.9
+   },
+   {
+    "movie": "D01MP03",
+    "fail": [],
+    "slow": [],
+    "pictures": 270,
+    "pps": 29.8
+   },
+   {
+    "movie": "D01MP02",
+    "fail": [],
+    "slow": [],
+    "pictures": 3180,
+    "pps": 30.0,
+    "dub": true
+   },
+   {
+    "movie": "SEMO13",
+    "fail": [],
+    "slow": [],
+    "pictures": 870,
+    "pps": 30.0,
+    "dub": true
+   },
+   {
+    "movie": "A07MP05",
+    "fail": [],
+    "slow": [],
+    "pictures": 2460,
+    "pps": 30.0,
+    "dub": true
+   },
+   {
+    "movie": "A07MP04",
+    "fail": [],
+    "slow": [],
+    "pictures": 270,
+    "pps": 29.9,
+    "dub": true
+   },
+   {
+    "movie": "SEMO10",
+    "fail": [],
+    "slow": [],
+    "pictures": 6720,
+    "pps": 30.0,
+    "dub": true
+   }
+  ]
+ },
+ {
+  "name": "movies_A07MP01",
+  "kind": "movies",
+  "fail": [],
+  "slow": [],
+  "warn": [],
+  "shots": [
+   "movies_A07MP01\\shots\\s027_405.jpg",
+   "movies_A07MP01\\shots\\s053_795.jpg",
+   "movies_A07MP01\\shots\\s079_1185.jpg"
+  ],
+  "run_s": 1200,
+  "movies": [
+   {
+    "movie": "A07MP01",
+    "fail": [],
+    "slow": [],
+    "pictures": 2730,
+    "pps": 30.0,
+    "dub": true
+   },
+   {
+    "movie": "SEMO09",
+    "fail": [],
+    "slow": [],
+    "pictures": 3240,
+    "pps": 30.0,
+    "dub": true
+   },
+   {
+    "movie": "A06MP05",
+    "fail": [],
+    "slow": [],
+    "pictures": 1050,
+    "pps": 29.9,
+    "dub": true
+   },
+   {
+    "movie": "H01MP03",
+    "fail": [],
+    "slow": [],
+    "pictures": 300,
+    "pps": 29.8
+   },
+   {
+    "movie": "SEMO08",
+    "fail": [],
+    "slow": [],
+    "pictures": 6330,
+    "pps": 30.0,
+    "dub": true
+   },
+   {
+    "movie": "P06MP01",
+    "fail": [],
+    "slow": [],
+    "pictures": 1080,
+    "pps": 29.9,
+    "dub": true
+   },
+   {
+    "movie": "SATINTRO",
+    "fail": [],
+    "slow": [],
+    "pictures": 510,
+    "pps": 29.9
+   },
+   {
+    "movie": "SEMO07",
+    "fail": [],
+    "slow": [],
+    "pictures": 4860,
+    "pps": 30.0,
+    "dub": true
+   },
+   {
+    "movie": "P04MP05",
+    "fail": [],
+    "slow": [],
+    "pictures": 720,
+    "pps": 29.9
+   }
+  ]
+ },
+ {
+  "name": "movies_SEMO06",
+  "kind": "movies",
+  "fail": [],
+  "slow": [],
+  "warn": [],
+  "shots": [
+   "movies_SEMO06\\shots\\s028_420.jpg",
+   "movies_SEMO06\\shots\\s055_825.jpg",
+   "movies_SEMO06\\shots\\s082_1230.jpg"
+  ],
+  "run_s": 1245,
+  "movies": [
+   {
+    "movie": "SEMO06",
+    "fail": [],
+    "slow": [],
+    "pictures": 4950,
+    "pps": 30.0,
+    "dub": true
+   },
+   {
+    "movie": "MAGICRTD",
+    "fail": [],
+    "slow": [],
+    "pictures": 930,
+    "pps": 30.0,
+    "dub": true
+   },
+   {
+    "movie": "P03MP06",
+    "fail": [],
+    "slow": [],
+    "pictures": 630,
+    "pps": 29.9
+   },
+   {
+    "movie": "P03MP07",
+    "fail": [],
+    "slow": [],
+    "pictures": 330,
+    "pps": 29.8
+   },
+   {
+    "movie": "BALLWAY",
+    "fail": [],
+    "slow": [],
+    "pictures": 810,
+    "pps": 30.0
+   },
+   {
+    "movie": "P03MP98",
+    "fail": [],
+    "slow": [],
+    "pictures": 660,
+    "pps": 30.0
+   },
+   {
+    "movie": "P01MP01",
+    "fail": [],
+    "slow": [],
+    "pictures": 330,
+    "pps": 29.8
+   },
+   {
+    "movie": "MAGICBZK",
+    "fail": [],
+    "slow": [],
+    "pictures": 930,
+    "pps": 29.9,
+    "dub": true
+   },
+   {
+    "movie": "P00MP03",
+    "fail": [],
+    "slow": [],
+    "pictures": 1980,
+    "pps": 30.0
+   },
+   {
+    "movie": "SEMO05",
+    "fail": [],
+    "slow": [],
+    "pictures": 3330,
+    "pps": 30.0,
+    "dub": true
+   },
+   {
+    "movie": "P00MP04",
+    "fail": [],
+    "slow": [],
+    "pictures": 450,
+    "pps": 29.9
+   },
+   {
+    "movie": "P02MP02",
+    "fail": [],
+    "slow": [],
+    "pictures": 600,
+    "pps": 29.9
+   },
+   {
+    "movie": "P02MP01",
+    "fail": [],
+    "slow": [],
+    "pictures": 780,
+    "pps": 29.9
+   },
+   {
+    "movie": "P00MP02",
+    "fail": [],
+    "slow": [],
+    "pictures": 2130,
+    "pps": 30.0,
+    "dub": true
+   }
+  ]
+ }
+]

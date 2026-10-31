@@ -1,0 +1,237 @@
+[
+ {
+  "name": "fight_ATHN01D",
+  "kind": "fight",
+  "fail": [],
+  "slow": [],
+  "warn": [
+   "fps min 16.2"
+  ],
+  "shots": [
+   "fight_ATHN01D\\gow_warp_1_ATHN01D_0.png",
+   "fight_ATHN01D\\shots\\s006_90.jpg",
+   "fight_ATHN01D\\shots\\s011_165.jpg",
+   "fight_ATHN01D\\shots\\s016_240.jpg"
+  ],
+  "run_s": 255,
+  "load_s": 1.4,
+  "fps": [
+   16.2,
+   34.3
+  ],
+  "speed": 0.99,
+  "zones_seen": [
+   "Athn01A",
+   "Athn01C",
+   "Athn01D"
+  ]
+ },
+ {
+  "name": "fight_ATHN01EE",
+  "kind": "fight",
+  "fail": [],
+  "slow": [],
+  "warn": [
+   "fps min 18.2",
+   "Kratos died after the warp (fall from the warp point)"
+  ],
+  "shots": [
+   "fight_ATHN01EE\\gow_warp_1_ATHN01EE_0.png",
+   "fight_ATHN01EE\\shots\\s006_90.jpg",
+   "fight_ATHN01EE\\shots\\s011_165.jpg",
+   "fight_ATHN01EE\\shots\\s016_240.jpg"
+  ],
+  "run_s": 255,
+  "load_s": 0.4,
+  "fps": [
+   18.2,
+   57.8
+  ],
+  "speed": 0.993,
+  "zones_seen": [
+   "?(zone=0)",
+   "Athn01A"
+  ]
+ },
+ {
+  "name": "fight_ATHN01F",
+  "kind": "fight",
+  "fail": [],
+  "slow": [],
+  "warn": [
+   "fps min 17.8"
+  ],
+  "shots": [
+   "fight_ATHN01F\\gow_warp_1_ATHN01F_0.png",
+   "fight_ATHN01F\\shots\\s006_90.jpg",
+   "fight_ATHN01F\\shots\\s011_165.jpg",
+   "fight_ATHN01F\\shots\\s016_240.jpg"
+  ],
+  "run_s": 255,
+  "load_s": 0.8,
+  "fps": [
+   17.8,
+   48.5
+  ],
+  "speed": 0.993,
+  "zones_seen": [
+   "Athn01A",
+   "Athn01F"
+  ]
+ },
+ {
+  "name": "fight_PAND03H",
+  "kind": "fight",
+  "fail": [],
+  "slow": [],
+  "warn": [
+   "fps min 15.8"
+  ],
+  "shots": [
+   "fight_PAND03H\\gow_warp_1_PAND03H_0.png",
+   "fight_PAND03H\\shots\\s006_90.jpg",
+   "fight_PAND03H\\shots\\s011_165.jpg",
+   "fight_PAND03H\\shots\\s016_240.jpg"
+  ],
+  "run_s": 255,
+  "load_s": 0.8,
+  "fps": [
+   15.8,
+   51.1
+  ],
+  "speed": 0.992,
+  "zones_seen": [
+   "Athn01A",
+   "Pand03H"
+  ]
+ },
+ {
+  "name": "fight_PAND04H",
+  "kind": "fight",
+  "fail": [],
+  "slow": [],
+  "warn": [
+   "fps min 21.2"
+  ],
+  "shots": [
+   "fight_PAND04H\\gow_warp_1_PAND04H_1.png",
+   "fight_PAND04H\\shots\\s006_90.jpg",
+   "fight_PAND04H\\shots\\s011_165.jpg",
+   "fight_PAND04H\\shots\\s016_240.jpg"
+  ],
+  "run_s": 255,
+  "load_s": 1.0,
+  "fps": [
+   21.2,
+   58.7
+  ],
+  "speed": 0.996,
+  "zones_seen": [
+   "Athn01A",
+   "Pand04G",
+   "Pand04H"
+  ]
+ },
+ {
+  "name": "fight_ARENA27",
+  "kind": "fight",
+  "fail": [],
+  "slow": [],
+  "warn": [
+   "fps min 24.8"
+  ],
+  "shots": [
+   "fight_ARENA27\\gow_warp_1_ARENA27_1.png",
+   "fight_ARENA27\\shots\\s006_90.jpg",
+   "fight_ARENA27\\shots\\s011_165.jpg",
+   "fight_ARENA27\\shots\\s016_240.jpg"
+  ],
+  "run_s": 255,
+  "load_s": 1.2,
+  "fps": [
+   24.8,
+   58.6
+  ],
+  "speed": 0.996,
+  "zones_seen": [
+   "Arena27"
+  ]
+ },
+ {
+  "name": "fight_ATHN08B",
+  "kind": "fight",
+  "fail": [],
+  "slow": [],
+  "warn": [
+   "fps min 16.6",
+   "Kratos died after the warp (fall from the warp point)"
+  ],
+  "shots": [
+   "fight_ATHN08B\\gow_warp_1_ATHN08B_0.png",
+   "fight_ATHN08B\\shots\\s006_90.jpg",
+   "fight_ATHN08B\\shots\\s011_165.jpg",
+   "fight_ATHN08B\\shots\\s016_240.jpg"
+  ],
+  "run_s": 255,
+  "load_s": 1.0,
+  "fps": [
+   16.6,
+   54.7
+  ],
+  "speed": 0.994,
+  "zones_seen": [
+   "athn08b"
+  ]
+ },
+ {
+  "name": "fight_ATHN08C",
+  "kind": "fight",
+  "fail": [],
+  "slow": [],
+  "warn": [
+   "Kratos died after the warp (fall from the warp point)"
+  ],
+  "shots": [
+   "fight_ATHN08C\\gow_warp_1_ATHN08C_1.png",
+   "fight_ATHN08C\\shots\\s006_90.jpg",
+   "fight_ATHN08C\\shots\\s011_165.jpg",
+   "fight_ATHN08C\\shots\\s016_240.jpg"
+  ],
+  "run_s": 255,
+  "load_s": 2.0,
+  "fps": [
+   34.0,
+   58.5
+  ],
+  "speed": 0.996,
+  "zones_seen": [
+   "Athn01A",
+   "athn08c"
+  ]
+ },
+ {
+  "name": "fight_ATHN07B",
+  "kind": "fight",
+  "fail": [],
+  "slow": [],
+  "warn": [
+   "fps min 16.6"
+  ],
+  "shots": [
+   "fight_ATHN07B\\gow_warp_1_ATHN07B_1.png",
+   "fight_ATHN07B\\shots\\s006_90.jpg",
+   "fight_ATHN07B\\shots\\s011_165.jpg",
+   "fight_ATHN07B\\shots\\s016_240.jpg"
+  ],
+  "run_s": 255,
+  "load_s": 1.0,
+  "fps": [
+   16.6,
+   44.5
+  ],
+  "speed": 0.995,
+  "zones_seen": [
+   "Athn07b"
+  ]
+ }
+]

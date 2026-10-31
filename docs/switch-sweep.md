@@ -52,6 +52,29 @@ seconds per wall second). One warp per boot: chained warps can evict the zone Kr
 
 Filled in by the runs (latest first).
 
+### Runs 20261030_1754 / _1925 (sw-sweep3, test package update_sweep3 = update_bugs1 + harness sp fix)
+
+- Package: port/switch/nsp/out/update_sweep3 (exefs md5 825bf22f), built in /root/gow-switch-mlang after the
+  gow_overrides.cpp harness hunk of a562e7c was applied to /root/src-mlang; it differs from update_bugs1 only in
+  gowMovieOverrideLoad (runs only with GOW_MOVIE_OVERRIDE / GOW_MPEG_DIAG), so it can become the default.
+- Story movies (20261030_1754, 4 batches, 53 movies): 53 PASS, 29.7-30.0 pictures/s, every one to its sequence
+  end; 36/36 speaking movies read their Italian dub (`voice_it/<movie>.DUB`, SEMO01 the `.PSW` overlay). The JALR 0
+  crash of run 20261030_1450 is gone.
+- SEMO01 with `--shot-every 3` (20261030_1925): PASS; the intro card shows "Tre Settimane Prima" / "Mar Egeo"
+  (shots s016_48.jpg, s017_51.jpg).
+- Levels (20261030_1930, all 108 zones, ~3.5 min each, 6.5 h): 107 PASS, 0 SLOW, 1 FAIL. ATHN01B FAIL = warp into
+  the start zone Kratos already stands in (test limit, as in the first run). Game speed inside 0.95-1.05 in every
+  zone (the 5-8 % fast zones of the first run are fixed). Warnings: minimum fps < 25 in 54 zones (mean >= 25 in all;
+  lowest minimum ATHN01A 12.2, OLYMP02 12.8, ATHN06C 13.0, ATHN04C and PAND05A 15.0); "Kratos died after the warp" in
+  24 zones: the sweep's square walk takes him off the warp point into a pit (position trace drops, state 14; ATHN05D
+  did the same in the first run), the test, not the port. The `hp=` field of `[gow-player]` is always 0 on the
+  console, so only `state=14` marks a death.
+- Fights (20261031_0203, 9 boss zones, 150 s each): 9 PASS, minimum fps 15.8-24.8 (warning), falls in ATHN01EE,
+  ATHN08B, ATHN08C. The screenshots show the zone start, not the boss (ATHN01D: the save point before the Hydra;
+  ATHN07B: Kratos at the portal), so these items check that each boss zone loads and runs, not the fights
+  themselves: the boss fights still need a save near each boss or a warp point inside the arena.
+- After every run the default was restored and checked (exefs md5 a2f50ea0 = update_bugs1).
+
 ### Run 20261030_1450 (sw-sweep2, default update_mlangfog1 + FAILGT, movies only, paused for sw-bugs)
 
 - Movies (all 67 incl. BONUS): 7 batches all FAIL, each ended by `[guest-branch:missing-target] JALR 0x161c68
