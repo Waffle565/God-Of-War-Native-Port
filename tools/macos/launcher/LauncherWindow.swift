@@ -19,6 +19,8 @@ final class LauncherWindowController: NSWindowController {
     private let metalFX = NSButton(checkboxWithTitle: "MetalFX upscaling (Retina/4K)", target: nil, action: nil)
     private let sharpen = NSSlider(value: 0.5, minValue: 0, maxValue: 1, target: nil, action: nil)
     private let wideView = NSButton(checkboxWithTitle: "Wider field of view", target: nil, action: nil)
+    private let hdTextures = NSButton(checkboxWithTitle: "HD texture pack", target: nil, action: nil)
+    private let texturesPath = NSTextField(labelWithString: "")
     private let discPath = NSTextField(labelWithString: "")
     private let playButton = NSButton(title: "Play", target: nil, action: nil)
 
@@ -35,7 +37,7 @@ final class LauncherWindowController: NSWindowController {
     init(settings: Settings, onPlay: @escaping () -> Void) {
         self.settings = settings
         self.onPlay = onPlay
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 540, height: 740),
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 560, height: 770),
                               styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
         window.title = "God of War"
         super.init(window: window)
@@ -91,7 +93,15 @@ final class LauncherWindowController: NSWindowController {
         metalFX.state = settings.metalFX ? .on : .off
         sharpen.doubleValue = max(0, settings.sharpen)
         wideView.state = settings.wideView ? .on : .off
-        for control in [fxaa, aniso, metalFX, sharpen, wideView] as [NSControl] {
+        hdTextures.state = settings.hdTextures ? .on : .off
+        texturesPath.lineBreakMode = .byTruncatingMiddle
+        texturesPath.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        texturesPath.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        let chooseTextures = NSButton(title: "Choose…", target: self, action: #selector(chooseTextures))
+        let texturesRow = NSStackView(views: [hdTextures, texturesPath, chooseTextures])
+        texturesRow.spacing = 6
+        updateTexturesLabel()
+        for control in [fxaa, aniso, metalFX, sharpen, wideView, hdTextures] as [NSControl] {
             control.target = self
             control.action = #selector(changed)
         }
@@ -112,6 +122,7 @@ final class LauncherWindowController: NSWindowController {
             [NSGridCell.emptyContentView, sharpenRow],
             [NSGridCell.emptyContentView, metalFX],
             [NSGridCell.emptyContentView, wideView],
+            [label("Textures:"), texturesRow],
         ])
         grid.rowSpacing = 10
         grid.columnSpacing = 10
@@ -197,6 +208,7 @@ final class LauncherWindowController: NSWindowController {
         settings.metalFX = metalFX.state == .on
         settings.sharpen = sharpen.doubleValue
         settings.wideView = wideView.state == .on
+        settings.hdTextures = hdTextures.state == .on
         settings.save()
     }
 
@@ -217,6 +229,28 @@ final class LauncherWindowController: NSWindowController {
         settings.discFolder = url.path
         settings.save()
         updateDiscLabel()
+    }
+
+    private func updateTexturesLabel() {
+        texturesPath.stringValue = settings.texturesFolder.isEmpty ? "(no pack folder)"
+            : URL(fileURLWithPath: settings.texturesFolder).lastPathComponent
+        texturesPath.toolTip = settings.texturesFolder
+        hdTextures.isEnabled = !settings.texturesFolder.isEmpty
+    }
+
+    // a PCSX2 pack for SCUS-97399: choose the folder with its replacement files (.dds/.png), not the pack's root
+    @objc private func chooseTextures() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.message = "Choose the texture pack's replacements folder for SCUS-97399 (PCSX2 format)."
+        if !settings.texturesFolder.isEmpty { panel.directoryURL = URL(fileURLWithPath: settings.texturesFolder) }
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        settings.texturesFolder = url.path
+        settings.hdTextures = true
+        hdTextures.state = .on
+        settings.save()
+        updateTexturesLabel()
     }
 
     @objc private func play() {

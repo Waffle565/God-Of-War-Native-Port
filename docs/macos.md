@@ -90,6 +90,25 @@ MetalFX off (use it to take scale 2 to a Retina or 4K output). Chain at present:
 resolution) -> MetalFX or the window scaler -> sharpen -> letterboxed drawable. Captures and the RAM path
 (`PS2X_GS_DIRECT_PRESENT=0`) are taken before the chain unless `GOW_GS_MTL_CAPTURE_POST=1`.
 
+## HD texture packs (PCSX2 format)
+The Metal renderer computes PCSX2's texture replacement names (`<texhash>-<cluthash>-<bits>`, XXH3 over the texture's
+GS memory blocks or expanded texels, palette hash, region, TEX0/TEXA bits; `gs_metal_texname.cpp`), so packs made for
+PCSX2 load unchanged. With Huekage's "PS2 HD Textures Pack" (3,860 DDS) 98 of 107 textures seen from new game to the
+ship are replaced, at 60 fps (~57 MB of GPU textures). Movie frames are new textures every frame and never match.
+Packs are downloaded by the player and never shipped with the port.
+
+| switch | effect |
+|---|---|
+| `GOW_TEXTURES_DIR` | the pack's folder of replacement files, scanned recursively (point it at the files for SCUS-97399, not at a pack root whose `dumps/` hold originals under the same names); default `~/Library/Application Support/God of War/textures/SCUS-97399/replacements` |
+| `GOW_GS_MTL_TEXREPL=0` | replacement off |
+| `GOW_GS_MTL_TEXREPL_MB` | GPU budget in MB (default 2048) |
+| `GOW_GS_MTL_TEXDUMP=<dir>` | writes every new texture as a PNG under its PCSX2 name (for making packs) |
+| `GOW_GS_MTL_TEXREPL_LOG=1` | logs every texture seen/matched |
+
+The launcher's Textures row turns a pack on and chooses its folder. DDS (BC1/BC3/BC7, RGBA8) loads straight into GPU
+formats; PNG through ImageIO; loading is asynchronous (the original is drawn until the replacement is ready). Not
+reproduced: PCSX2's region guess from recent uploads (two full-screen textures of the pack).
+
 ## macOS-specific build settings
 In the top-level CMakeLists (`APPLE AND aarch64` only): `-fsigned-char` (x86 `char`), `-ffp-contract=off` (Apple clang
 fuses `a*b+c`; x86 and the PS2 round twice), sse2neon precise min/max, division and dot product. Not

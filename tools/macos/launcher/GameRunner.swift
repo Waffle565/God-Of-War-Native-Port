@@ -66,6 +66,11 @@ enum GameRunner {
         if settings.wideView {
             env["GOW_PANORAMICO"] = "ampliado"
         }
+        if settings.hdTextures && !settings.texturesFolder.isEmpty {
+            env["GOW_TEXTURES_DIR"] = settings.texturesFolder
+        } else {
+            env["GOW_GS_MTL_TEXREPL"] = "0"
+        }
         // text and voice language + the port's save wording (lang/ is linked into data/ with the disc's files)
         if let overlay = settings.languageOverlay {
             env["PS2X_DISC_OVERLAY"] = overlay
@@ -91,7 +96,8 @@ enum GameRunner {
         let env = environment(settings)
         let keys = ["GOW_MC0", "GOW_WINDOW", "GOW_FULLSCREEN", "PS2X_GS_HW_SCALE", "PS2X_GS_WORKER",
                     "GOW_GS_FINISH_ASINCRONO", "GOW_AUDIO_DEVICE", "PS2X_DISC_OVERLAY", "GOW_GS_MTL_AA",
-                    "GOW_GS_MTL_ANISO", "GOW_GS_MTL_METALFX", "GOW_SHARPEN", "GOW_PANORAMICO"]
+                    "GOW_GS_MTL_ANISO", "GOW_GS_MTL_METALFX", "GOW_SHARPEN", "GOW_PANORAMICO",
+                    "GOW_TEXTURES_DIR", "GOW_GS_MTL_TEXREPL"]
         var header = "[launcher] \(Date()) disc=\(settings.discFolder)\n[launcher] cwd=\(Paths.data.path) elf=\(elf)\n"
         for key in keys { header += "[launcher] \(key)=\(env[key] ?? "(unset)")\n" }
         log.write(header.data(using: .utf8)!)

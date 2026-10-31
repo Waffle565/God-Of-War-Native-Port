@@ -43,6 +43,10 @@ struct Settings {
     var metalFX = false      // GOW_GS_MTL_METALFX=spatial|off (for Retina/4K output)
     var sharpen = 0.5        // GOW_SHARPEN=0..1, < 0 = off
     var wideView = false     // GOW_PANORAMICO=ampliado (wider field of view in gameplay)
+    // PCSX2-format HD texture pack (GOW_TEXTURES_DIR, scanned recursively): the folder that holds the pack's
+    // replacement files for SCUS-97399, not the pack's root (its dumps/ folders hold originals under the same names)
+    var hdTextures = false
+    var texturesFolder = ""
     static let anisoLevels = [0, 2, 4, 8, 16]
     var discFolder = ""
     var importOffered = false
@@ -70,6 +74,8 @@ struct Settings {
         if let v = values["Graphics.MetalFX"] { s.metalFX = v == "1" }
         if let v = values["Graphics.Sharpen"].flatMap(Double.init) { s.sharpen = min(1, max(-1, v)) }
         if let v = values["Graphics.WideView"] { s.wideView = v == "1" }
+        if let v = values["Graphics.HDTextures"] { s.hdTextures = v == "1" }
+        if let v = values["Graphics.TexturesFolder"] { s.texturesFolder = v }
         if let v = values["Game.DiscFolder"] { s.discFolder = v }
         if let v = values["Game.ImportOffered"] { s.importOffered = v == "1" }
         let codes = Set(languages.map { $0.0 })
@@ -96,6 +102,8 @@ struct Settings {
         MetalFX=\(metalFX ? 1 : 0)
         Sharpen=\(sharpen)
         WideView=\(wideView ? 1 : 0)
+        HDTextures=\(hdTextures ? 1 : 0)
+        TexturesFolder=\(texturesFolder)
         [Game]
         DiscFolder=\(discFolder)
         ImportOffered=\(importOffered ? 1 : 0)
