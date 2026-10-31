@@ -38,6 +38,33 @@ void GSMetalBackend::Impl::openSharedSide(const SpriteEdges &prev, const SpriteE
     }
 }
 
+bool GSMetalBackend::Impl::sameState(const GSDrawState &a, const GSDrawState &b)
+{
+    return GSMetalBackend::SameDrawState(a, b);
+}
+
+bool GSMetalBackend::SameDrawState(const GSDrawState &a, const GSDrawState &b)
+{
+    const GSContext &x = a.context, &y = b.context;
+    const GSTex0Reg &t = x.tex0, &u = y.tex0;
+    const GSPrimReg &p = a.prim, &q = b.prim;
+    return x.frame.fbp == y.frame.fbp && x.frame.fbw == y.frame.fbw && x.frame.psm == y.frame.psm && x.frame.fbmsk == y.frame.fbmsk &&
+           x.scissor.x0 == y.scissor.x0 && x.scissor.x1 == y.scissor.x1 && x.scissor.y0 == y.scissor.y0 && x.scissor.y1 == y.scissor.y1 &&
+           t.tbp0 == u.tbp0 && t.tbw == u.tbw && t.psm == u.psm && t.tw == u.tw && t.th == u.th && t.tcc == u.tcc && t.tfx == u.tfx &&
+           t.cbp == u.cbp && t.cpsm == u.cpsm && t.csm == u.csm && t.csa == u.csa && t.cld == u.cld &&
+           x.xyoffset.ofx == y.xyoffset.ofx && x.xyoffset.ofy == y.xyoffset.ofy &&
+           x.zbuf.zbp == y.zbuf.zbp && x.zbuf.psm == y.zbuf.psm && x.zbuf.zmask == y.zbuf.zmask &&
+           x.tex1 == y.tex1 && x.miptbp1 == y.miptbp1 && x.miptbp2 == y.miptbp2 && x.clamp == y.clamp && x.alpha == y.alpha &&
+           x.test == y.test && x.fba == y.fba &&
+           p.type == q.type && p.iip == q.iip && p.tme == q.tme && p.fge == q.fge && p.abe == q.abe && p.aa1 == q.aa1 && p.fst == q.fst &&
+           p.ctxt == q.ctxt && p.fix == q.fix &&
+           a.texa.ta0 == b.texa.ta0 && a.texa.aem == b.texa.aem && a.texa.ta1 == b.texa.ta1 &&
+           a.texclut.cbw == b.texclut.cbw && a.texclut.cou == b.texclut.cou && a.texclut.cov == b.texclut.cov &&
+           a.pabe == b.pabe && a.scanmsk == b.scanmsk && a.dimx == b.dimx && a.dthe == b.dthe && a.colclamp == b.colclamp &&
+           a.fogR == b.fogR && a.fogG == b.fogG && a.fogB == b.fogB && a.textureWidth == b.textureWidth &&
+           a.textureHeight == b.textureHeight && a.linearFilter == b.linearFilter;
+}
+
 void GSMetalBackend::Impl::addVertex(const GSDrawState &s, const GSVertex &v, float u, float tv, float zmax)
 {
     const GSContext &c = s.context;
@@ -413,8 +440,15 @@ void GSMetalBackend::Impl::draw(const GSDrawState &s, const std::vector<HwVertex
         RenderTarget *rsrc = nullptr;
         if (!src && !zsrc)
             rsrc = findReinterpretSource(c.tex0.tbp0, c.tex0.psm);
-        const bool indexed = !(src || rsrc || zsrc) && isIndexed(c.tex0.psm) && vram != nullptr;
-        Texture *tex = (src || rsrc || zsrc) ? nullptr : indexed ? &indexTextureFor(s) : &textureFor(s);
+        const bool paletted = !(src || rsrc || zsrc) && isIndexed(c.tex0.psm) && vram != nullptr;
+        Texture *tex = (src || rsrc || zsrc) ? nullptr : paletted ? &indexTextureFor(s) : &textureFor(s);
+        // converted to RGBA with the CLUT (depalTextureFor): sampled like a direct-colour texture
+        bool indexed = paletted;
+        if (paletted && depalEnabled && tex->indices.size() == static_cast<size_t>(tex->width) * tex->height)
+        {
+            tex = &depalTextureFor(s, *tex);
+            indexed = false;
+        }
         u.indexed = indexed ? 1 : 0;
         u.linear = s.linearFilter ? 1 : 0;
         if (indexed)
@@ -426,7 +460,39 @@ void GSMetalBackend::Impl::draw(const GSDrawState &s, const std::vector<HwVertex
         if (zsrc)
             ztexture = sampleable(zsrc->depth, rt);
         else if (src)
-            texture = sampleable(src->color, rt);
+        {
+            // what the draw can sample, in host pixels (vertex texel coordinates: perspective interpolation stays inside
+            // their range), so the feedback copy covers only that (the screen-space distortion fans are small). A REPEAT axis
+            // needs the footprint a texel inside the edges (a bilinear tap at the edge wraps to the far side); else everything.
+            float lo[2] = {1e30f, 1e30f}, hi[2] = {-1e30f, -1e30f};
+            const float tw = static_cast<float>(std::max<uint16_t>(s.textureWidth, 1)), th = static_cast<float>(std::max<uint16_t>(s.textureHeight, 1));
+            for (const HwVertex &v : verts)
+            {
+                const float q = std::fabs(v.q) < 1e-20f ? 1e-20f : v.q;
+                const float tu = s.prim.fst ? v.u : v.s / q * tw, tv = s.prim.fst ? v.v : v.t / q * th;
+                lo[0] = std::min(lo[0], tu), lo[1] = std::min(lo[1], tv), hi[0] = std::max(hi[0], tu), hi[1] = std::max(hi[1], tv);
+            }
+            const float limit[2] = {static_cast<float>(src->pxW), static_cast<float>(src->pxH)};
+            const bool clampAxis[2] = {(c.clamp & 3u) != 0u, ((c.clamp >> 2) & 3u) != 0u};
+            bool usable = true;
+            for (int axis = 0; axis < 2; ++axis)
+            {
+                const float margin = clampAxis[axis] ? -1.0f : 1.0f;
+                usable = usable && std::isfinite(lo[axis]) && std::isfinite(hi[axis]) && lo[axis] >= margin && hi[axis] <= limit[axis] - margin;
+            }
+            MTLRegion area = MTLRegionMake2D(0, 0, 0, 0);
+            if (usable)
+            {
+                const long x0 = std::max(0L, static_cast<long>(std::floor(lo[0] * scale)) - 2);
+                const long y0 = std::max(0L, static_cast<long>(std::floor(lo[1] * scale)) - 2);
+                const long x1 = std::min(static_cast<long>(src->glW), static_cast<long>(std::ceil(hi[0] * scale)) + 2);
+                const long y1 = std::min(static_cast<long>(src->glH), static_cast<long>(std::ceil(hi[1] * scale)) + 2);
+                if (x1 > x0 && y1 > y0)
+                    area = MTLRegionMake2D(static_cast<NSUInteger>(x0), static_cast<NSUInteger>(y0), static_cast<NSUInteger>(x1 - x0),
+                                           static_cast<NSUInteger>(y1 - y0));
+            }
+            texture = sampleable(src->color, rt, area.size.width != 0u ? &area : nullptr);
+        }
         else if (rsrc)
             rtColor = sampleable(rsrc->color, rt);
         else
@@ -473,7 +539,11 @@ void GSMetalBackend::Impl::draw(const GSDrawState &s, const std::vector<HwVertex
     scissor(enc, rt, c.scissor.x0, c.scissor.y0, c.scissor.x1, c.scissor.y1, empty);
     if (empty)
         return;
-    const auto psoFor = [&](uint8_t m) { return fetch ? pipelineFor(Pso::Fetch, m, true) : pipelineFor(Pso::Main, m, true, blend); };
+    // the draw's shader path for the specialised pipeline (kTexPath / kFlags in gs_metal_shaders.inc)
+    const int texPath = !s.prim.tme ? 0 : u.reinterp ? 3 : u.indexed ? 2 : u.zTex ? 4 : 1;
+    const int flags = (u.linear ? 1 : 0) | (u.swBlend ? 2 : 0) | (u.zAlias ? 4 : 0) | (u.date ? 8 : 0) | (u.pass ? 16 : 0);
+    const auto psoFor = [&](uint8_t m)
+    { return fetch ? pipelineFor(Pso::Fetch, m, true, {}, texPath, flags) : pipelineFor(Pso::Main, m, true, blend, texPath, flags); };
     setPso(psoFor(mask));
     setDss(depthOn ? depthState(compare, zwrite) : depthState(kAlways, false));
     if (blend.enabled && !fetch)
@@ -514,6 +584,13 @@ void GSMetalBackend::Impl::draw(const GSDrawState &s, const std::vector<HwVertex
         [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:dverts.size()];
     }
     ++stats.batches;
+    ++encDraws;
+    encFetch += fetch ? 1u : 0u;
+    encReint += u.reinterp ? 1u : 0u;
+    encIdx += u.indexed ? 1u : 0u;
+    encRt += u.rtTex24 != 0 || u.zTex != 0 ? 1u : 0u;
+    encLin += u.linear ? 1u : 0u;
+    encVerts += static_cast<uint32_t>(dverts.size());
     // GOW_GS_MTL_TRACE=<present>[/<present>...][:x,y]: every batch of those frames with its state and the pixel (PS2 x, y;
     // default the centre of the scene) it leaves in its target (one readback per batch: debug only)
     static const char *trace = std::getenv("GOW_GS_MTL_TRACE");
@@ -554,11 +631,11 @@ void GSMetalBackend::Impl::reportStats()
     if (now - stats.last < std::chrono::seconds(5))
         return;
     stats.last = now;
-    std::fprintf(stderr, "[gs-hw] shuffles=%llu draws=%llu batches=%llu texDecodes=%llu texHits=%llu skippedPsm=%llu skippedPrim=%llu unsupportedBlend=%llu textures=%zu feedbackCopies=%llu commits=%llu pipelines=%zu\n",
+    std::fprintf(stderr, "[gs-hw] shuffles=%llu draws=%llu batches=%llu texDecodes=%llu texHits=%llu depals=%llu skippedPsm=%llu skippedPrim=%llu unsupportedBlend=%llu textures=%zu feedbackCopies=%llu feedbackMpx=%.1f commits=%llu pipelines=%zu gpu_ms=%.0f\n",
                  (unsigned long long)stats.shuffles, (unsigned long long)stats.draws, (unsigned long long)stats.batches, (unsigned long long)stats.texDecodes,
-                 (unsigned long long)stats.texHits, (unsigned long long)stats.skippedPsm, (unsigned long long)stats.skippedPrim,
-                 (unsigned long long)stats.unsupportedBlend, textures.size(), (unsigned long long)stats.feedbackCopies,
-                 (unsigned long long)stats.commits, pipelines.size());
+                 (unsigned long long)stats.texHits, (unsigned long long)stats.depals, (unsigned long long)stats.skippedPsm, (unsigned long long)stats.skippedPrim,
+                 (unsigned long long)stats.unsupportedBlend, textures.size(), (unsigned long long)stats.feedbackCopies, stats.feedbackPixels * 1e-6,
+                 (unsigned long long)stats.commits, pipelines.size(), gpuNanos->exchange(0u) * 1e-6);
     stats = {};
     stats.last = now;
 }

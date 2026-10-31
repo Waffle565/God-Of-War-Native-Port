@@ -29,6 +29,13 @@ public:
     void Sync(GSSyncReason reason) override;
     // RAM presentation (stage 1): the composed frame is read back and returned as pixels for the host window.
     PresentationFrame Present(const GSPresentationRequest &request) override;
+    // the window has a CAMetalLayer (gs_metal_layer.h): Present draws into it and returns no pixels, except for
+    // forceReadback requests (captures)
+    bool UsesSharedPresentation() const override;
+
+    // GSDrawState equality field by field: the struct has padding bytes the frontend leaves undefined, so a memcmp of two
+    // equal states fails at nearly every primitive (one draw per triangle, a DrawState op per primitive in the GS queue)
+    static bool SameDrawState(const GSDrawState &a, const GSDrawState &b);
 
     bool ClearFramebuffer(const GSContext &context, uint32_t rgba) override;
     uint32_t ConsumeLocalToHostBytes(uint8_t *dst, uint32_t maxBytes) override;

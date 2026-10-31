@@ -157,19 +157,55 @@ GSMetalBackend::Impl::Texture &GSMetalBackend::Impl::indexTextureFor(const GSDra
     tex.blockHi = t.tbp0 + spanBlocks(t.psm, t.tbw, tex.height);
     tex.tex = newTexture(MTLPixelFormatR8Unorm, tex.width, tex.height, false);
     [tex.tex replaceRegion:MTLRegionMake2D(0, 0, tex.width, tex.height) mipmapLevel:0 withBytes:indices.data() bytesPerRow:tex.width];
+    tex.generation = ++textureGeneration;
+    tex.indices = std::move(indices);
     tex.valid = true;
     if (textures.size() > 6000u)
         evictOld();
     return textures[key];
 }
 
-// 256 RGBA entries of the current CLUT as the draw reads it (format, offset, TEXA alpha), cached per CLUT
-id<MTLBuffer> GSMetalBackend::Impl::paletteFor(const GSDrawState &s)
+// the CLUT as the draw reads it: loaded colours, format, offset, TEXA alpha
+uint64_t GSMetalBackend::Impl::paletteKey(const GSDrawState &s) const
 {
     const GSTex0Reg &t = s.context.tex0;
     uint64_t key = clutHash;
     key = key * 1099511628211ull ^ (t.cpsm | (t.csm << 8) | (t.csa << 16) | (static_cast<uint64_t>(t.psm & 63) << 24));
     key = key * 1099511628211ull ^ (static_cast<uint64_t>(s.texa.ta0) | (static_cast<uint64_t>(s.texa.ta1) << 8) | (static_cast<uint64_t>(s.texa.aem) << 16));
+    return key;
+}
+
+GSMetalBackend::Impl::Texture &GSMetalBackend::Impl::depalTextureFor(const GSDrawState &s, const Texture &index)
+{
+    const uint64_t key = index.generation * 0x9E3779B97F4A7C15ull ^ paletteKey(s);
+    {
+        Texture &tex = depalCache[key];
+        tex.lastUse = ++useCounter;
+        if (tex.valid)
+            return tex;
+        ++stats.depals;
+        uint32_t colors[256];
+        store.BuildPalette(s, colors);
+        tex.width = index.width;
+        tex.height = index.height;
+        std::vector<uint32_t> pixels(index.indices.size());
+        for (size_t i = 0; i < pixels.size(); ++i)
+            pixels[i] = colors[index.indices[i]];
+        tex.tex = newTexture(MTLPixelFormatRGBA8Unorm, tex.width, tex.height, false);
+        [tex.tex replaceRegion:MTLRegionMake2D(0, 0, tex.width, tex.height) mipmapLevel:0 withBytes:pixels.data() bytesPerRow:tex.width * 4u];
+        tex.valid = true;
+    }
+    // animated CLUTs (the title's fire) make new copies every frame: keep the set small, drop what was not used lately
+    if (depalCache.size() > 1024u)
+        for (auto it = depalCache.begin(); it != depalCache.end();)
+            it = it->second.lastUse + 3000u < useCounter ? depalCache.erase(it) : std::next(it);
+    return depalCache[key];
+}
+
+// 256 RGBA entries of the current CLUT as the draw reads it, cached per CLUT
+id<MTLBuffer> GSMetalBackend::Impl::paletteFor(const GSDrawState &s)
+{
+    const uint64_t key = paletteKey(s);
     if (const auto it = palettes.find(key); it != palettes.end())
         return it->second;
     if (palettes.size() > 4096u)

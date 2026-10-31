@@ -82,6 +82,12 @@ namespace gsmtl
         float invW, invH;
     };
 
+    struct ScaleUniforms
+    {
+        float originX, originY, sizeX, sizeY;
+        float srcW, srcH, sharpen, plain;
+    };
+
     struct Texture
     {
         id<MTLTexture> tex = nil;
@@ -89,6 +95,8 @@ namespace gsmtl
         uint32_t blockLo = 0, blockHi = 0;
         bool valid = false;
         uint64_t lastUse = 0;
+        uint64_t generation = 0;        // decode number (paletted textures: keys the converted RGBA copies)
+        std::vector<uint8_t> indices;   // paletted textures: the indices, kept to convert them with a CLUT on the CPU
     };
 
     struct RenderTarget
@@ -105,7 +113,7 @@ namespace gsmtl
     };
 
     // pipeline kinds (vertex + fragment function pairs)
-    enum class Pso : uint8_t { Main, Fetch, Shuffle, Present, Color, Clut };
+    enum class Pso : uint8_t { Main, Fetch, Shuffle, Present, Color, Clut, Scale };
     // blend factors (0-5 are also the codes fs_fetch understands)
     enum Factor : uint8_t { kZero = 0, kOne, kSrc1Alpha, kOneMinusSrc1Alpha, kConstant, kOneMinusConstant, kSrcAlpha, kOneMinusSrcAlpha };
     // depth compare functions
@@ -176,7 +184,7 @@ struct GSMetalBackend::Impl
     id<MTLBuffer> tables = nil;       // forward + inverse page tables (uint16), see buildTables
     id<MTLBuffer> zeroBuffer = nil;   // bound where a shader buffer is not used
     id<MTLTexture> dummyColor = nil, dummyDepth = nil;
-    std::unordered_map<uint32_t, id<MTLRenderPipelineState>> pipelines;
+    std::unordered_map<uint64_t, id<MTLRenderPipelineState>> pipelines;
     std::unordered_map<uint32_t, id<MTLDepthStencilState>> depthStates;
     std::unordered_map<uint32_t, id<MTLSamplerState>> samplers;
     std::unordered_map<uint64_t, id<MTLTexture>> scratch; // copies of render targets sampled while drawn into
@@ -187,7 +195,11 @@ struct GSMetalBackend::Impl
     id<MTLRenderPipelineState> encPso = nil;
     id<MTLDepthStencilState> encDss = nil;
     uint64_t cmdSerial = 0;
+    // GOW_GS_MTL_LABELS=1: render passes are labelled with their target and draw count (GPU traces)
+    bool labels = std::getenv("GOW_GS_MTL_LABELS") != nullptr;
+    uint32_t encFbp = 0, encDraws = 0, encVerts = 0, encFetch = 0, encReint = 0, encIdx = 0, encRt = 0, encLin = 0;
     std::shared_ptr<std::atomic<uint64_t>> completedSerial = std::make_shared<std::atomic<uint64_t>>(0u);
+    std::shared_ptr<std::atomic<uint64_t>> gpuNanos = std::make_shared<std::atomic<uint64_t>>(0u); // GPU busy time (stats)
     struct Chunk
     {
         id<MTLBuffer> buffer = nil;
@@ -206,15 +218,26 @@ struct GSMetalBackend::Impl
     // a pass that only clears the given attachments (nil = not touched)
     void clearPass(id<MTLTexture> color, id<MTLTexture> depth, MTLClearColor clearColor);
     void commit(bool wait);
-    id<MTLRenderPipelineState> pipelineFor(gsmtl::Pso kind, uint8_t writeMask, bool hasDepth, const gsmtl::BlendDesc &blend = {});
+    // texPath / flags (kTexPath / kFlags of gs_metal_shaders.inc, Main and Fetch only): the specialised pipeline once it has
+    // compiled in the background, the generic one until then (no compile stall in the middle of a frame)
+    id<MTLRenderPipelineState> pipelineFor(gsmtl::Pso kind, uint8_t writeMask, bool hasDepth, const gsmtl::BlendDesc &blend = {},
+                                           int texPath = -1, int flags = -1);
+    struct SpecSlot
+    {
+        std::atomic<int> state{0}; // 1 compiling, 2 ready, 3 failed
+        id<MTLRenderPipelineState> pso = nil;
+    };
+    std::unordered_map<uint64_t, std::shared_ptr<SpecSlot>> specPending;
+    bool specialize = [] { const char *v = std::getenv("GOW_GS_MTL_SPECIALIZE"); return !(v && *v == '0'); }();
     id<MTLDepthStencilState> depthState(gsmtl::Compare compare, bool write);
     id<MTLSamplerState> samplerFor(bool linear, bool clampU, bool clampV);
     void setPso(id<MTLRenderPipelineState> pso);
     void setDss(id<MTLDepthStencilState> dss);
     // copies `bytes` into the vertex arena; returns the buffer and the offset
     id<MTLBuffer> upload(const void *data, size_t bytes, NSUInteger &offset);
-    // the texture as it is now, safe to sample while `dst` is drawn into (a copy when it is one of dst's attachments)
-    id<MTLTexture> sampleable(id<MTLTexture> texture, const RenderTarget &dst);
+    // the texture as it is now, safe to sample while `dst` is drawn into (a copy when it is one of dst's attachments, of
+    // `area` only when given)
+    id<MTLTexture> sampleable(id<MTLTexture> texture, const RenderTarget &dst, const MTLRegion *area = nullptr);
     id<MTLTexture> newTexture(MTLPixelFormat format, uint32_t width, uint32_t height, bool renderTarget);
     // GPU -> CPU copy of a region (RGBA8 or R32 formats, 4 bytes per pixel); commits and waits
     void readback(id<MTLTexture> texture, uint32_t x, uint32_t y, uint32_t w, uint32_t h, void *out);
@@ -240,7 +263,14 @@ struct GSMetalBackend::Impl
     Texture &textureFor(const GSDrawState &s);
     void decodeDirect(const GSDrawState &s, std::vector<uint32_t> &out);
     Texture &indexTextureFor(const GSDrawState &s);
+    uint64_t paletteKey(const GSDrawState &s) const;
     id<MTLBuffer> paletteFor(const GSDrawState &s);
+    // a paletted texture converted to RGBA with the current CLUT, cached per (decode, CLUT): sampled with one hardware
+    // (bilinear) fetch instead of four index reads + palette lookups per fragment. GOW_GS_MTL_DEPAL=0: shader lookups.
+    std::unordered_map<uint64_t, Texture> depalCache;
+    uint64_t textureGeneration = 0;
+    bool depalEnabled = [] { const char *v = std::getenv("GOW_GS_MTL_DEPAL"); return !(v && *v == '0'); }();
+    Texture &depalTextureFor(const GSDrawState &s, const Texture &index);
     void evictOld();
     void invalidateBlocks(uint32_t lo, uint32_t hi);
     RenderTarget *findReinterpretSource(uint32_t tbp, uint8_t tpsm);
@@ -287,15 +317,17 @@ struct GSMetalBackend::Impl
 
     struct Stats
     {
-        uint64_t shuffles = 0, draws = 0, batches = 0, skippedPsm = 0, unsupportedBlend = 0, texDecodes = 0, texHits = 0,
-                 skippedPrim = 0, feedbackCopies = 0, commits = 0;
+        uint64_t shuffles = 0, draws = 0, batches = 0, skippedPsm = 0, unsupportedBlend = 0, texDecodes = 0, texHits = 0, depals = 0,
+                 skippedPrim = 0, feedbackCopies = 0, feedbackPixels = 0, commits = 0;
         std::chrono::steady_clock::time_point last = std::chrono::steady_clock::now();
     } stats;
     bool statsEnabled = std::getenv("GOW_GS_HW_STATS") != nullptr;
 
     static void openSharedSide(const SpriteEdges &prev, const SpriteEdges &cur, HwVertex *prevVertices, float &cu0, float &cu1,
                                float &cv0, float &cv1);
-    static bool sameState(const GSDrawState &a, const GSDrawState &b) { return std::memcmp(&a, &b, sizeof(GSDrawState)) == 0; }
+    // field by field: GSDrawState has padding bytes that the frontend leaves undefined (a memcmp of the whole struct saw
+    // a different state at nearly every primitive and drew each triangle on its own)
+    static bool sameState(const GSDrawState &a, const GSDrawState &b);
     void addVertex(const GSDrawState &s, const GSVertex &v, float u, float tv, float zmax);
     void submit(const GSPrimitiveBatch &b);
     void flushPending();
@@ -309,6 +341,12 @@ struct GSMetalBackend::Impl
     id<MTLTexture> presentTex = nil;
     id<MTLBuffer> readbackBuffer = nil;
     uint32_t presentW = 0, presentH = 0;
+    // frames presented to the window layer and not finished on the GPU (at most kFramesInFlight)
+    dispatch_semaphore_t framesInFlight = nullptr;
+    uint64_t layerPresents = 0;
     PresentationFrame present(const GSPresentationRequest &request);
+    // the composed frame (nil: black) scaled into the window's CAMetalLayer at 16:9 and presented with vsync; commits
+    // without waiting
+    void presentToLayer(id<MTLTexture> frame, uint32_t width, uint32_t height);
     bool clearFramebuffer(const GSContext &context, uint32_t rgba);
 };

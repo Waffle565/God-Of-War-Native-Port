@@ -101,9 +101,11 @@ static float4 reinterpretTexel(int2 p, constant FsUniforms &u, const device usho
 
 static float4 indexedTexel(int2 p, constant FsUniforms &u, texture2d<float> tex, const device uint *ipal)
 {
+    // texture sizes are powers of two (1 << TW / TH), so REPEAT is a mask (also for negative texels); an integer % is
+    // a long instruction sequence on the GPU and this runs four times per bilinear fragment
     int2 size = max(int2(float2(u.texDimX, u.texDimY)), int2(1));
-    p.x = (u.wrapX == 0) ? ((p.x % size.x) + size.x) % size.x : clamp(p.x, 0, size.x - 1);
-    p.y = (u.wrapY == 0) ? ((p.y % size.y) + size.y) % size.y : clamp(p.y, 0, size.y - 1);
+    p.x = (u.wrapX == 0) ? (p.x & (size.x - 1)) : clamp(p.x, 0, size.x - 1);
+    p.y = (u.wrapY == 0) ? (p.y & (size.y - 1)) : clamp(p.y, 0, size.y - 1);
     int idx = int(tex.read(uint2(p)).r * 255.0 + 0.5);
     return unpack_unorm4x8_to_float(ipal[idx & 255]);
 }
@@ -130,11 +132,26 @@ static float3 blendSel(int sel, float3 cs, float3 cd) { return sel == 0 ? cs : s
 
 struct Shaded { float4 color; float4 blend; };
 
+// Specialisation of fs_main / fs_fetch (pipelineFor): the texture path and the per-draw switches as function constants, so
+// a draw's pipeline holds only its own code (the uber-shader's register footprint is that of its largest path). -1: generic,
+// everything read from FsUniforms (used until the specialised pipeline has compiled in the background).
+// kTexPath: 0 untextured, 1 direct / render target, 2 paletted, 3 reinterpreted target, 4 depth target.
+// kFlags: 1 linear, 2 swBlend, 4 zAlias, 8 date, 16 alpha-test pass.
+constant int kTexPath [[function_constant(0)]];
+constant int kFlags [[function_constant(1)]];
+
 static Shaded shade(VsOut in, float4 dest, constant FsUniforms &u, texture2d<float> tex, depth2d<float> ztex,
                     texture2d<float> rtColor, sampler smp, const device ushort *tables, constant uint *rpal, const device uint *ipal)
 {
+    const bool spec = kTexPath >= 0;
+    const int texPath = spec ? kTexPath : (u.tme == 0 ? 0 : u.reinterp != 0 ? 3 : u.indexed != 0 ? 2 : u.zTex != 0 ? 4 : 1);
+    const bool linear = spec ? (kFlags & 1) != 0 : u.linear != 0;
+    const bool swBlend = spec ? (kFlags & 2) != 0 : u.swBlend != 0;
+    const bool zAlias = spec ? (kFlags & 4) != 0 : u.zAlias != 0;
+    const bool date = spec ? (kFlags & 8) != 0 : u.date != 0;
+    const bool testPass = spec ? (kFlags & 16) != 0 : u.pass != 0;
     uint zFrag = uint(clamp(in.pos.z, 0.0, 1.0) * u.zAliasMax + 0.5);
-    if (u.zAlias != 0)
+    if (zAlias)
     {
         float4 d = floor(dest * 255.0 + 0.5);
         uint zd = uint(d.r) | (uint(d.g) << 8) | (uint(d.b) << 16);
@@ -142,7 +159,7 @@ static Shaded shade(VsOut in, float4 dest, constant FsUniforms &u, texture2d<flo
         bool pass = ztst == 1 || (ztst == 2 && zFrag >= zd) || (ztst == 3 && zFrag > zd);
         if (!pass) discard_fragment();
     }
-    if (u.date != 0)
+    if (date)
     {
         bool bit = dest.a >= 0.5;
         if (bit != (u.datm != 0)) discard_fragment();
@@ -150,25 +167,25 @@ static Shaded shade(VsOut in, float4 dest, constant FsUniforms &u, texture2d<flo
     float4 v = (u.iip != 0) ? in.col : in.colFlat;
     float3 rgb = v.rgb;
     float a = v.a;
-    if (u.tme != 0)
+    if (texPath != 0)
     {
         float q = (abs(in.stq.z) < 1e-30) ? 1e-30 : in.stq.z;
         float2 texDim = float2(u.texDimX, u.texDimY);
         float2 texSize = float2(u.texSizeX, u.texSizeY);
         float2 uv = (u.fst != 0) ? in.uv : (in.stq.xy / q) * texDim;
         uv = clamp(uv, in.uvClamp.xy, in.uvClamp.zw);
-        if (u.linear == 0)
+        if (!linear)
             uv = floor(uv * 16.0 + 0.015625) / 16.0;
         float4 t;
-        if (u.reinterp != 0)
+        if (texPath == 3)
         {
             int2 ip = int2(floor(uv));
             ip = int2(clamp(ip.x, 0, u.tex0[2] - 1), clamp(ip.y, 0, u.tex0[3] - 1));
             t = reinterpretTexel(ip, u, tables, rtColor, rpal) * 255.0;
         }
-        else if (u.indexed != 0)
+        else if (texPath == 2)
         {
-            if (u.linear != 0)
+            if (linear)
             {
                 float2 f = uv - 0.5;
                 int2 i0 = int2(floor(f));
@@ -179,7 +196,7 @@ static Shaded shade(VsOut in, float4 dest, constant FsUniforms &u, texture2d<flo
             else
                 t = indexedTexel(int2(floor(uv)), u, tex, ipal) * 255.0;
         }
-        else if (u.zTex != 0)
+        else if (texPath == 4)
         {
             float2 zhost = float2(float(ztex.get_width()), float(ztex.get_height()));
             float zf = ztex.sample(kNearest, (floor(uv * zhost / texSize + 0.001) + 0.5) / zhost);
@@ -192,7 +209,7 @@ static Shaded shade(VsOut in, float4 dest, constant FsUniforms &u, texture2d<flo
             else
                 t = float4(float(zi & 255u), float((zi >> 8) & 255u), float((zi >> 16) & 255u), 128.0);
         }
-        else if (u.linear == 0)
+        else if (!linear)
         {
             float2 host = float2(float(tex.get_width()), float(tex.get_height()));
             t = tex.sample(smp, (floor(uv * host / texSize + 0.001) + 0.5) / host) * 255.0;
@@ -226,14 +243,14 @@ static Shaded shade(VsOut in, float4 dest, constant FsUniforms &u, texture2d<flo
             a = ta;
         }
     }
-    if (u.pass != 0)
+    if (testPass)
     {
         bool pass = (u.ate == 0) || alphaPasses(a, u.atst, u.aref);
         if (u.pass == 1 && !pass) discard_fragment();
         if (u.pass == 2 && pass) discard_fragment();
         if (u.pass == 2 && u.failTint != 0) { rgb = float3(255.0, 0.0, 255.0); a = 128.0; }
     }
-    if (u.swBlend != 0)
+    if (swBlend)
     {
         float4 d = floor(dest * 255.0 + 0.5);
         float3 cs = floor(rgb);
@@ -241,7 +258,7 @@ static Shaded shade(VsOut in, float4 dest, constant FsUniforms &u, texture2d<flo
         float3 r = floor((blendSel(u.abcd[0], cs, d.rgb) - blendSel(u.abcd[1], cs, d.rgb)) * c / 128.0) + blendSel(u.abcd[3], cs, d.rgb);
         rgb = (u.colClamp != 0) ? clamp(r, 0.0, 255.0) : r - 256.0 * floor(r / 256.0);
     }
-    if (u.zAlias != 0 && u.zAliasWrite != 0)
+    if (zAlias && u.zAliasWrite != 0)
         rgb = float3(float(zFrag & 255u), float((zFrag >> 8) & 255u), float((zFrag >> 16) & 255u));
     Shaded s;
     s.color = float4(rgb / 255.0, a / 255.0);
@@ -354,6 +371,48 @@ fragment float4 fs_present(FullOut in [[stage_in]], constant PresentUniforms &u 
     float4 c = (p.x < size.x && p.y < size.y) ? src.read(uint2(p)) : float4(0.0);
     float a = (u.ct24 != 0) ? 128.0 / 255.0 : c.a;
     return float4(c.rgb, (u.alphaX2 != 0) ? min(1.0, a * 2.0) : a);
+}
+
+// window output (CAMetalLayer): the composed frame scaled into its 16:9 rectangle (the viewport) with the host's
+// scaler (gs_host_present.cpp kScalerFragment): 5-tap Catmull-Rom bicubic + contrast-adaptive sharpen when magnified,
+// one bilinear tap otherwise
+struct ScaleUniforms { float2 origin, size, srcSize; float sharpen, plain; };
+constexpr sampler kLinear(coord::normalized, filter::linear, address::clamp_to_edge);
+
+fragment float4 fs_scale(FullOut in [[stage_in]], constant ScaleUniforms &u [[buffer(0)]], texture2d<float> src [[texture(0)]])
+{
+    float2 uvIn = (in.pos.xy - u.origin) / u.size;
+    if (u.plain > 0.5)
+        return float4(src.sample(kLinear, uvIn).rgb, 1.0);
+    float2 pos = uvIn * u.srcSize;
+    float2 center = floor(pos - 0.5) + 0.5;
+    float2 f = pos - center;
+    float2 f2 = f * f, f3 = f2 * f;
+    float2 w0 = -0.5 * f3 + f2 - 0.5 * f;
+    float2 w1 = 1.5 * f3 - 2.5 * f2 + 1.0;
+    float2 w2 = -1.5 * f3 + 2.0 * f2 + 0.5 * f;
+    float2 w3 = 0.5 * f3 - 0.5 * f2;
+    float2 w12 = w1 + w2;
+    float2 offset12 = w2 / w12;
+    float2 tc0 = (center - 1.0) / u.srcSize;
+    float2 tc3 = (center + 2.0) / u.srcSize;
+    float2 tc12 = (center + offset12) / u.srcSize;
+    float4 c = src.sample(kLinear, float2(tc12.x, tc0.y)) * (w12.x * w0.y)
+             + src.sample(kLinear, float2(tc0.x, tc12.y)) * (w0.x * w12.y)
+             + src.sample(kLinear, float2(tc12.x, tc12.y)) * (w12.x * w12.y)
+             + src.sample(kLinear, float2(tc3.x, tc12.y)) * (w3.x * w12.y)
+             + src.sample(kLinear, float2(tc12.x, tc3.y)) * (w12.x * w3.y);
+    float norm = (w12.x * w0.y) + (w0.x * w12.y) + (w12.x * w12.y) + (w3.x * w12.y) + (w12.x * w3.y);
+    c /= norm;
+    float2 px = 1.0 / u.srcSize;
+    float3 n = src.sample(kLinear, uvIn + float2(0.0, -px.y)).rgb, s = src.sample(kLinear, uvIn + float2(0.0, px.y)).rgb;
+    float3 e = src.sample(kLinear, uvIn + float2(px.x, 0.0)).rgb, w = src.sample(kLinear, uvIn + float2(-px.x, 0.0)).rgb;
+    float3 lo = min(min(n, s), min(e, w)), hi = max(max(n, s), max(e, w));
+    float3 amp = clamp(min(lo, 1.0 - hi) / max(hi, float3(0.0001)), 0.0, 1.0);
+    float peak = -1.0 / mix(8.0, 5.0, u.sharpen);
+    float3 wgt = sqrt(amp) * peak;
+    float3 sharp = (c.rgb + (n + s + e + w) * wgt) / (1.0 + 4.0 * wgt);
+    return float4(clamp(sharp, 0.0, 1.0), 1.0);
 }
 
 fragment float4 fs_color(FullOut in [[stage_in]], constant float4 &color [[buffer(0)]])

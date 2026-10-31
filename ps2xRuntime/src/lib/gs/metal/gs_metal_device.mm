@@ -128,8 +128,13 @@ id<MTLCommandBuffer> GSMetalBackend::Impl::commands()
     {
         cmd = [queue commandBuffer];
         const uint64_t serial = ++cmdSerial;
-        std::shared_ptr<std::atomic<uint64_t>> done = completedSerial;
-        [cmd addCompletedHandler:^(id<MTLCommandBuffer>) { done->store(serial, std::memory_order_release); }];
+        std::shared_ptr<std::atomic<uint64_t>> done = completedSerial, gpu = gpuNanos;
+        const bool timed = statsEnabled;
+        [cmd addCompletedHandler:^(id<MTLCommandBuffer> b) {
+            if (timed && b.GPUEndTime > b.GPUStartTime)
+                gpu->fetch_add(static_cast<uint64_t>((b.GPUEndTime - b.GPUStartTime) * 1e9), std::memory_order_relaxed);
+            done->store(serial, std::memory_order_release);
+        }];
     }
     return cmd;
 }
@@ -138,6 +143,10 @@ void GSMetalBackend::Impl::endEncoder()
 {
     if (!enc)
         return;
+    if (labels)
+        enc.label = [NSString stringWithFormat:@"rt fbp=%u %lux%lu draws=%u verts=%u fetch=%u reint=%u idx=%u rtsrc=%u lin=%u", encFbp,
+                                               (unsigned long)encColor.width, (unsigned long)encColor.height, encDraws, encVerts, encFetch,
+                                               encReint, encIdx, encRt, encLin];
     [enc endEncoding];
     enc = nil;
     encColor = encDepth = nil;
@@ -162,6 +171,8 @@ id<MTLRenderCommandEncoder> GSMetalBackend::Impl::beginPass(RenderTarget &rt)
     }
     enc = [commands() renderCommandEncoderWithDescriptor:pass];
     encColor = rt.color;
+    encFbp = rt.fbp;
+    encDraws = encVerts = encFetch = encReint = encIdx = encRt = encLin = 0;
     encDepth = rt.depth;
     [enc setViewport:MTLViewport{0.0, 0.0, static_cast<double>(rt.glW), static_cast<double>(rt.glH), 0.0, 1.0}];
     [enc setCullMode:MTLCullModeNone];
@@ -202,22 +213,45 @@ void GSMetalBackend::Impl::commit(bool wait)
     ++stats.commits;
 }
 
-id<MTLRenderPipelineState> GSMetalBackend::Impl::pipelineFor(Pso kind, uint8_t writeMask, bool hasDepth, const BlendDesc &b)
+id<MTLRenderPipelineState> GSMetalBackend::Impl::pipelineFor(Pso kind, uint8_t writeMask, bool hasDepth, const BlendDesc &b, int texPath,
+                                                         int flags)
 {
-    uint32_t key = static_cast<uint32_t>(kind) | (static_cast<uint32_t>(writeMask & 15u) << 3) | (hasDepth ? 1u << 7 : 0u);
+    const bool shaded = kind == Pso::Main || kind == Pso::Fetch;
+    if (!shaded || !specialize)
+        texPath = flags = -1;
+    uint64_t key = static_cast<uint64_t>(kind) | (static_cast<uint64_t>(writeMask & 15u) << 3) | (hasDepth ? 1ull << 7 : 0ull);
     if (b.enabled)
-        key |= 1u << 8 | static_cast<uint32_t>(b.sf) << 9 | static_cast<uint32_t>(b.df) << 12 | static_cast<uint32_t>(b.asf) << 15 |
-               static_cast<uint32_t>(b.adf) << 18 | (b.reverse ? 1u << 21 : 0u);
+        key |= 1ull << 8 | static_cast<uint64_t>(b.sf) << 9 | static_cast<uint64_t>(b.df) << 12 | static_cast<uint64_t>(b.asf) << 15 |
+               static_cast<uint64_t>(b.adf) << 18 | (b.reverse ? 1ull << 21 : 0ull);
+    key |= static_cast<uint64_t>(texPath + 1) << 24 | static_cast<uint64_t>(flags + 1) << 32;
     if (const auto it = pipelines.find(key); it != pipelines.end())
         return it->second;
     static const char *const names[][2] = {{"vs_main", "fs_main"}, {"vs_main", "fs_fetch"}, {"vs_shuffle", "fs_shuffle"},
-                                           {"vs_full", "fs_present"}, {"vs_full", "fs_color"}, {"vs_full", "fs_clut"}};
+                                           {"vs_full", "fs_present"}, {"vs_full", "fs_color"}, {"vs_full", "fs_clut"},
+                                           {"vs_full", "fs_scale"}};
     const auto *pair = names[static_cast<int>(kind)];
+    std::shared_ptr<SpecSlot> slot;
+    if (texPath >= 0)
+    {
+        std::shared_ptr<SpecSlot> &pending = specPending[key];
+        if (pending)
+        {
+            const int state = pending->state.load(std::memory_order_acquire);
+            if (state == 1)
+                return pipelineFor(kind, writeMask, hasDepth, b);
+            id<MTLRenderPipelineState> ready = state == 2 ? pending->pso : pipelineFor(kind, writeMask, hasDepth, b);
+            pipelines[key] = ready;
+            specPending.erase(key);
+            return ready;
+        }
+        pending = std::make_shared<SpecSlot>();
+        pending->state.store(1);
+        slot = pending;
+    }
     MTLRenderPipelineDescriptor *d = [MTLRenderPipelineDescriptor new];
     d.vertexFunction = [library newFunctionWithName:[NSString stringWithUTF8String:pair[0]]];
-    d.fragmentFunction = [library newFunctionWithName:[NSString stringWithUTF8String:pair[1]]];
     MTLRenderPipelineColorAttachmentDescriptor *c = d.colorAttachments[0];
-    c.pixelFormat = MTLPixelFormatRGBA8Unorm;
+    c.pixelFormat = kind == Pso::Scale ? MTLPixelFormatBGRA8Unorm : MTLPixelFormatRGBA8Unorm; // Scale: the window layer
     c.writeMask = ((writeMask & kMaskR) ? MTLColorWriteMaskRed : 0) | ((writeMask & kMaskG) ? MTLColorWriteMaskGreen : 0) |
                   ((writeMask & kMaskB) ? MTLColorWriteMaskBlue : 0) | ((writeMask & kMaskA) ? MTLColorWriteMaskAlpha : 0);
     c.blendingEnabled = b.enabled ? YES : NO;
@@ -231,8 +265,34 @@ id<MTLRenderPipelineState> GSMetalBackend::Impl::pipelineFor(Pso kind, uint8_t w
         c.alphaBlendOperation = MTLBlendOperationAdd;
     }
     d.depthAttachmentPixelFormat = hasDepth ? MTLPixelFormatDepth32Float : MTLPixelFormatInvalid;
+    NSString *fragmentName = [NSString stringWithUTF8String:pair[1]];
+    MTLFunctionConstantValues *constants = [MTLFunctionConstantValues new];
+    const int32_t tp = texPath, fl = flags;
+    [constants setConstantValue:&tp type:MTLDataTypeInt atIndex:0];
+    [constants setConstantValue:&fl type:MTLDataTypeInt atIndex:1];
+    if (slot)
+    {
+        id<MTLDevice> dev = device;
+        [library newFunctionWithName:fragmentName constantValues:constants
+                   completionHandler:^(id<MTLFunction> function, NSError *) {
+                       if (!function)
+                       {
+                           slot->state.store(3, std::memory_order_release);
+                           return;
+                       }
+                       d.fragmentFunction = function;
+                       [dev newRenderPipelineStateWithDescriptor:d
+                                               completionHandler:^(id<MTLRenderPipelineState> pso, NSError *) {
+                                                   slot->pso = pso;
+                                                   slot->state.store(pso ? 2 : 3, std::memory_order_release);
+                                               }];
+                   }];
+        return pipelineFor(kind, writeMask, hasDepth, b);
+    }
     NSError *error = nil;
-    id<MTLRenderPipelineState> pso = [device newRenderPipelineStateWithDescriptor:d error:&error];
+    d.fragmentFunction = shaded ? [library newFunctionWithName:fragmentName constantValues:constants error:&error]
+                                : [library newFunctionWithName:fragmentName];
+    id<MTLRenderPipelineState> pso = d.fragmentFunction ? [device newRenderPipelineStateWithDescriptor:d error:&error] : nil;
     if (!pso)
         std::fprintf(stderr, "[gs-mtl] pipeline %s/%s failed: %s\n", pair[0], pair[1], error ? error.localizedDescription.UTF8String : "?");
     pipelines[key] = pso;
@@ -310,8 +370,9 @@ id<MTLBuffer> GSMetalBackend::Impl::upload(const void *data, size_t bytes, NSUIn
 }
 
 // The GL renderer sampled a target while drawing into it after glTextureBarrier (what was drawn before the draw is
-// visible). A Metal attachment cannot be sampled in its own pass, so the pass is ended and the texture copied.
-id<MTLTexture> GSMetalBackend::Impl::sampleable(id<MTLTexture> texture, const RenderTarget &dst)
+// visible). A Metal attachment cannot be sampled in its own pass, so the pass is ended and the texture copied (only `area`,
+// host pixels, when the caller knows what the draw samples; the rest of the copy is stale and never read).
+id<MTLTexture> GSMetalBackend::Impl::sampleable(id<MTLTexture> texture, const RenderTarget &dst, const MTLRegion *area)
 {
     if (!texture || (texture != dst.color && texture != dst.depth))
         return texture;
@@ -322,7 +383,17 @@ id<MTLTexture> GSMetalBackend::Impl::sampleable(id<MTLTexture> texture, const Re
         copy = newTexture(texture.pixelFormat, static_cast<uint32_t>(texture.width), static_cast<uint32_t>(texture.height), true);
     endEncoder();
     id<MTLBlitCommandEncoder> blit = [commands() blitCommandEncoder];
-    [blit copyFromTexture:texture toTexture:copy];
+    if (area)
+    {
+        [blit copyFromTexture:texture sourceSlice:0 sourceLevel:0 sourceOrigin:area->origin sourceSize:area->size toTexture:copy
+             destinationSlice:0 destinationLevel:0 destinationOrigin:area->origin];
+        stats.feedbackPixels += static_cast<uint64_t>(area->size.width) * area->size.height;
+    }
+    else
+    {
+        [blit copyFromTexture:texture toTexture:copy];
+        stats.feedbackPixels += static_cast<uint64_t>(texture.width) * texture.height;
+    }
     [blit endEncoding];
     ++stats.feedbackCopies;
     return copy;

@@ -143,7 +143,12 @@ void GSThreadedBackend::Enqueue(Op op, const void *payload, uint32_t size)
     if (op == Op::Submit && m_compactQueue)
     {
         const auto &draw = *static_cast<const GSPrimitiveBatch *>(payload);
+#if defined(PS2X_HAVE_METAL)
+        // GOW-Port (macOS): field-wise, the padding of GSDrawState is not initialised (gs_metal_backend.h)
+        if (!m_drawStateValid || !GSMetalBackend::SameDrawState(m_lastDrawState, draw.state))
+#else
         if (!m_drawStateValid || std::memcmp(&m_lastDrawState, &draw.state, sizeof(draw.state)) != 0)
+#endif
         {
             std::memcpy(&m_lastDrawState, &draw.state, sizeof(draw.state));
             m_drawStateValid = true;
