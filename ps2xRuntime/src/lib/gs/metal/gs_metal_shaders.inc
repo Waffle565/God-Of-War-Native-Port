@@ -318,7 +318,7 @@ fragment float4 fs_fetch(VsOut in [[stage_in]], float4 dest [[color(0), raster_o
 // ---- channel shuffles
 struct ShVertex { float x, y, ox, oy; };
 struct ShVsOut { float4 pos [[position]]; float2 off [[flat]]; };
-struct ShUniforms { int srcZ, hs, hd, pad0; float zMax, scale, pad1, pad2; int texa[4]; };
+struct ShUniforms { int srcZ, hs, hd, pad0; float zMax, scaleX, scaleY, pad1; int texa[4]; };
 
 vertex ShVsOut vs_shuffle(uint vid [[vertex_id]], const device ShVertex *verts [[buffer(0)]], constant VsUniforms &vu [[buffer(1)]])
 {
@@ -333,7 +333,7 @@ vertex ShVsOut vs_shuffle(uint vid [[vertex_id]], const device ShVertex *verts [
 fragment float4 fs_shuffle(ShVsOut in [[stage_in]], constant ShUniforms &u [[buffer(0)]], texture2d<float> src [[texture(0)]],
                            depth2d<float> srcDepth [[texture(1)]])
 {
-    int2 p = int2(in.pos.xy) + int2(round(in.off * u.scale));
+    int2 p = int2(in.pos.xy) + int2(round(in.off * float2(u.scaleX, u.scaleY)));
     float4 c;
     if (u.srcZ != 0)
     {
@@ -362,11 +362,11 @@ vertex FullOut vs_full(uint vid [[vertex_id]])
     return o;
 }
 
-struct PresentUniforms { int offX, offY, ct24, alphaX2; int edge, pad0, pad1, pad2; };
+struct PresentUniforms { int offX, offY, ct24, alphaX2; int edgeX, edgeY, pad0, pad1; };
 
 fragment float4 fs_present(FullOut in [[stage_in]], constant PresentUniforms &u [[buffer(0)]], texture2d<float> src [[texture(0)]])
 {
-    int2 p = max(int2(in.pos.xy) + int2(u.offX, u.offY), int2(u.edge));
+    int2 p = max(int2(in.pos.xy) + int2(u.offX, u.offY), int2(u.edgeX, u.edgeY));
     int2 size = int2(int(src.get_width()), int(src.get_height()));
     float4 c = (p.x < size.x && p.y < size.y) ? src.read(uint2(p)) : float4(0.0);
     float a = (u.ct24 != 0) ? 128.0 / 255.0 : c.a;

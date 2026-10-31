@@ -176,7 +176,8 @@ void GSMetalBackend::Impl::flushShuffle()
     ShUniforms u{};
     u.srcZ = shuffleSrcZ ? 1 : 0;
     u.zMax = zMaxFor(c.zbuf.psm);
-    u.scale = scale;
+    u.scaleX = scaleX;
+    u.scaleY = scaleY;
     u.texa[0] = shuffleState.texa.ta0 >> 7;
     u.texa[1] = shuffleState.texa.ta1 >> 7;
     u.texa[2] = shuffleState.texa.aem ? 1 : 0;

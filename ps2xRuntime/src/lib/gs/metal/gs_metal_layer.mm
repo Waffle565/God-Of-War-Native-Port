@@ -36,6 +36,7 @@ namespace
     __weak NSWindow *s_window = nil;
     std::atomic<bool> s_active{false}, s_overlay{false}, s_visible{true};
     std::atomic<uint32_t> s_width{0}, s_height{0};
+    std::atomic<uint32_t> s_screenWidth{0}, s_screenHeight{0};
 }
 
 namespace GSMetalLayer
@@ -126,6 +127,12 @@ namespace GSMetalLayer
                 return;
             // a minimised or covered window gets no drawables (nextDrawable would stall the GS worker)
             s_visible.store((window.occlusionState & NSWindowOcclusionStateVisible) != 0);
+            if (NSScreen *screen = window.screen)
+            {
+                const CGFloat screenScale = screen.backingScaleFactor;
+                s_screenWidth.store(static_cast<uint32_t>(screen.frame.size.width * screenScale + 0.5));
+                s_screenHeight.store(static_cast<uint32_t>(screen.frame.size.height * screenScale + 0.5));
+            }
             const CGFloat scale = window.backingScaleFactor;
             const NSSize size = view.bounds.size;
             const uint32_t w = static_cast<uint32_t>(size.width * scale + 0.5), h = static_cast<uint32_t>(size.height * scale + 0.5);
@@ -143,6 +150,12 @@ namespace GSMetalLayer
     {
         width = s_width.load(std::memory_order_acquire);
         height = s_height.load(std::memory_order_acquire);
+    }
+
+    void ScreenSize(uint32_t &width, uint32_t &height)
+    {
+        width = s_screenWidth.load(std::memory_order_acquire);
+        height = s_screenHeight.load(std::memory_order_acquire);
     }
 
     CAMetalLayer *Layer()

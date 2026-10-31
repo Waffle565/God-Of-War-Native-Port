@@ -76,9 +76,8 @@ bool GSMetalBackend::Impl::ensure()
     [dummyColor replaceRegion:MTLRegionMake2D(0, 0, 1, 1) mipmapLevel:0 withBytes:&zero bytesPerRow:4];
     dummyDepth = newTexture(MTLPixelFormatDepth32Float, 1, 1, true);
     clearPass(nil, dummyDepth, MTLClearColorMake(0, 0, 0, 0));
-    if (const char *s = std::getenv("PS2X_GS_HW_SCALE"))
-        scale = std::max(1.0f, static_cast<float>(std::atof(s)));
-    std::fprintf(stderr, "[gs-hw] render-target renderer ready, scale %.2f (Metal: %s)\n", scale, device.name.UTF8String);
+    chooseScale();
+    std::fprintf(stderr, "[gs-hw] render-target renderer ready, scale %.3fx%.3f (Metal: %s)\n", scaleX, scaleY, device.name.UTF8String);
     readGfxOptions();
     repl = std::make_unique<gsrepl::Store>();
     if (!repl->init(device))
@@ -421,14 +420,14 @@ void GSMetalBackend::Impl::readback(id<MTLTexture> texture, uint32_t x, uint32_t
     std::memcpy(out, readbackBuffer.contents, bytes);
 }
 
-// GS scissor (inclusive PS2 pixels) at the internal scale, clamped to the target (Metal rejects rectangles outside it)
+// GS scissor (inclusive PS2 pixels) at the internal scale, clamped to the target (Metal rejects rectangles outside it): the
+// host pixels whose sample position k / scale lies inside it (the same rows and columns as before at whole scales)
 void GSMetalBackend::Impl::scissor(id<MTLRenderCommandEncoder> e, const RenderTarget &rt, int x0, int y0, int x1, int y1, bool &empty)
 {
-    const int w = std::max(0, x1 - x0 + 1), h = std::max(0, y1 - y0 + 1);
-    const long sx = std::min<long>(static_cast<long>(std::floor(x0 * scale)), rt.glW);
-    const long sy = std::min<long>(static_cast<long>(std::floor(y0 * scale)), rt.glH);
-    const long sw = std::min<long>(static_cast<long>(std::ceil(w * scale)), static_cast<long>(rt.glW) - sx);
-    const long sh = std::min<long>(static_cast<long>(std::ceil(h * scale)), static_cast<long>(rt.glH) - sy);
+    const long sx = std::min<long>(static_cast<long>(std::ceil(x0 * scaleX)), rt.glW);
+    const long sy = std::min<long>(static_cast<long>(std::ceil(y0 * scaleY)), rt.glH);
+    const long sw = std::min<long>(static_cast<long>(std::ceil(std::max(x0, x1 + 1) * scaleX)), rt.glW) - sx;
+    const long sh = std::min<long>(static_cast<long>(std::ceil(std::max(y0, y1 + 1) * scaleY)), rt.glH) - sy;
     empty = sw <= 0 || sh <= 0;
     if (!empty)
         [e setScissorRect:MTLScissorRect{static_cast<NSUInteger>(sx), static_cast<NSUInteger>(sy), static_cast<NSUInteger>(sw),

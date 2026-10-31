@@ -84,7 +84,9 @@ PresentationFrame GSMetalBackend::Impl::present(const GSPresentationRequest &req
     const uint32_t fbp = ok1 ? fbp1 : fbp2, w = ok1 ? w1 : w2, h = std::min(ok1 ? h1 : h2, kTvLines);
     frame.displayFbp = fbp;
     frame.sourceFbp = fbp;
-    const uint32_t outW = static_cast<uint32_t>(std::ceil(w * scale)), outH = static_cast<uint32_t>(std::ceil(h * scale));
+    // the host pixels that lie wholly inside the display (at 2.5x, 447 lines are 1117.5 rows: a last half row would show what
+    // the game leaves below its picture, a dark line)
+    const uint32_t outW = std::max(1u, static_cast<uint32_t>(std::floor(w * scaleX))), outH = std::max(1u, static_cast<uint32_t>(std::floor(h * scaleY)));
     frame.width = outW;
     frame.height = outH;
     if (!presentTex || presentW != outW || presentH != outH)
@@ -107,19 +109,21 @@ PresentationFrame GSMetalBackend::Impl::present(const GSPresentationRequest &req
     pass.colorAttachments[0].storeAction = MTLStoreActionStore;
     id<MTLRenderCommandEncoder> e = [commands() renderCommandEncoderWithDescriptor:pass];
     [e setViewport:MTLViewport{0.0, 0.0, static_cast<double>(outW), static_cast<double>(outH), 0.0, 1.0}];
-    // the first two PS2 rows and columns repeat the next one (the game's black line on row 0, hidden by TV overscan)
-    const int32_t edge = static_cast<int32_t>(std::lround(2.0f * scale));
+    // the first two PS2 rows and columns repeat the next one (the game's black line on row 0, hidden by TV overscan): host
+    // pixels below the first one that samples PS2 position 2 (draw.mm addVertex: host pixel k samples k / scale)
+    const int32_t edgeX = static_cast<int32_t>(std::ceil(2.0f * scaleX)), edgeY = static_cast<int32_t>(std::ceil(2.0f * scaleY));
     const auto drawCircuit = [&](uint32_t cfbp, uint64_t dispfb, uint32_t cdbx, uint32_t cdby, bool alphaFactor, const BlendDesc &blend)
     {
         RenderTarget *rt = findTarget(cfbp);
         if (!rt)
             return;
         PresentUniforms u{};
-        u.offX = static_cast<int32_t>(cdbx * scale);
-        u.offY = static_cast<int32_t>(cdby * scale);
+        u.offX = static_cast<int32_t>(std::lround(cdbx * scaleX));
+        u.offY = static_cast<int32_t>(std::lround(cdby * scaleY));
         u.ct24 = ((dispfb >> 15) & 0x1Fu) == GS_PSM_CT24 ? 1 : 0;
         u.alphaX2 = alphaFactor ? 1 : 0;
-        u.edge = edge;
+        u.edgeX = edgeX;
+        u.edgeY = edgeY;
         [e setRenderPipelineState:pipelineFor(Pso::Present, kMaskAll, false, blend)];
         [e setFragmentBytes:&u length:sizeof(u) atIndex:0];
         [e setFragmentTexture:rt->color atIndex:0];

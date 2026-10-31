@@ -23,6 +23,8 @@ namespace GSMetalLayer
     void UpdateSize();
     // GS worker: drawable size in pixels (0 x 0 until the host reported it)
     void DrawableSize(uint32_t &width, uint32_t &height);
+    // GS worker: pixel size of the screen the window is on (0 x 0 until the host reported it), what F11 fullscreen fills
+    void ScreenSize(uint32_t &width, uint32_t &height);
 }
 
 #if defined(__OBJC__)

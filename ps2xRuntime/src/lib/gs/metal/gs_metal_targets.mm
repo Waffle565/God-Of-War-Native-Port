@@ -39,8 +39,8 @@ void GSMetalBackend::Impl::createTarget(RenderTarget &t, uint32_t fbp, uint32_t 
     t.fbw = std::max<uint32_t>(fbw, 1u);
     t.pxW = t.fbw * 64u;
     t.pxH = 512u;
-    t.glW = static_cast<uint32_t>(std::ceil(t.pxW * scale));
-    t.glH = static_cast<uint32_t>(std::ceil(t.pxH * scale));
+    t.glW = static_cast<uint32_t>(std::ceil(t.pxW * scaleX));
+    t.glH = static_cast<uint32_t>(std::ceil(t.pxH * scaleY));
     t.color = newTexture(MTLPixelFormatRGBA8Unorm, t.glW, t.glH, true);
     clearPass(t.color, nil, MTLClearColorMake(0, 0, 0, 0));
     std::fprintf(stderr, "[gs-hw] render target fbp=%u fbw=%u -> %ux%u\n", fbp, t.fbw, t.glW, t.glH);

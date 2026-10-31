@@ -68,11 +68,11 @@ bool GSMetalBackend::SameDrawState(const GSDrawState &a, const GSDrawState &b)
 void GSMetalBackend::Impl::addVertex(const GSDrawState &s, const GSVertex &v, float u, float tv, float zmax)
 {
     const GSContext &c = s.context;
-    // half a HOST pixel: the PS2 sample point of pixel x lands on the centre of host pixel scale * x
-    const float half = 0.5f / scale;
+    // half a HOST pixel on each axis: host pixel k samples PS2 position k / scale (the PS2 sample point of pixel x lands on
+    // the centre of host pixel scale * x when that is whole)
     HwVertex h;
-    h.x = v.x - static_cast<float>(c.xyoffset.ofx) / 16.0f + half;
-    h.y = v.y - static_cast<float>(c.xyoffset.ofy) / 16.0f + half;
+    h.x = v.x - static_cast<float>(c.xyoffset.ofx) / 16.0f + 0.5f / scaleX;
+    h.y = v.y - static_cast<float>(c.xyoffset.ofy) / 16.0f + 0.5f / scaleY;
     double zq = std::max(v.z, 0.0);
     if (zmax < 4294967295.0f)
         zq = static_cast<double>(static_cast<uint64_t>(zq) & (zmax < 70000.0f ? 0xFFFFull : 0xFFFFFFull));
@@ -140,12 +140,12 @@ void GSMetalBackend::Impl::submit(const GSPrimitiveBatch &b)
         e[0].x -= dx * ext; e[0].y -= dy * ext;
         e[1].x += dx * ext; e[1].y += dy * ext;
         const int order[6][2] = {{0, 1}, {1, 1}, {0, -1}, {1, 1}, {1, -1}, {0, -1}};
-        const float centre = 0.5f - 0.5f / scale;
+        const float centreX = 0.5f - 0.5f / scaleX, centreY = 0.5f - 0.5f / scaleY;
         for (const auto &o : order)
         {
             GSVertex v = e[o[0]];
-            v.x += nx * static_cast<float>(o[1]) + centre * std::fabs(dy);
-            v.y += ny * static_cast<float>(o[1]) + centre * std::fabs(dx);
+            v.x += nx * static_cast<float>(o[1]) + centreX * std::fabs(dy);
+            v.y += ny * static_cast<float>(o[1]) + centreY * std::fabs(dx);
             float u, t;
             texelUV(v, u, t);
             addVertex(s, v, u, t, zmax);
@@ -485,10 +485,10 @@ void GSMetalBackend::Impl::draw(const GSDrawState &s, const std::vector<HwVertex
             MTLRegion area = MTLRegionMake2D(0, 0, 0, 0);
             if (usable)
             {
-                const long x0 = std::max(0L, static_cast<long>(std::floor(lo[0] * scale)) - 2);
-                const long y0 = std::max(0L, static_cast<long>(std::floor(lo[1] * scale)) - 2);
-                const long x1 = std::min(static_cast<long>(src->glW), static_cast<long>(std::ceil(hi[0] * scale)) + 2);
-                const long y1 = std::min(static_cast<long>(src->glH), static_cast<long>(std::ceil(hi[1] * scale)) + 2);
+                const long x0 = std::max(0L, static_cast<long>(std::floor(lo[0] * scaleX)) - 2);
+                const long y0 = std::max(0L, static_cast<long>(std::floor(lo[1] * scaleY)) - 2);
+                const long x1 = std::min(static_cast<long>(src->glW), static_cast<long>(std::ceil(hi[0] * scaleX)) + 2);
+                const long y1 = std::min(static_cast<long>(src->glH), static_cast<long>(std::ceil(hi[1] * scaleY)) + 2);
                 if (x1 > x0 && y1 > y0)
                     area = MTLRegionMake2D(static_cast<NSUInteger>(x0), static_cast<NSUInteger>(y0), static_cast<NSUInteger>(x1 - x0),
                                            static_cast<NSUInteger>(y1 - y0));
@@ -623,7 +623,7 @@ void GSMetalBackend::Impl::draw(const GSDrawState &s, const std::vector<HwVertex
             std::sscanf(at + 1, "%u,%u", &probeX, &probeY);
         uint32_t px = 0u;
         float depth = -1.0f;
-        const uint32_t hx = std::min(rt.glW - 1u, static_cast<uint32_t>(probeX * scale)), hy = std::min(rt.glH - 1u, static_cast<uint32_t>(probeY * scale));
+        const uint32_t hx = std::min(rt.glW - 1u, static_cast<uint32_t>(probeX * scaleX)), hy = std::min(rt.glH - 1u, static_cast<uint32_t>(probeY * scaleY));
         readback(rt.color, hx, hy, 1u, 1u, &px);
         if (rt.depth)
             readback(rt.depth, hx, hy, 1u, 1u, &depth);

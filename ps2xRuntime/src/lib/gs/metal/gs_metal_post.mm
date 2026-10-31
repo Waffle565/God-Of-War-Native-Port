@@ -3,8 +3,10 @@
 // (GOW_GS_MTL_METALFX=spatial) or the window scaler (fs_scale: bicubic when magnifying, bilinear otherwise) and the one
 // contrast-adaptive sharpen (GOW_SHARPEN) into the window's drawable or, for captures with GOW_GS_MTL_CAPTURE_POST=1,
 // into a texture that is read back. With the options off and a magnified frame this is the single fs_scale pass of before.
-// Anisotropic filtering (GOW_GS_MTL_ANISO) is a sampler setting (gs_metal_draw.mm).
+// Anisotropic filtering (GOW_GS_MTL_ANISO) is a sampler setting (gs_metal_draw.mm). The internal resolution (chooseScale)
+// is read here too.
 #include "gs_metal_impl.h"
+#include "runtime/gs/gs_metal_layer.h"
 
 #include <cmath>
 
@@ -38,6 +40,63 @@ void GSMetalBackend::Impl::readGfxOptions()
     if (gfx.aniso > 1u || gfx.post() || gfx.capturePost || *sharpen)
         std::fprintf(stderr, "[gs-mtl] graphics: aniso=%ux metalfx=%s aa=%s sharpen=%.2f%s\n", gfx.aniso, gfx.metalfx ? "spatial" : "off",
                      gfx.fxaa ? "fxaa" : "off", gfx.sharpen, gfx.capturePost ? " captures=post" : "");
+}
+
+// Internal resolution, per axis: PS2X_GS_HW_SCALE=<n> sets both axes (default 2), PS2X_GS_HW_SCALE_X / _Y one axis each
+// (they win). GOW_GS_MTL_NATIVE=1 replaces PS2X_GS_HW_SCALE with the scales at which the game's 512x448 frame covers the 16:9
+// picture of the output on both axes (never magnified): the output is the larger of the window's drawable and its screen,
+// so an F11 to fullscreen does not magnify either; GOW_GS_MTL_NATIVE=<w>x<h> takes that output size instead. A 1920x1080
+// output gives 3.75 x 2.5 = 1920x1120. Fractional scales are rounded up to eighths, so an 8-pixel GS block (shuffle unit,
+// page and scissor edges) covers whole host pixels. Read once, before the first render target: fixed for the run.
+void GSMetalBackend::Impl::chooseScale()
+{
+    constexpr double kFrameW = 512.0, kFrameH = 448.0; // the game's display (DISPLAY width, present's 448 TV lines)
+    const auto number = [](const char *name, double &value)
+    {
+        const char *v = std::getenv(name);
+        value = v ? std::atof(v) : 0.0;
+        return value > 0.0;
+    };
+    const auto eighths = [](double v) { return static_cast<float>(std::clamp(std::ceil(v * 8.0 - 1e-6) / 8.0, 1.0, 8.0)); };
+    double value = 0.0, sx = 2.0, sy = 2.0;
+    if (number("PS2X_GS_HW_SCALE", value))
+        sx = sy = value;
+    const char *native = std::getenv("GOW_GS_MTL_NATIVE");
+    char how[96] = "";
+    if (native && *native && std::strcmp(native, "0") != 0)
+    {
+        uint32_t ow = 0, oh = 0;
+        const char *from = "GOW_GS_MTL_NATIVE";
+        if (std::sscanf(native, "%ux%u", &ow, &oh) != 2 || ow == 0u || oh == 0u)
+        {
+            uint32_t dw = 0, dh = 0, sw = 0, sh = 0;
+            GSMetalLayer::DrawableSize(dw, dh);
+            GSMetalLayer::ScreenSize(sw, sh);
+            ow = std::max(dw, sw);
+            oh = std::max(dh, sh);
+            from = "window/screen";
+            if (ow == 0u || oh == 0u) // no window layer (RAM presentation): the window size the host asked for
+            {
+                const char *window = std::getenv("GOW_WINDOW");
+                if (!window || std::sscanf(window, "%ux%u", &ow, &oh) != 2 || ow == 0u || oh == 0u)
+                    ow = 1920u, oh = 1080u;
+                from = "GOW_WINDOW";
+            }
+        }
+        double rx = 0.0, ry = 0.0, rw = 0.0, rh = 0.0;
+        fitRect(ow, oh, rx, ry, rw, rh);
+        sx = rw / kFrameW;
+        sy = rh / kFrameH;
+        std::snprintf(how, sizeof(how), ", native for a %ux%u output (%s, picture %.0fx%.0f)", ow, oh, from, rw, rh);
+    }
+    if (number("PS2X_GS_HW_SCALE_X", value))
+        sx = value;
+    if (number("PS2X_GS_HW_SCALE_Y", value))
+        sy = value;
+    scaleX = eighths(sx);
+    scaleY = eighths(sy);
+    std::fprintf(stderr, "[gs-mtl] internal scale %.3f x %.3f: 512x448 frame -> %.0fx%.0f%s\n", scaleX, scaleY, std::floor(kFrameW * scaleX),
+                 std::floor(kFrameH * scaleY), how);
 }
 
 void GSMetalBackend::Impl::fitRect(uint32_t dw, uint32_t dh, double &rx, double &ry, double &rw, double &rh)

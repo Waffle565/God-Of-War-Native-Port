@@ -70,14 +70,14 @@ namespace gsmtl
     struct ShUniforms
     {
         int32_t srcZ, hs, hd, pad0;
-        float zMax, scale, pad1, pad2;
+        float zMax, scaleX, scaleY, pad1;
         int32_t texa[4];
     };
 
     struct PresentUniforms
     {
         int32_t offX, offY, ct24, alphaX2;
-        int32_t edge, pad0, pad1, pad2;
+        int32_t edgeX, edgeY, pad0, pad1;
     };
 
     struct VsUniforms
@@ -183,7 +183,9 @@ struct GSMetalBackend::Impl
     bool initialized = false, failed = false;
     uint8_t *vram = nullptr;
     uint32_t vramSize = 0;
-    float scale = 2.0f;
+    // host pixels per PS2 pixel on each axis (chooseScale, fixed for the run): render targets, viewport, scissor and the
+    // composed frame are scaled by them
+    float scaleX = 2.0f, scaleY = 2.0f;
 
     // ---- Metal layer (gs_metal_device.mm) ------------------------------------------------------------------------
     id<MTLDevice> device = nil;
@@ -377,6 +379,8 @@ struct GSMetalBackend::Impl
         bool post() const { return metalfx || fxaa; }
     } gfx;
     void readGfxOptions();
+    // PS2X_GS_HW_SCALE, PS2X_GS_HW_SCALE_X / _Y, GOW_GS_MTL_NATIVE -> scaleX / scaleY (ensure, before any render target)
+    void chooseScale();
     // the 16:9 picture rectangle inside a dw x dh output, centred (black bars)
     static void fitRect(uint32_t dw, uint32_t dh, double &rx, double &ry, double &rw, double &rh);
     // the composed frame (srcW x srcH) through FXAA, MetalFX or the window scaler and CAS into `dst` (cleared to black) at
