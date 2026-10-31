@@ -47,6 +47,11 @@ add one, `sectors` sets the disc size, paths are relative to the overlay's folde
 file is logged (`[disc] overlay read: ...`). The game itself is unchanged: smpd reads the TOC and the files by sector
 as before.
 
+Accents: the European tables are cp1252 text, and the USA executable's fonts have no accented letters (a letter
+without a glyph is skipped: "Ascensin"). lang_pack.py folds the translated messages to plain ASCII
+(`fold_for_usa_font`: accents dropped, umlauts/ß/œ spelled out, ¿ ¡ removed, cp1252 dashes and quotes made plain);
+check: `python3 -I -m unittest discover -s tools/tests`.
+
 Not localized: the menus and the in-game message screens (save, death, pause, upgrade texts) keep the USA art and
 English text: their text lives in the Flash chunks with the USA font (below), and the European versions of those
 chunks expect the European executable (swapping whole European WADs leaves the title menu empty after Start). The

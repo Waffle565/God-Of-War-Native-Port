@@ -25,6 +25,7 @@ import os
 import re
 import struct
 import sys
+import unicodedata
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # tools/ (python -I leaves it out)
 import gow_wording  # noqa: E402
@@ -77,6 +78,30 @@ def wad_records(data):
     return records
 
 
+# The European tables are cp1252 text with accented letters; the USA executable's fonts have none, and a letter
+# without a glyph is skipped ("Ascensin"). Each one becomes the plain letters a player would type without accents.
+USA_FONT_FOLD = {
+    'ä': 'ae', 'ö': 'oe', 'ü': 'ue', 'Ä': 'Ae', 'Ö': 'Oe', 'Ü': 'Ue', 'ß': 'ss',
+    'œ': 'oe', 'Œ': 'Oe', 'æ': 'ae', 'Æ': 'Ae',
+    '¿': '', '¡': '', '–': '-', '—': '-', '‘': "'", '’': "'", '“': '"', '”': '"',
+    '…': '...', '°': 'o', '«': '"', '»': '"',
+}
+
+
+def fold_for_usa_font(data):
+    """cp1252 bytes -> ASCII bytes the USA fonts can draw (accents dropped, umlauts spelled out)."""
+    out = []
+    for ch in data.decode('cp1252', errors='replace'):
+        if ord(ch) < 0x80:
+            out.append(ch)
+        elif ch in USA_FONT_FOLD:
+            out.append(USA_FONT_FOLD[ch])
+        else:
+            base = unicodedata.normalize('NFKD', ch).encode('ascii', 'ignore').decode('ascii')
+            out.append(base)
+    return ''.join(out).encode('ascii')
+
+
 def parse_messages(table):
     return re.findall(rb'\*(\d+)\*\n(.*?)\n\n', table, re.S)
 
@@ -87,7 +112,7 @@ def localized_perm(usa_perm, eu_perm):
     foreign = {}
     for pos, tag, size, name, body in wad_records(eu_perm):
         if name.startswith(b'msgs'):
-            foreign = dict(parse_messages(eu_perm[pos + 32:pos + 32 + size]))
+            foreign = {k: fold_for_usa_font(v) for k, v in parse_messages(eu_perm[pos + 32:pos + 32 + size])}
     out = bytearray()
     for pos, tag, size, name, body in wad_records(usa_perm):
         if name.startswith(b'msgs'):
