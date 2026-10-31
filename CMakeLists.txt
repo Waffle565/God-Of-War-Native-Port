@@ -11,6 +11,12 @@ endif()
 
 project(PS2RetroX)
 
+if(APPLE)
+    # GOW-Port: the Metal GS renderer is Objective-C++ (ps2xRuntime/src/lib/gs/metal); a language must be enabled at the top
+    # level to be usable in subdirectories. OBJC keeps raylib's .m files Objective-C.
+    enable_language(OBJC OBJCXX)
+endif()
+
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 option(PS2X_BUILD_RECOMP "Build ps2xRecomp" ON)

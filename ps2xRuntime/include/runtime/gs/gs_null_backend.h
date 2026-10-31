@@ -4,8 +4,8 @@
 
 // GOW-Port: GS renderer that accepts every call and draws nothing. GS::setRasterBackend(nullptr) installs it at host
 // shutdown (it releases the renderer and its GL context and ignores the GS packets the EE may still send while the
-// process exits), and GSThreadedBackend::MakeDefault() picks it for headless runs (PS2X_GS_NULL; default on macOS,
-// whose OpenGL 4.1 cannot run the GL 4.3 renderer). Present returns an empty frame, VRAM reads return zero.
+// process exits), and GSThreadedBackend::MakeDefault() picks it for headless runs (PS2X_GS_NULL=1). Present returns an
+// empty frame, VRAM reads return zero.
 class GSNullBackend final : public GSRasterBackend
 {
 public:

@@ -567,6 +567,25 @@ if(WIN32)
     # GOW-Port: WGL propio del hilo GS.
     target_link_libraries(ps2_runtime PRIVATE opengl32 gdi32)
 endif()
+if(APPLE)
+    # GOW-Port: Metal GS renderer (GSMetalBackend, src/lib/gs/metal), the default GS renderer on macOS (PS2X_GS_NULL=1 keeps
+    # the headless one). Objective-C++ with ARC (OBJCXX is enabled in the top-level CMakeLists); the other platforms keep the
+    # OpenGL renderer and never see these files.
+    set(PS2X_METAL_GS_SOURCES
+        src/lib/gs/metal/gs_metal_device.mm
+        src/lib/gs/metal/gs_metal_targets.mm
+        src/lib/gs/metal/gs_metal_shuffle.mm
+        src/lib/gs/metal/gs_metal_draw.mm
+        src/lib/gs/metal/gs_metal_present.mm
+        src/lib/gs/metal/gs_metal_backend.mm)
+    target_sources(ps2_runtime PRIVATE ${PS2X_METAL_GS_SOURCES})
+    set_source_files_properties(${PS2X_METAL_GS_SOURCES} PROPERTIES
+        COMPILE_OPTIONS "-fobjc-arc"
+        SKIP_UNITY_BUILD_INCLUSION ON
+        SKIP_PRECOMPILE_HEADERS ON)
+    target_compile_definitions(ps2_runtime PUBLIC PS2X_HAVE_METAL=1)
+    target_link_libraries(ps2_runtime PUBLIC "-framework Metal" "-framework QuartzCore" "-framework Foundation")
+endif()
 target_link_libraries(ps2EntryRunner
     PRIVATE
     ps2_runtime
