@@ -106,9 +106,12 @@ def ls_names(path):
     return [l.split()[-1] for l in out.splitlines() if l.strip()] if rc == 0 else []
 
 
+EXTRA_ENV = []  # --env
+
+
 def env_text(extra):
     base = [l for l in open(DEFAULT_ENV, encoding='utf-8').read().splitlines() if l.strip() and not l.startswith('#')]
-    return '\n'.join(base + ['GOW_PERF_DIAG=1', 'GOW_DELTA_DIAG=1'] + extra) + '\n'
+    return '\n'.join(base + ['GOW_PERF_DIAG=1', 'GOW_DELTA_DIAG=1'] + EXTRA_ENV + extra) + '\n'
 
 
 def level_pad(total, mash):
@@ -165,6 +168,20 @@ def perf_of(seg):
     return fps, speed
 
 
+def fps_without_captures(seg):
+    """guest fps per [gow-perf] window, without the windows of the sweep's own warp captures: each PPM capture stops
+    the game ~3.5 s (readback), so its 5 s window reads 12-15 fps. The capture line is logged next to that window's
+    [gow-perf] line (before or after it): drop the slower of the two neighbours."""
+    perf = [(m.start(), float(m.group(1))) for m in re.finditer(r'\[gow-perf\].*?guest_flip_hz=([0-9.]+)', seg)]
+    drop = set()
+    for c in re.finditer(r'\[gow-warp\] capture ', seg):
+        near = [k for k in range(len(perf)) if perf[k][0] < c.start()][-1:] + \
+               [k for k in range(len(perf)) if perf[k][0] > c.start()][:1]
+        if near:
+            drop.add(min(near, key=lambda k: perf[k][1]))
+    return [h for k, (_, h) in enumerate(perf) if k not in drop]
+
+
 def judge_level(text, item, r):
     m = re.search(r'\[gow-warp\] arrived (\S+) at ([0-9.]+) s \(([0-9.]+) s\)', text)
     if not m:
@@ -175,7 +192,7 @@ def judge_level(text, item, r):
     r['load_s'] = float(m.group(3))
     seg = text[m.end():]
     fps, speed = perf_of(seg)
-    fps = fps[1:] or fps
+    fps = fps_without_captures(seg)[1:] or fps
     if fps:
         r['fps'] = [round(min(fps), 1), round(sum(fps) / len(fps), 1)]
         if r['fps'][1] < 25:
@@ -438,6 +455,8 @@ def main():
     ap.add_argument('--out', default=os.path.join(ROOT, 'port', 'switch', 'sweep'))
     ap.add_argument('--resume', default='')
     ap.add_argument('--dry', action='store_true', help='list the items only')
+    ap.add_argument('--env', default='', help='extra env.txt lines for every item, comma-separated (A/B tests)')
+    ap.add_argument('--package', default='', help='push this update package (port/switch/nsp/out/<name>) before the run')
     ap.add_argument('--rejudge', default='', help='judge the pulled logs of a run dir again (no console)')
     args = ap.parse_args()
     if not (args.movies or args.levels or args.fights):
@@ -452,6 +471,17 @@ def main():
         return
     outdir = args.resume or os.path.join(args.out, datetime.datetime.now().strftime('%Y%m%d_%H%M'))
     os.makedirs(outdir, exist_ok=True)
+    EXTRA_ENV[:] = [e for e in args.env.split(',') if e]
+    if args.package:
+        for _ in range(3):  # FTP can be briefly unreachable right after a previous run closed the game
+            rc, out = sh(f'TRANSFER=ftp sw_transfer && sw_push_update port/switch/nsp/out/{args.package}', timeout=600)
+            if rc == 0:
+                break
+            time.sleep(20)
+        if rc:
+            print('[sweep] package push failed: ' + out[-300:], flush=True)
+            return
+        print(f'[sweep] package {args.package}' + (f" env {','.join(EXTRA_ENV)}" if EXTRA_ENV else ''), flush=True)
     rj = os.path.join(outdir, 'results.json')
     results = json.load(open(rj)) if os.path.exists(rj) else []
     done = {r['name'] for r in results}

@@ -4,9 +4,7 @@
   "kind": "fight",
   "fail": [],
   "slow": [],
-  "warn": [
-   "fps min 16.2"
-  ],
+  "warn": [],
   "shots": [
    "fight_ATHN01D\\gow_warp_1_ATHN01D_0.png",
    "fight_ATHN01D\\shots\\s006_90.jpg",
@@ -16,8 +14,8 @@
   "run_s": 255,
   "load_s": 1.4,
   "fps": [
-   16.2,
-   34.3
+   31.4,
+   35.2
   ],
   "speed": 0.99,
   "zones_seen": [
@@ -32,7 +30,6 @@
   "fail": [],
   "slow": [],
   "warn": [
-   "fps min 18.2",
    "Kratos died after the warp (fall from the warp point)"
   ],
   "shots": [
@@ -44,8 +41,8 @@
   "run_s": 255,
   "load_s": 0.4,
   "fps": [
-   18.2,
-   57.8
+   59.8,
+   59.9
   ],
   "speed": 0.993,
   "zones_seen": [
@@ -58,9 +55,7 @@
   "kind": "fight",
   "fail": [],
   "slow": [],
-  "warn": [
-   "fps min 17.8"
-  ],
+  "warn": [],
   "shots": [
    "fight_ATHN01F\\gow_warp_1_ATHN01F_0.png",
    "fight_ATHN01F\\shots\\s006_90.jpg",
@@ -70,8 +65,8 @@
   "run_s": 255,
   "load_s": 0.8,
   "fps": [
-   17.8,
-   48.5
+   45.0,
+   50.1
   ],
   "speed": 0.993,
   "zones_seen": [
@@ -84,9 +79,7 @@
   "kind": "fight",
   "fail": [],
   "slow": [],
-  "warn": [
-   "fps min 15.8"
-  ],
+  "warn": [],
   "shots": [
    "fight_PAND03H\\gow_warp_1_PAND03H_0.png",
    "fight_PAND03H\\shots\\s006_90.jpg",
@@ -96,8 +89,8 @@
   "run_s": 255,
   "load_s": 0.8,
   "fps": [
-   15.8,
-   51.1
+   48.2,
+   53.0
   ],
   "speed": 0.992,
   "zones_seen": [
@@ -110,9 +103,7 @@
   "kind": "fight",
   "fail": [],
   "slow": [],
-  "warn": [
-   "fps min 21.2"
-  ],
+  "warn": [],
   "shots": [
    "fight_PAND04H\\gow_warp_1_PAND04H_1.png",
    "fight_PAND04H\\shots\\s006_90.jpg",
@@ -122,8 +113,8 @@
   "run_s": 255,
   "load_s": 1.0,
   "fps": [
-   21.2,
-   58.7
+   57.2,
+   59.7
   ],
   "speed": 0.996,
   "zones_seen": [
@@ -137,9 +128,7 @@
   "kind": "fight",
   "fail": [],
   "slow": [],
-  "warn": [
-   "fps min 24.8"
-  ],
+  "warn": [],
   "shots": [
    "fight_ARENA27\\gow_warp_1_ARENA27_1.png",
    "fight_ARENA27\\shots\\s006_90.jpg",
@@ -149,8 +138,8 @@
   "run_s": 255,
   "load_s": 1.2,
   "fps": [
-   24.8,
-   58.6
+   53.2,
+   59.5
   ],
   "speed": 0.996,
   "zones_seen": [
@@ -163,7 +152,6 @@
   "fail": [],
   "slow": [],
   "warn": [
-   "fps min 16.6",
    "Kratos died after the warp (fall from the warp point)"
   ],
   "shots": [
@@ -175,8 +163,8 @@
   "run_s": 255,
   "load_s": 1.0,
   "fps": [
-   16.6,
-   54.7
+   41.6,
+   56.7
   ],
   "speed": 0.994,
   "zones_seen": [
@@ -200,8 +188,8 @@
   "run_s": 255,
   "load_s": 2.0,
   "fps": [
-   34.0,
-   58.5
+   45.6,
+   59.2
   ],
   "speed": 0.996,
   "zones_seen": [
@@ -214,9 +202,7 @@
   "kind": "fight",
   "fail": [],
   "slow": [],
-  "warn": [
-   "fps min 16.6"
-  ],
+  "warn": [],
   "shots": [
    "fight_ATHN07B\\gow_warp_1_ATHN07B_1.png",
    "fight_ATHN07B\\shots\\s006_90.jpg",
@@ -226,8 +212,8 @@
   "run_s": 255,
   "load_s": 1.0,
   "fps": [
-   16.6,
-   44.5
+   41.6,
+   45.2
   ],
   "speed": 0.995,
   "zones_seen": [
