@@ -723,3 +723,8 @@ Details: docs/native-render-study.md "step 7 on the renderer side, part 3".
   52-byte HwVertex into the CpuUncached vertex buffer (memmove ~15 %), the conversion itself, draw()'s per-batch
   texture lookup (tex_ms ~400 per 5 s). Ideas: a smaller vertex for triangles (the 16-byte sprite clamp range only
   for sprites), converting straight into the stream buffer.
+- Tools (sw-dips2): `tools/switch_heavy.py <sweep dirs>` (GS ns per vertex in heavy windows, the A/B metric that is
+  not hit by where the sweep walk takes Kratos: ATHN06C's mean fps varied 32-53 between runs of the same build),
+  `tools/switch_pchot.sh` (WSL: hot addresses + source lines inside one function of a pcs_*.txt). Profile runs:
+  `switch_sweep.py --levels --only <zone> --env "GOW_PC_SAMPLE=500,GOW_PC_SAMPLE_THREADS=GSThread,GSWorker,GameThread,GSStage"`,
+  then pull switch/gow/pcs_*.txt over FTP and map with tools/switch_pcprof.py against /root/elf_<build>.elf.
