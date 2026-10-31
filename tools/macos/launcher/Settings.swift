@@ -36,7 +36,7 @@ enum Paths {
 struct Settings {
     var width = 1920, height = 1080
     var fullscreen = false
-    var scale = 3 // PS2X_GS_HW_SCALE, 1-4 (3: 60 fps with headroom on an M4, docs/macos.md)
+    var scale = 0 // 0 = native (GOW_GS_MTL_NATIVE=1: matched to the output, 1920x1120 for 1080p), 1-4 = PS2X_GS_HW_SCALE
     // graphics options (docs/macos.md "Graphics options"); defaults are the ones measured on an M4 at 1080p
     var fxaa = true          // GOW_GS_MTL_AA=fxaa|off
     var aniso = 16           // GOW_GS_MTL_ANISO=0|2|4|8|16
@@ -79,7 +79,7 @@ struct Settings {
         if let v = values["Video.Width"].flatMap(Int.init), v >= 320 { s.width = v }
         if let v = values["Video.Height"].flatMap(Int.init), v >= 240 { s.height = v }
         if let v = values["Video.Fullscreen"] { s.fullscreen = v == "1" }
-        if let v = values["Video.Scale"].flatMap(Int.init) { s.scale = min(4, max(1, v)) }
+        if let v = values["Video.Scale"].flatMap(Int.init) { s.scale = min(4, max(0, v)) }
         if let v = values["Graphics.FXAA"] { s.fxaa = v == "1" }
         if let v = values["Graphics.Aniso"].flatMap(Int.init), anisoLevels.contains(v) { s.aniso = v }
         if let v = values["Graphics.MetalFX"] { s.metalFX = v == "1" }

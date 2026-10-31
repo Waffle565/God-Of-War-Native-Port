@@ -78,14 +78,16 @@ walk/fight:
 
 | option | switch | result |
 |---|---|---|
-| internal resolution | `PS2X_GS_HW_SCALE=1..4` | 1-3: 60 fps; 4: ~70% GPU, dips to 23-40 fps |
+| internal resolution | `PS2X_GS_HW_SCALE=1..4`, per axis `PS2X_GS_HW_SCALE_X/_Y` (rounded up to eighths) | 1-3: 60 fps; 4: ~70% GPU, dips to 23-42 fps |
+| native resolution | `GOW_GS_MTL_NATIVE=1\|WxH` | scales chosen from the output so no axis is upscaled: 3.75 x 2.5 = 1920x1120 for 1080p; 60.2 fps (min 59.4) fullscreen with FXAA, aniso 16 and the HD pack; sized at startup from the larger of window and screen |
 | anti-aliasing | `GOW_GS_MTL_AA=fxaa\|off` | 60 fps, HUD stays readable |
 | anisotropic filtering (3D textures only) | `GOW_GS_MTL_ANISO=0\|2\|4\|8\|16` | 60 fps |
 | MetalFX spatial upscaling | `GOW_GS_MTL_METALFX=spatial\|off` | 60 fps; for Retina/4K output, falls back to the plain scaler when the frame is larger than the output |
 | sharpening (contrast-adaptive) | `GOW_SHARPEN=off\|0..1` (default 0.5) | applied once, last; skipped after MetalFX |
 | wider field of view (gameplay only) | `GOW_PANORAMICO=ampliado` | 60 fps; menus keep the original framing |
 
-Recommended on an M4 with a 1080p window (the launcher's defaults): scale 3, FXAA, anisotropic 16x, sharpen 0.5,
+Recommended on an M4 with a 1080p screen (the launcher's defaults): fullscreen + native resolution (scale 3 in a
+window), FXAA, anisotropic 16x, sharpen 0.5,
 MetalFX off (use it to take scale 2 to a Retina or 4K output). Chain at present: composed frame -> FXAA (at render
 resolution) -> MetalFX or the window scaler -> sharpen -> letterboxed drawable. Captures and the RAM path
 (`PS2X_GS_DIRECT_PRESENT=0`) are taken before the chain unless `GOW_GS_MTL_CAPTURE_POST=1`.

@@ -71,8 +71,8 @@ final class LauncherWindowController: NSWindowController {
         fullscreen.target = self
         fullscreen.action = #selector(changed)
 
-        scale.addItems(withTitles: ["1× (PS2 native)", "2×", "3×", "4×"])
-        scale.selectItem(at: settings.scale - 1)
+        scale.addItems(withTitles: ["Native (matches the screen, 1080p and up)", "1× (PS2 original)", "2×", "3×", "4×"])
+        scale.selectItem(at: settings.scale)
         scale.target = self
         scale.action = #selector(changed)
 
@@ -216,7 +216,7 @@ final class LauncherWindowController: NSWindowController {
         settings.width = mode.0
         settings.height = mode.1
         settings.fullscreen = fullscreen.state == .on
-        settings.scale = scale.indexOfSelectedItem + 1
+        settings.scale = max(0, scale.indexOfSelectedItem)
         settings.text = Settings.languages[max(0, textLanguage.indexOfSelectedItem)].0
         settings.voice = Settings.languages[max(0, voiceLanguage.indexOfSelectedItem)].0
         settings.keyboardPrompts = buttonPrompts.indexOfSelectedItem != 1
