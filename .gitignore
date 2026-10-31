@@ -4,8 +4,10 @@
 *.iso
 iso/
 iso-usa/
+iso-eu/
 disc/
 disc-usa/
+disc-eu/
 ref/
 ext/
 # Generated code, logs, dumps, screenshots
