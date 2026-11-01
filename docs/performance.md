@@ -1135,3 +1135,13 @@ Details: docs/native-render-study.md "step 7 on the renderer side, part 3".
   3dbed415; update_dips29 = the same without dips30, superseded). Bench env files port/switch/bench_env/*.txt (FAILGT
   included): `d29` (ZVA on), `d30_zva0` (ZVA off: dips25 + the tag scan), `d29_gpu` / `d29_diagfs1` / `d29_diagfs2`
   (`GOW_DK_GPU_TIME=1`, the diagnostic levels). Console A/B pending.
+- dips31 (port/switch/dips31.patch, gs_hw_backend.cpp + gs_dk_shaders_gen.cpp; on dips30): the draw shader's
+  `alphaPasses` as a table lookup: ATST -> the set of outcomes it accepts (one nibble each in 0x54623170: bit 0 less,
+  1 equal, 2 greater), one less / equal / greater outcome of `int(a)` vs AREF, one AND. Same result for every ATST 0-7
+  and every alpha (exhaustive check); the switch was a loop of up to eight uniform compare / branch pairs per fragment
+  in every draw variant with an alpha test. Variant 207425: TGSI 170 -> 110 ops, Maxwell code 1856 -> 1536 bytes.
+  The deko3d table: tools/dk_shaders.py on the new source (79 shaders, 0 failed), merged so that every binary whose
+  source hash is unchanged keeps its shipped bytes (11; the current uam rebuilds the original source byte-identically
+  except 205405, 2 bytes in 2048, and one compute shader); the 68 draw fragment binaries (uber + 67 variants) are new.
+  Pictures should be identical (integer test, same outcome); the A/B: fight bench with `GOW_DK_GPU_TIME=1`
+  (bench_env/d29_gpu.txt) on update_dips30 and **update_dips31** (exefs md5 895262fa), compare p15 / p12 ms and fps.
