@@ -1206,3 +1206,24 @@ Details: docs/native-render-study.md "step 7 on the renderer side, part 3".
   sprites only, not known per variant), the RCP of uTexSize in the direct bilinear path (004c21: not exact to replace,
   the weights depend on it); 008901 (sw blend) keeps its uniform blendSel branches (an exact branch-free select needs
   per-selector 0 / 1 uniforms) and a TXQ + 2 I2F for textureSize (a uniform with the bound texture's size would do).
+
+## Switch console sweep on dips32, sw-sweep4 (2026-11-01, all 108 zones, docs/switch-sweep.md run 20261101_1211)
+
+Guest fps after the warp per zone (5 s windows, warp-capture windows excluded), default update_dips32 + FAILGT,
+default clocks. Mean of the zone means 58.1, median 59.7; no zone minimum < 25 (54 zones on update_bugs1, run
+20261030_1930). Zones below a mean of 50:
+
+| zone | mean | min | note |
+|---|---|---|---|
+| ATHN06C | 38.2 | 35.4 | hall, lowest zone |
+| OLYMP02 | 42.7 | 42.2 | |
+| ATHN01D | 43.4 | 38.0 | ship deck (the fight bench scene) |
+| PAND02B | 46.5 | 38.6 | |
+| fight_ATHN01D | 48.3 | 37.4 | same deck, 150 s with attacks |
+| ATHN06B | 48.9 | 45.6 | |
+| ATHN03D | 49.0 | 47.2 | |
+| ARENA14 | 49.4 | 48.8 | |
+| ATRET01B | 49.4 | 45.2 | |
+| ATHN04C | 49.5 | 48.2 | |
+
+Mean < 50 and min < 40: ATHN06C, ATHN01D, PAND02B, fight_ATHN01D. Game speed 0.98-1.00 in every zone.

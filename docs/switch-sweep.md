@@ -99,6 +99,35 @@ steps, square / triangle combos, circle mashing (QTEs) and a cross every 10 s (d
 
 Filled in by the runs (latest first).
 
+### Run 20261101_1211 (sw-sweep4, defaults update_dips25 -> dips32 + FAILGT)
+
+- Packages: movie batch 1 (SEMO01 ... A06MP04) on update_dips25; all later items on update_dips32 (installed during
+  the run after its checks; the sweep was paused for the d29-d32 benches and the boss exploration and resumed with
+  `--resume`). Report port/switch/sweep/20261101_1211/report.md.
+- Story movies: 53 PASS (4 batches), 29.7-30.0 pictures/s, all to their sequence end, every speaking movie read its
+  Italian dub. Levels: 106 PASS, 2 FAIL: ATHN01B (warp into the start zone, test limit as in every run), PAND04E
+  (launch failed: the bot's A press on the tile was lost; rerun below). Fights (9 boss zones at their warp points):
+  9 PASS. No crash report, no hang, no frozen or black picture, no error line, game speed 0.98-1.00 everywhere.
+  Warning only: "Kratos died after the warp" in 33 items (the square walk off the warp point, as before).
+- fps (guest flips per s after the warp, capture windows excluded): mean of the zone means 58.1, median 59.7; no zone
+  with a minimum < 25 any more (54 zones in run 20261030_1930). Zones with mean < 50: ATHN06C 38.2 (min 35.4),
+  OLYMP02 42.7 (42.2), ATHN01D 43.4 (38.0), PAND02B 46.5 (38.6), fight_ATHN01D 48.3 (37.4), ATHN06B 48.9 (45.6),
+  ATHN03D 49.0 (47.2), ARENA14 49.4 (48.8), ATRET01B 49.4 (45.2), ATHN04C 49.5 (48.2). **Mean < 50 and min < 40:
+  ATHN06C, ATHN01D, PAND02B, fight_ATHN01D** (the deck and the ATHN06C hall are the known VU1 / GPU-bound scenes).
+- PAND04E rerun (port/switch/sweep/rerun/20261102_0014): PASS, 59.2 / 59.8 fps.
+- Boss fights (`--boss`, port/switch/sweep/boss/20261101_2357, dips32 default, 90 s each, screenshots every 6 s), fps
+  while Kratos fights (state 11, capture windows excluded):
+
+  | boss (zone) | fight s | fps min / mean | notes |
+  |---|---|---|---|
+  | Ares (ATHN08C) | ~100 | 56.4 / 59.1 | boss bar, Ares with blades, water: correct; Kratos dies later (grab), god mode does not stop it |
+  | Kratos clones / family (ATHN08B) | ~90 | 45.0 / 54.3 | family health bar, embrace tutorial card, clones; mission failed at g92 |
+  | Challenge of the Gods 10/10 (ARENA27) | ~30 | 54.8 / 57.4 | Kratos falls from the platform at g30; the cross presses then pick "abandon" (title) |
+  | Cerberus pair (PAND02I) | ~130 | 49.8 / 57.9 | no death |
+
+  All PASS, no crash, no error line; pictures correct (fog, water, particles, HUD, Italian cards). Hydra 1/2 and
+  Pandora's Guardian not covered yet (handoff below).
+
 ### Runs 20261030_1754 / _1925 (sw-sweep3, test package update_sweep3 = update_bugs1 + harness sp fix)
 
 - Package: port/switch/nsp/out/update_sweep3 (exefs md5 825bf22f), built in /root/gow-switch-mlang after the
