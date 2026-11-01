@@ -24,6 +24,9 @@ bool gsrepl::Store::init(id<MTLDevice> device)
 {
     m_device = device;
     m_log = std::getenv("GOW_GS_MTL_TEXREPL_LOG") != nullptr;
+    // 1/16 of the Mac's memory: the GS, the game and the rest of the system share the same RAM (2048 MB on a 16 GB Mac
+    // left too little under pressure)
+    m_budget = std::clamp<size_t>(static_cast<size_t>([NSProcessInfo processInfo].physicalMemory / 16u), 256ull << 20, 2048ull << 20);
     if (const char *mb = std::getenv("GOW_GS_MTL_TEXREPL_MB"); mb && std::atoi(mb) > 0)
         m_budget = static_cast<size_t>(std::atoi(mb)) << 20;
     if (const char *dump = std::getenv("GOW_GS_MTL_TEXDUMP"); dump && *dump)
@@ -152,11 +155,10 @@ void gsrepl::Store::dump(const Name &name, const uint32_t *rgba, uint32_t width,
 }
 
 // least recently used first, never what the last two frames drew (in-flight command buffers retain their textures anyway)
-void gsrepl::Store::evict()
+size_t gsrepl::Store::evict(size_t target)
 {
     std::sort(m_resident.begin(), m_resident.end(), [](const Slot *a, const Slot *b) { return a->lastUse < b->lastUse; });
-    size_t dropped = 0;
-    const size_t target = m_budget - m_budget / 8u;
+    size_t dropped = 0, released = 0;
     for (Slot *slot : m_resident)
     {
         if (m_bytes.load(std::memory_order_relaxed) <= target || slot->lastUse + 2u >= m_frame)
@@ -168,10 +170,22 @@ void gsrepl::Store::evict()
         }
         slot->tex = nil;
         m_bytes.fetch_sub(slot->bytes, std::memory_order_relaxed);
+        released += slot->bytes;
         slot->state.store(0, std::memory_order_release);
         ++dropped;
     }
     m_resident.erase(m_resident.begin(), m_resident.begin() + static_cast<ptrdiff_t>(dropped));
+    return released;
+}
+
+size_t gsrepl::Store::trim()
+{
+    {
+        std::lock_guard<std::mutex> lock(m_loadedMutex);
+        m_resident.insert(m_resident.end(), m_loaded.begin(), m_loaded.end());
+        m_loaded.clear();
+    }
+    return evict(0u);
 }
 
 void gsrepl::Store::frame()
@@ -183,7 +197,7 @@ void gsrepl::Store::frame()
         m_loaded.clear();
     }
     if (m_bytes.load(std::memory_order_relaxed) > m_budget)
-        evict();
+        evict(m_budget - m_budget / 8u);
     if (m_frame - m_lastReport >= 300u)
     {
         m_lastReport = m_frame;

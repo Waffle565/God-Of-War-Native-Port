@@ -1,6 +1,7 @@
 // GOW-Port: replacement texture files -> Metal textures (gs_metal_texrepl_store.h). DDS block-compressed data is uploaded
 // as is (Apple GPUs sample BC1-BC7 natively), with the file's own mip chain; PNG is read with ImageIO, kept in straight
-// alpha (the GS alpha range: 0x80 = opaque, as PCSX2 dumps and loads it) and gets a generated mip chain.
+// alpha (the GS alpha range: 0x80 = opaque, as PCSX2 dumps and loads it) and gets a generated mip chain. The textures are
+// private (GPU-only memory, not mapped into the process): the texels go through a staging buffer and a blit.
 #include "gs_metal_texrepl_store.h"
 
 #import <CoreGraphics/CoreGraphics.h>
@@ -19,7 +20,40 @@ namespace
         return static_cast<uint32_t>(a) | (static_cast<uint32_t>(b) << 8) | (static_cast<uint32_t>(c) << 16) | (static_cast<uint32_t>(d) << 24);
     }
 
-    id<MTLTexture> loadDds(id<MTLDevice> device, NSData *file, size_t &bytes)
+    struct LevelCopy
+    {
+        size_t offset, pitch, image; // in the staging buffer: start, bytes per row (of pixels or 4x4 blocks), bytes
+        uint32_t width, height;
+    };
+
+    // a private texture for `desc` filled from `staging`, one copy per level, the rest of the chain generated when `mips`;
+    // waits for the copy (loader queue). nil when the texture or the command buffer cannot be had (out of memory).
+    id<MTLTexture> privateTexture(id<MTLDevice> device, id<MTLCommandQueue> queue, MTLTextureDescriptor *desc, id<MTLBuffer> staging,
+                                  const std::vector<LevelCopy> &levels, bool mips)
+    {
+        desc.usage = MTLTextureUsageShaderRead;
+        desc.storageMode = MTLStorageModePrivate;
+        id<MTLTexture> tex = staging && queue ? [device newTextureWithDescriptor:desc] : nil;
+        id<MTLCommandBuffer> cmd = tex ? [queue commandBuffer] : nil;
+        if (!cmd)
+            return nil;
+        id<MTLBlitCommandEncoder> blit = [cmd blitCommandEncoder];
+        for (size_t level = 0; level < levels.size(); ++level)
+        {
+            const LevelCopy &l = levels[level];
+            [blit copyFromBuffer:staging sourceOffset:l.offset sourceBytesPerRow:l.pitch sourceBytesPerImage:l.image
+                      sourceSize:MTLSizeMake(l.width, l.height, 1) toTexture:tex destinationSlice:0 destinationLevel:level
+               destinationOrigin:MTLOriginMake(0, 0, 0)];
+        }
+        if (mips && tex.mipmapLevelCount > 1)
+            [blit generateMipmapsForTexture:tex];
+        [blit endEncoding];
+        [cmd commit];
+        [cmd waitUntilCompleted];
+        return cmd.status == MTLCommandBufferStatusCompleted ? tex : nil;
+    }
+
+    id<MTLTexture> loadDds(id<MTLDevice> device, id<MTLCommandQueue> queue, NSData *file, size_t &bytes)
     {
         const uint8_t *d = static_cast<const uint8_t *>(file.bytes);
         const size_t size = file.length;
@@ -83,24 +117,20 @@ namespace
         }
         MTLTextureDescriptor *desc = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:format width:width height:height mipmapped:NO];
         desc.mipmapLevelCount = levels;
-        desc.usage = MTLTextureUsageShaderRead;
-        desc.storageMode = MTLStorageModeShared;
-        id<MTLTexture> tex = [device newTextureWithDescriptor:desc];
-        if (!tex)
-            return nil;
+        std::vector<LevelCopy> copies;
         bytes = 0;
         for (uint32_t level = 0; level < levels; ++level)
         {
             const uint32_t w = std::max(1u, width >> level), h = std::max(1u, height >> level);
             const size_t pitch = blockBytes ? static_cast<size_t>((w + 3u) / 4u) * blockBytes : static_cast<size_t>(w) * 4u;
             const size_t rows = blockBytes ? (h + 3u) / 4u : h;
-            if (offset + pitch * rows > size)
+            if (offset + bytes + pitch * rows > size)
                 return nil; // cannot happen: the levels were counted above
-            [tex replaceRegion:MTLRegionMake2D(0, 0, w, h) mipmapLevel:level withBytes:d + offset bytesPerRow:pitch];
-            offset += pitch * rows;
+            copies.push_back({bytes, pitch, pitch * rows, w, h});
             bytes += pitch * rows;
         }
-        return tex;
+        id<MTLBuffer> staging = [device newBufferWithBytes:d + offset length:bytes options:MTLResourceStorageModeShared];
+        return privateTexture(device, queue, desc, staging, copies, false);
     }
 
     // straight-alpha RGBA8 of an image: the raw PNG bytes when they already are that, else drawn premultiplied and divided
@@ -161,23 +191,9 @@ namespace
         if (!ok)
             return nil;
         MTLTextureDescriptor *desc = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm width:w height:h mipmapped:YES];
-        desc.usage = MTLTextureUsageShaderRead;
-        desc.storageMode = MTLStorageModeShared;
-        id<MTLTexture> tex = [device newTextureWithDescriptor:desc];
-        if (!tex)
-            return nil;
-        [tex replaceRegion:MTLRegionMake2D(0, 0, w, h) mipmapLevel:0 withBytes:rgba.data() bytesPerRow:w * 4u];
-        if (tex.mipmapLevelCount > 1 && queue)
-        {
-            id<MTLCommandBuffer> cmd = [queue commandBuffer];
-            id<MTLBlitCommandEncoder> blit = [cmd blitCommandEncoder];
-            [blit generateMipmapsForTexture:tex];
-            [blit endEncoding];
-            [cmd commit];
-            [cmd waitUntilCompleted];
-        }
+        id<MTLBuffer> staging = [device newBufferWithBytes:rgba.data() length:rgba.size() options:MTLResourceStorageModeShared];
         bytes = static_cast<size_t>(w) * h * 4u * 4u / 3u;
-        return tex;
+        return privateTexture(device, queue, desc, staging, {{0u, static_cast<size_t>(w) * 4u, rgba.size(), w, h}}, true);
     }
 }
 
@@ -190,7 +206,7 @@ id<MTLTexture> gsrepl::loadReplacement(id<MTLDevice> device, id<MTLCommandQueue>
             return nil;
         const uint8_t *d = static_cast<const uint8_t *>(file.bytes);
         if (rd32(d) == fourcc('D', 'D', 'S', ' '))
-            return loadDds(device, file, bytes);
+            return loadDds(device, queue, file, bytes);
         return loadPng(device, queue, file, bytes);
     }
 }
