@@ -185,6 +185,18 @@ every case: 11 frees, 11 reports. The game kept running (port/shipcrash/selftest
 - Save restore 0x22CB18 (stream magic 0xCAFEBAD1) reads the two saved zone names (10 chars each) and loads them with
   0x1B3E08 (names to 0x335288, then 0x1BB7E8): the path a clean multi-zone warp would have to use.
 
+### Moving Kratos (warp-point jump, warp points)
+- Player object `*(*0x29CD58)` (class vtable 0x2BA528, shared by the enemies' creature objects): vtable pointer at +4,
+  new transform +0x10..+0x4F, current transform +0x50..+0x8F (four rows, translation +0x80, y is up).
+- 0x1B26F0 (warp-point jump, a0 = warp point): new matrix from the warp point (0x1A95D8), written to +0x10..+0x4F, then
+  the virtual at vtable+0x2C (this + int16 vtable[+0x28]) applies it; with a camera (`*0x29E2A4`) 0x1EF0E0(old, new)
+  moves the camera; then 0x1A8718, 0x2247E8(1), 0x1A5FC0, 0x1A9520. `GOW_TELEPORT` (docs/diagnostics.md) repeats the
+  first three steps with a given translation.
+- Warp points: list at 0x302600 (node +0 next, +8 object); 0x1ADFF8(new zone, old zone) picks the object whose owner
+  zone is the new zone: kind (+0x46) 2 with the old zone's name (+0xB0 offset into the string block *(+0x58)) first,
+  else kind 1. Local transform +0x00..+0x3F, node index +0x40, owner +0x54; world = local x node matrix
+  (`*(*(owner+0x104)+0x8C)` + index*0x40). Only the zones' entry points, no checkpoints (tools/gow_warppoints.py).
+
 ### Flash UI action queue (the heap guard's double delete)
 - Each Flash UI player has an action queue (player +0xCD8 head, +0xCDC tail; nodes {item, owner, next}, 12 bytes from
   operator new). 0x1460C0 appends at the tail (a2 != 0, from 0x146FB8) or the head (a2 = 0, from 0x149958 and

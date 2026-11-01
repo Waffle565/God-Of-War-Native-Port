@@ -46,8 +46,14 @@ DEFAULT_ENV = os.path.join(ROOT, 'tools', 'switch', 'default_env.txt')
 FIGHTS = [('ATHN01D', 'Hydra 1, ship deck (R_AHA/R_AH2)'), ('ATHN01EE', 'Hydra 2 (R_AH3)'),
           ('ATHN01F', "ship end, captain's cabin"), ('PAND03H', "Pandora's Guardian? (R_AB3/R_AB4)"),
           ('PAND04H', 'Cerberus (R_CEP/R_CEA)'), ('ARENA27', 'Challenge of the Gods, Cerberus (R_CEP)'),
-          ('ATHN08B', 'Ares, phase 1 (R_A1A-C)'), ('ATHN08C', 'Kratos clones / family (R_AEV)'),
+          ('ATHN08B', 'Ares: family defence vs Kratos clones (R_A1A-C)'), ('ATHN08C', 'Ares boss fight (R_AEV)'),
           ('ATHN07B', 'Ares, phase 2 (R_A2A-C)')]
+# boss fights (--boss): (key, zone, note, GOW_TELEPORT value or ''). The warp lands at the zone start; GOW_TELEPORT
+# (test package with the option, docs/switch-sweep.md "Boss fights") then puts Kratos into the arena, positions from
+# tools/gow_objscan.py on a RAM dump of the zone. The pad script attacks and mashes for --boss-stay seconds.
+BOSSES = [('ares', 'ATHN08C', 'Ares (boss bar from the warp point on)', ''),
+          ('clones', 'ATHN08B', 'Ares: family defence vs Kratos clones (engaged at the warp point)', ''),
+          ('challenge', 'ARENA27', 'Challenge of the Gods 10/10 (cross dismisses the trial card)', '')]
 # the 43 movies with speech (European disc: five language tracks), dubbed from the lang pack (docs/settings.md
 # "Movies in other languages"): each must log `[disc] dub read: .../voice_<SWEEP_LANG>/<MOVIE>.DUB` (the intro
 # SEMO01: `overlay read: .../SEMO01.PSW`, its re-encoded card)
@@ -114,17 +120,19 @@ def env_text(extra):
     return '\n'.join(base + ['GOW_PERF_DIAG=1', 'GOW_DELTA_DIAG=1'] + EXTRA_ENV + extra) + '\n'
 
 
-def level_pad(total, mash):
+def level_pad(total, mash, walk=1.5):
     # new game from the title (wall seconds, as tools/bench_script.py), then from gameplay start (g = wall seconds
     # after gameplay starts) a square walk with attacks; fights add circle mashing for the QTEs
     keys = [f'{30 + d:g}:{k}' for d, k in ((0, 'start'), (9, 'x'), (15, 'x'), (21, 'x'), (27, 'x'))]
     t, i = 4.0, 0
     sticks = ['lup', 'lright', 'ldown', 'lleft']
     while t < total:
-        keys += [f'g{t:.2f}:{sticks[i % 4]}*1.5', f'g{t + 0.3:.2f}:cuadrado*0.2', f'g{t + 0.9:.2f}:triangulo*0.2',
+        keys += [f'g{t:.2f}:{sticks[i % 4]}*{walk:g}', f'g{t + 0.3:.2f}:cuadrado*0.2', f'g{t + 0.9:.2f}:triangulo*0.2',
                  f'g{t + 1.6:.2f}:cuadrado*0.2']
         if mash:
             keys += [f'g{t + d:.2f}:circulo*0.08' for d in (0.15, 0.6, 1.2, 1.8)]
+        if walk < 1 and i % 5 == 0:
+            keys.append(f'g{t + 1.95:.2f}:x*0.1')  # bosses: cross dismisses trial / tutorial cards (a jump otherwise)
         t += 2.0
         i += 1
     return '\n'.join(keys) + '\n'
@@ -149,6 +157,9 @@ def items(args):
             out.append({'kind': 'movies', 'name': 'movies_' + batch[0], 'list': batch, 'secs': secs})
     if args.levels:
         out += [{'kind': 'level', 'name': z, 'zone': z, 'stay': args.stay} for z in levels.toc_zones() if not only or z in only]
+    if args.boss:
+        out += [{'kind': 'boss', 'name': 'boss_' + k, 'zone': z, 'stay': args.boss_stay, 'note': n, 'teleport': tp}
+                for k, z, n, tp in BOSSES if not only or z in only or k.upper() in only]
     if args.fights:
         out += [{'kind': 'fight', 'name': 'fight_' + z, 'zone': z, 'stay': args.fight_stay, 'note': n}
                 for z, n in FIGHTS if not only or z in only]
@@ -219,6 +230,20 @@ def judge_level(text, item, r):
         r['zones_seen'] = zs[:6]
 
 
+def judge_boss(text, item, r):
+    """boss items: the teleport into the arena must have happened; fps from the teleport on (the fight)"""
+    if not item.get('teleport'):
+        return
+    m = re.search(r'\[gow-teleport\] (to|no) [^\n]*', text)
+    if not m or m.group(1) != 'to':
+        r['fail'].append('teleport ' + (m.group(0) if m else 'missing'))
+        return
+    fps = fps_without_captures(text[m.end():])[1:]
+    if fps:
+        r['fps'] = [round(min(fps), 1), round(sum(fps) / len(fps), 1)]
+        r['fps_series'] = [round(x, 1) for x in fps]
+
+
 def judge_movies(text, item, r, sizes):
     starts = [mm for mm in re.finditer(movies.LOAD_LINE, text)]
     rows = []
@@ -272,17 +297,19 @@ def run_item(item, outdir, args, sizes):
         budget = 90 + item['secs'] + 30 * len(item['list'])
     else:
         pad = os.path.join(d, 'sweep_pad.txt')
-        open(pad, 'w').write(level_pad(item['stay'] + 20, item['kind'] == 'fight'))
+        # bosses: short steps so Kratos stays in the arena, attacks + QTE mashing
+        open(pad, 'w').write(level_pad(item['stay'] + 20, item['kind'] != 'level', 0.4 if item['kind'] == 'boss' else 1.5))
         if not put(pad, 'switch/gow'):
             r['fail'].append('pad script push failed')
             return r
         extra = ['GOW_SKIP_FMV=1', 'GOW_GOD_MODE=1', 'GOW_PLAYER_TRACE=1', 'GOW_PAD_TEST=1', 'GOW_PAD_TEST_NO_CAPTURE=1',
                  'GOW_PAD_GUION_FILE=sdmc:/switch/gow/sweep_pad.txt', 'GOW_WARP=' + item['zone'],
-                 f"GOW_WARP_STAY={item['stay']}"]
+                 f"GOW_WARP_STAY={item['stay']}"] + ([f"GOW_TELEPORT={item['teleport']}"] if item.get('teleport') else [])
         budget = 75 + item['stay'] + 25
     os.makedirs(os.path.join(d, 'envdir'), exist_ok=True)
     envf = os.path.join(d, 'envdir', 'env.txt')
-    open(envf, 'w', newline='\n').write(env_text(extra))
+    # --env values may name the item's zone as {zone} (e.g. GOW_RAM_DUMP=g45:sdmc:/ram_{zone}.bin)
+    open(envf, 'w', newline='\n').write(env_text(extra).replace('{zone}', item.get('zone', item['name'])))
     if not put(envf, 'switch/gow'):
         r['fail'].append('env push failed')
         return r
@@ -358,6 +385,8 @@ def run_item(item, outdir, args, sizes):
             judge_movies(text, item, r, sizes)
         else:
             judge_level(text, item, r)
+        if item['kind'] == 'boss':
+            judge_boss(text, item, r)
     jp = sorted(f for f in os.listdir(sd) if f.startswith('s') and f.endswith('.jpg'))
     r['shots'] += [os.path.relpath(os.path.join(sd, f), outdir) for f in jp[len(jp) // 3::max(1, len(jp) // 3)][:3]]
     return r
@@ -389,7 +418,7 @@ def write_report(outdir, results):
             if r['fail'] or r['warn']:
                 lines.append(f"| ({r['name']} batch) | | | | {'; '.join(r['fail'] + r['warn'])} |")
         lines.append('')
-    for kind, title in (('level', 'Levels (one warp per boot)'), ('fight', 'Fights')):
+    for kind, title in (('level', 'Levels (one warp per boot)'), ('fight', 'Fights'), ('boss', 'Boss fights (warp + teleport)')):
         rs = [r for r in results if r['kind'] == kind]
         if not rs:
             continue
@@ -427,6 +456,8 @@ def rejudge(outdir, todo):
             text = open(log, encoding='utf-8', errors='replace').read()
             judge_common(text, r)
             (judge_movies(text, it, r, sizes) if it['kind'] == 'movies' else judge_level(text, it, r))
+            if it['kind'] == 'boss':
+                judge_boss(text, it, r)
         out.append(r)
     write_report(outdir, out)
     print('rejudged', len(out), '->', os.path.join(outdir, 'report.md'))
@@ -449,6 +480,8 @@ def main():
     ap.add_argument('--only', default='')
     ap.add_argument('--stay', type=int, default=40)
     ap.add_argument('--fight-stay', type=int, default=150)
+    ap.add_argument('--boss', action='store_true', help='boss fights: warp + teleport into the arena (BOSSES)')
+    ap.add_argument('--boss-stay', type=int, default=100)
     ap.add_argument('--shot-every', type=int, default=15)
     ap.add_argument('--movie-batch-s', type=float, default=900)
     ap.add_argument('--out', default=os.path.join(ROOT, 'port', 'switch', 'sweep'))
@@ -458,7 +491,7 @@ def main():
     ap.add_argument('--package', default='', help='push this update package (port/switch/nsp/out/<name>) before the run')
     ap.add_argument('--rejudge', default='', help='judge the pulled logs of a run dir again (no console)')
     args = ap.parse_args()
-    if not (args.movies or args.levels or args.fights):
+    if not (args.movies or args.levels or args.fights or args.boss):
         args.movies = args.levels = args.fights = True
     todo = items(args)
     if args.dry:

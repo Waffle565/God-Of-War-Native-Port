@@ -34,6 +34,30 @@ All items add `GOW_PERF_DIAG=1` (`[gow-perf] guest_flip_hz`) and `GOW_DELTA_DIAG
 seconds per wall second). One warp per boot: chained warps can evict the zone Kratos stands in and crash
 (docs/game-internals.md "Zones and the debug level warp"), so a level costs one launch (~2.5 min each).
 
+## Boss fights (`--boss`)
+
+The fight items above only load each boss zone at its warp point. `--boss` runs the real fights: items in
+tools/switch_sweep.py `BOSSES` (key, zone, note, GOW_TELEPORT value), one boot each, `--boss-stay` (100 s) of short
+steps, square / triangle combos, circle mashing (QTEs) and a cross every 10 s (dismisses trial and tutorial cards),
+`GOW_GOD_MODE`, screenshots every `--shot-every` s. The fps of a boss item count from the `[gow-teleport]` line on
+(the fight), without the warp-capture windows. A teleport item without that line is FAIL.
+
+- Where the fight is (RAM dumps of the boss zones, run port/switch/sweep/bossdump, update_boss1): ATHN08C is the Ares
+  boss fight itself (Ares's health bar right after the warp), ATHN08B the family defence against the Kratos clones
+  (also engaged at the warp point), ARENA27 the last Challenge of the Gods trial (10 of 10; its card waits for cross).
+  These three need no teleport. The warp points of ATHN01D (save altar before the Hydra deck), ATHN01EE (no point:
+  Kratos falls to y -8955 and dies), PAND03H (altar room), PAND04H (empty cave) and ATHN07B (the portal door) are not
+  in the arenas: those need GOW_TELEPORT positions.
+- Positions: `GOW_PLAYER_TRACE` `xf=` while walking, `tools/gow_objscan.py <dump>` (objects with the creature
+  transform layout: Kratos and the enemies share the class vtable 0x2BA528), `tools/gow_warppoints.py <dump>` (the
+  warp points of the loaded zones, world positions). Resource WADs per zone (GODOFWAR.TOC) for the boss candidates:
+  R_AHH/R_AHB ATHN01B, R_AHA/R_AH2 ATHN01D, R_AH3 ATHN01EE (Hydra), R_MI4 PAND04EE / PAND03E (Pandora's Guardian
+  candidate), R_CEP/R_CEA PAND04Z, PAND04H, PAND02I (Cerberus), R_AB3/R_AB4 PAND03H.
+- Test package: `bash port/switch/boss_sb.sh <tag>` in WSL builds /root/src-boss (a copy of /root/src-mlang at the
+  default's sources + port/overrides-usa/gow_overrides.cpp) in /root/gow-switch-boss, inside a private mount namespace
+  where both appear at the mlang paths (incremental build, the mlang tree untouched). update_boss2 = dips32 +
+  GOW_TELEPORT (md5 4a1d17c6). Run: `python -I tools/switch_sweep.py --boss --package update_boss2`.
+
 ## Judging
 
 - FAIL: new Atmosphère crash report for the game, game no longer the running title, log stopped growing for 75 s

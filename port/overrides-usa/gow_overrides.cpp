@@ -189,6 +189,47 @@ namespace
         gowRunGuest(rdram, call, runtime, 0x001AFAD0u);
     }
 
+    // GOW-Port: GOW_TELEPORT=<s>:<x>,<y>,<z>[;<s>:<x>,<y>,<z>...] (test only, with GOW_WARP): <s> seconds after the
+    // warp arrived, move Kratos to the world position x,y,z (boss arenas, tools/switch_sweep.py --boss). The steps of
+    // the game's own warp-point jump 0x1B26F0: player object *(*0x29CD58); its new transform (+0x10..+0x4F, four rows,
+    // translation in +0x40) = the current one (+0x50..+0x8F) with the target translation; the object's virtual at
+    // vtable(+4)+0x2C (this + (int16)vtable[+0x28]) applies it; with a camera (*0x29E2A4 != 0) 0x1EF0E0(old, new) moves
+    // the camera along. Logs `[gow-teleport] to x,y,z at <t> s from x,y,z`.
+    void gowTeleport(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime, const float target[3], double now)
+    {
+        const uint32_t holder = readGuest32(rdram, 0x29CD58u) & 0x01FFFFFFu;
+        const uint32_t player = holder >= 0x100000u && holder < 0x2000000u ? readGuest32(rdram, holder) & 0x01FFFFFFu : 0u;
+        const uint32_t vtable = player >= 0x100000u ? readGuest32(rdram, player + 4u) & 0x01FFFFFFu : 0u;
+        const uint32_t method = vtable >= 0x100000u ? readGuest32(rdram, vtable + 0x2Cu) : 0u;
+        if (method < 0x100000u || method >= 0x400000u)
+        {
+            std::fprintf(stderr, "[gow-teleport] no player object (holder=%x player=%x vtable=%x method=%x)\n", holder, player, vtable, method);
+            return;
+        }
+        float from[3];
+        std::memcpy(from, rdram + player + 0x80u, sizeof(from));
+        const uint32_t scratch = (GPR_U32(ctx, 29) - 0x900u) & ~0xFu; // old transform, new transform
+        std::memcpy(rdram + scratch, rdram + player + 0x50u, 0x40);
+        std::memcpy(rdram + scratch + 0x40u, rdram + player + 0x50u, 0x40);
+        std::memcpy(rdram + scratch + 0x70u, target, 12);
+        std::memcpy(rdram + player + 0x10u, rdram + scratch + 0x40u, 0x40);
+        const int16_t adjust = static_cast<int16_t>(readGuest32(rdram, vtable + 0x28u) & 0xFFFFu);
+        R5900Context call = *ctx;
+        SET_GPR_U32(&call, 4, player + static_cast<uint32_t>(static_cast<int32_t>(adjust)));
+        SET_GPR_U32(&call, 29, scratch - 0x200u);
+        gowRunGuest(rdram, call, runtime, method);
+        if (readGuest32(rdram, 0x29E2A4u) != 0u)
+        {
+            call = *ctx;
+            SET_GPR_U32(&call, 4, scratch);
+            SET_GPR_U32(&call, 5, scratch + 0x40u);
+            SET_GPR_U32(&call, 29, scratch - 0x200u);
+            gowRunGuest(rdram, call, runtime, 0x001EF0E0u);
+        }
+        std::fprintf(stderr, "[gow-teleport] to %.1f,%.1f,%.1f at %.1f s from %.1f,%.1f,%.1f (obj=%x camera=%u)\n", target[0],
+                     target[1], target[2], now, from[0], from[1], from[2], player, readGuest32(rdram, 0x29E2A4u));
+    }
+
     void gowWarpPoll(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
         static const std::vector<std::string> zones = [] {
@@ -231,6 +272,27 @@ namespace
                     std::fprintf(stderr, "[gow-warp] capture %s at %.1f s\n", name.c_str(), now);
                 }
             }
+        // GOW_TELEPORT (above): the steps relative to the last arrival
+        static double arrivedAt = -1.0;
+        static const std::vector<std::pair<double, std::array<float, 3>>> teleports = [] {
+            std::vector<std::pair<double, std::array<float, 3>>> list;
+            if (const char *text = std::getenv("GOW_TELEPORT"))
+            {
+                std::string item;
+                std::istringstream stream(text);
+                while (std::getline(stream, item, ';'))
+                {
+                    double t = 0;
+                    std::array<float, 3> p{};
+                    if (std::sscanf(item.c_str(), "%lf:%f,%f,%f", &t, &p[0], &p[1], &p[2]) == 4)
+                        list.push_back({t, p});
+                }
+            }
+            return list;
+        }();
+        static size_t nextTeleport = 0;
+        if (arrivedAt >= 0.0 && nextTeleport < teleports.size() && gameplay && now >= arrivedAt + teleports[nextTeleport].first)
+            gowTeleport(rdram, ctx, runtime, teleports[nextTeleport++].second.data(), now);
         if (due < 0.0)
         {
             if (gameplay)
@@ -251,6 +313,7 @@ namespace
                 waiting = false;
                 due = now + stay;
                 captureAt[0] = now + 5.0;
+                arrivedAt = now;
                 captureAt[1] = now + std::max(6.0, stay / 2.0);
             }
             else if (now - requested > 90.0)
@@ -283,6 +346,7 @@ namespace
             requested = now;
             due = now + stay;
             captureAt[0] = now + 5.0;
+            arrivedAt = now;
             captureAt[1] = now + std::max(6.0, stay / 2.0);
             return;
         }
@@ -452,10 +516,17 @@ namespace
                 float health = 0;
                 if (creature >= 0x100000u)
                     std::memcpy(&health, rdram + creature + 0x198u, 4);
-                std::fprintf(stderr, "[gow-player] t=%.1f g=%.1f obj=%x pos=%.1f,%.1f,%.1f hp=%.0f state=%u movie=%u zone=%s\n", seconds,
+                // xf = translation of the transform the warp-point jump writes (player object *(*0x29CD58) +0x80), the
+                // coordinates GOW_TELEPORT takes
+                float xf[3]{};
+                const uint32_t holder = readGuest32(rdram, 0x29CD58u) & 0x01FFFFFFu;
+                if (const uint32_t po = holder >= 0x100000u && holder < 0x2000000u ? readGuest32(rdram, holder) & 0x01FFFFFFu : 0u;
+                    po >= 0x100000u && po < 0x1FFFF00u)
+                    std::memcpy(xf, rdram + po + 0x80u, sizeof(xf));
+                std::fprintf(stderr, "[gow-player] t=%.1f g=%.1f obj=%x pos=%.1f,%.1f,%.1f hp=%.0f state=%u movie=%u zone=%s xf=%.1f,%.1f,%.1f\n", seconds,
                              gameplayStart >= 0.0 ? seconds - gameplayStart : -1.0, player, pos[0], pos[1], pos[2], health,
                              readGuest32(rdram, 0x29E560u), readGuest32(rdram, 0x29C838u),
-                             gowCurrentZone(rdram, ctx, runtime).c_str());
+                             gowCurrentZone(rdram, ctx, runtime).c_str(), xf[0], xf[1], xf[2]);
             }
             static double nextStateReport = 0;
             static const bool primDiag = [] { const char *diag=std::getenv("GOW_EE_PRIM_DIAG"); return diag && std::strcmp(diag,"1")==0; }();
