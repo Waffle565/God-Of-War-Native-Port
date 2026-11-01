@@ -1158,3 +1158,51 @@ Details: docs/native-render-study.md "step 7 on the renderer side, part 3".
   if not, the fight GPU time is raster / blend / bandwidth (overdraw of the alpha-tested models). VU1 levers left are
   each < 0.5 %: runLit's `switch (pc)` compare tree for the other transitions, kUnlitSt (bound on its madd -> 1/w
   chain), the prologue's FMAC overflow checks.
+
+## Switch GPU, sw-dips10: exact shortening of the draw shader family (2026-11-01, on dips31)
+- Console results that started it (fight bench, fps 0-10 / heavy / 20-30 / 30-60 / 60-90): dips30 53.3 / 45.5 / 49.2 /
+  50.8 / 54.7; dips31 (alpha-test lookup) 56.8 / 48.5 / 53.0 / 54.7 / 57.4; diagnostics on dips30: diagfs1 (point
+  sampling) 55.5 / 47.8 / 51.4 / 53.3 / 56.3, diagfs2 (untextured) 58.1 / 49.4 / 55.8 / 56.7 / 59.2. The fragment
+  shading of the hot draws is part of the GPU limit, so shorter exact shaders pay.
+- GPU time per program over the whole dips31 bench (bench_d31_gpu, sum of `[gs-dk-gpu-prog]`): 203425 31.3 s,
+  shuffle 13.5, 004c21 13.5, 207425 9.5, 204925 8.6, scale 8.1, 008901 5.5, present 5.1, 205425 4.8, 028000 3.6,
+  206425 2.9. Hash -> key in the log: low 32 bits of fnv64 of the variant source (scratch vmap.py idea: tools/dk_shaders.py
+  `draw_variant_head` + `fnv64` over the keys of switch/dk_variant_keys.txt).
+- **Maxwell disassembly offline**: uam `-r <file>` writes the raw code, CUDA's `nvdisasm -b SM53 <file>` (installed,
+  CUDA 12.8) disassembles it. Instruction counts (no NOPs) are the measure, not TGSI.
+- dips32 (port/switch/dips32.patch, gs_hw_backend.cpp + gs_dk_shaders_gen.cpp), all exact:
+  - alpha test as a float range: `uAtLo <= a <= uAtHi`, inverted by `uAtNot` (NOTEQUAL, NEVER); the backend's
+    `alphaTestRange(ate, atst, aref)` sets the bounds (int(a) >= L is a >= L for L >= 1, a > L - 1 for L <= 0; int(a)
+    <= H is a < H + 1 for H >= 0, a <= H for H <= -1; open sides infinite; ATE off = all pass). Replaces uAte / uAtst
+    / uAref, the F2I (quarter rate), the nibble lookup and the uniform ATE branch: 3 compares + KIL. Harness
+    (scratch atest.cpp, the backend's own helper text): every ATE, ATST, AREF against the old integer test (Maxwell
+    F2I truncating and saturating, FTZ) at +-6 ulps of every integer -300..600 (all switch points of both monotone
+    predicates) plus 300k random values: 1.29e9 checks, 0 mismatches.
+  - rgb clamps only where the colour feeds the shader blend (`clampRgb`: uSwBlend); otherwise the RGBA8 UNORM target
+    clamps rgb / 255 to 0-1 the same way (render targets are kRgba8 -> DkImageFormat_RGBA8_Unorm; blend inputs are
+    clamped for UNORM targets). Alpha keeps its clamp (it feeds the alpha test and the blend factor). -6 ops.
+  - `uTexDimInv` (1 / TW, 1 / TH, set with uTexDim) for the gather and the indexed texel-centre coordinates: no per
+    fragment MUFU.RCP. Dims are powers of two (exact reciprocal), and both coordinates sit >= 1/64 texel inside their
+    texel / footprint, so they pick the same texels either way. -2 RCP, -2 MOV.
+  - palette index without F2I: `floatBitsToUint(index * 255 + 2^23) & 255` (round to nearest, low mantissa bits) =
+    `int(index * 255 + 0.5)` for every index within 0.5 / 255 of k / 255 (scratch ptest.cpp: every k, +-4096 ulps,
+    fused and unfused: 0 mismatches). 4 quarter-rate F2I -> 4 LOP per bilinear fragment.
+  - Maxwell instructions (no NOPs) dips31 -> dips32: 203425 143 -> 112 (0 F2I instead of 5, 1 MUFU instead of 3, no
+    branches), 207425 142 -> 112, 004c21 91 -> 63, 204925 114 -> 85, 205425 156 -> 120, 206425 144 -> 112, 206c25
+    132 -> 102; 008901 (sw blend, point) 162 -> 161. Kept arithmetic is the same instruction sequence (opcode diff).
+  - deko3d table: tools/dk_shaders.py on the new source (79 shaders, 0 failed), merged (scratch merge.py) so every
+    binary whose source hash is unchanged keeps its shipped bytes: 11 kept (the draw VS, shuffle, present, clut, pack,
+    scale, svol; the fresh compile of all 11 was byte-identical anyway), 68 draw fragment binaries new. The draw
+    family's uniform table changed (uAtLo, uAtHi, uAtNot, uTexDimInv; uAte, uAtst, uAref gone).
+- Package **update_dips32** = dips31 + dips32 (ELF /root/elf_dips32.elf, exefs md5 c0893f9b). Console A/B: fight bench
+  with `GOW_DK_GPU_TIME=1` (bench_env/d29_gpu.txt) on update_dips31 and update_dips32; compare fps and the p12 / p15 /
+  004c21 ms. Pictures should be identical (screenshots of both runs comparable pixel for pixel).
+- **Handoff (sw-dips10 stopped here)**: sources /root/src-mlang = ... + dips31 + dips32 (originals /root/dips32-orig,
+  patch helper /root/dt/mkp.sh). Offline shader loop (scratch, re-creatable): copy the backend, edit, `uam -s frag -t
+  -r` on the family-rewritten variant source (tools/dk_shaders.py `Family.rewrite` + `draw_variant_head`), `nvdisasm -b
+  SM53` on the raw file, opcode diff against the previous version; then dk_shaders.py over switch/dk_variant_keys.txt
+  and the keep-shipped-bytes merge. Left in the hot variants: 10 F2F.FLOOR (quarter rate; a full-rate exact floor
+  costs as many slots), the q select re-interpolating vSTQ.z, the uv clamp to vUVClamp (4 IPA + 4 FMNMX, needed for
+  sprites only, not known per variant), the RCP of uTexSize in the direct bilinear path (004c21: not exact to replace,
+  the weights depend on it); 008901 (sw blend) keeps its uniform blendSel branches (an exact branch-free select needs
+  per-selector 0 / 1 uniforms) and a TXQ + 2 I2F for textureSize (a uniform with the bound texture's size would do).
