@@ -1066,3 +1066,36 @@ Details: docs/native-render-study.md "step 7 on the renderer side, part 3".
   | 60-90 | 51.9 | 55.2 | **55.3** |
   scale pass 83-126 ms per 5 s. SEMO01 30.0 pictures/s (port/switch/sweep/mov_dips25), title boots clean, bench shots
   correct. **Installed 2026-11-01: update_dips25 + FAILGT** (exefs md5 685588ef); tools/switch_default.sh updated.
+- **What the GPU barriers cost in the fight** (dips26, port/switch/dips26.patch: diagnostic `GOW_DK_NOBARRIER`, wrong
+  pictures; 1 = skip the texture barriers before draws that read their own target, 2 = skip the barrier at every render
+  target change, 3 = both; logs bench_d26nb3 / bench_d26nb2): per 5 s ~13.3 k texture barriers (~50 per frame) and
+  ~5.9 k target changes.
+  | scene (game s) | dips25 | no barriers at all (3) | no target-change barriers (2) |
+  |---|---|---|---|
+  | 0-10 | 53.6 | 54.3 | 53.5 |
+  | 10-20 heavy | 45.5 | 46.4 | 45.7 |
+  | 20-30 | 49.2 | 50.3 | 49.2 |
+  | 30-60 mid | 50.9 | 52.1 | 51.2 |
+  All barriers together cost ~1 fps (2 %), the target-change ones <= 0.3 (noise level): a lazy "barrier only before
+  sampling a target written since the last barrier" would win at most that, and the texture barriers are needed (the
+  draw reads its own target). Not a lever. The draw time is the fragment shading itself: the hot variants 207425 (p15:
+  RGB_ONLY without Z write in one draw, `uPass` 3) and 203425 (p12: the pass draw of the Z-writing models) are ~95
+  TGSI ops / 18 registers each (uam `-t`), the paletted bilinear chain (gather -> 4 dependent palette fetches) plus the
+  modulate, and run at 0.35 / 0.27 G fragments per s against 1.7 G for the one-tap scale pass.
+- runLit in ATHN01D (prof_dips20_ATHN01D, `tools/switch_pchot.sh` with `LO=2e4a8f0` = the main clone in
+  /root/elf_dips20.elf; 9.85 % of the VU1 thread): of the hot addresses listed, ~44 % are the per-run prologue
+  (ps2_vu1_nat_lit.inl 860-950: the `lq` loads of the batch header and the masked stores into `s.vf`), the rest the
+  lit / unlit loop calls. A register-resident prologue would save at most ~1-2 % of the VU1 thread (~0.5 fps in the
+  VU1-bound zones); not started.
+- **Handoff (sw-dips8 stopped here)**: console default **update_dips25 + FAILGT** (md5 685588ef; bilinear built in).
+  Sources /root/src-mlang = dips25 + dips26 (the `GOW_DK_NOBARRIER` diagnostic only; off by default; originals
+  /root/dips25-orig, /root/dips26-orig; patch helper /root/dt/mkp.sh). CRLF-free build script /root/dt/dips_sb.sh
+  (`bash /root/dt/dips_sb.sh <tag>`). Hot draw variants decoded: p15 = key 207425 (hash 1a341f4c), p12 = 203425
+  (a28a2b6a), p11 = 004c21, p16 = 203725, p18 = 008901, p22 = 008425 (hash -> key: fnv64 of
+  `draw_variant_head(kFsSource, key) + kReinterpretSource + kFsTail`, tools/dk_shaders.py; TGSI of a variant: uam `-t`
+  on the family-rewritten source, scratch /root/dt/fs). Where the fight is now: GPU busy ~4.9 s per 5 s, draws
+  ~3.0-3.4 s of it at the variants' fragment rate (barriers ~2 %, the scale pass ~0.12 s); the heavy scene is VU1 (83 %)
+  and GPU bound at once. Levers left, each small: shorter fragment shaders for 207425 / 203425 (the palette expansion
+  of sw-k11 gave only -10 % on these draws, so fetches are not the cost; an untextured substitution run, a new key in
+  dk_variant_keys.txt, would show whether the shader or the raster is the limit), the VU1 per-run prologues
+  (runLit ~4 %, npart), the VIF unpack (~9 %) and the XGKICK memmove (~5 %).

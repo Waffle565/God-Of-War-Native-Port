@@ -1,0 +1,28 @@
+--- a/ps2xRuntime/src/lib/gs/gpu/gs_dk.cpp
++++ b/ps2xRuntime/src/lib/gs/gpu/gs_dk.cpp
+@@ -768,7 +768,10 @@
+         if (!color || !color->valid)
+             return false;
+         // render target changes order the previous target's fragments before anything samples it
+-        dkCmdBufBarrier(s->cmd, DkBarrier_Fragments, DkInvalidateFlags_Image);
++        // (GOW_DK_NOBARRIER=2 / 3, diagnostic: skipped)
++        static const bool skipRt = [] { const char *e = std::getenv("GOW_DK_NOBARRIER"); return e && (std::atoi(e) & 2); }();
++        if (!skipRt)
++            dkCmdBufBarrier(s->cmd, DkBarrier_Fragments, DkInvalidateFlags_Image);
+         const DkImageView *views[] = {&color->view};
+         dkCmdBufBindRenderTargets(s->cmd, views, 1, depth && depth->valid ? &depth->view : nullptr);
+         ++s->rtBinds;
+@@ -1880,8 +1883,12 @@
+     void dkTextureBarrier()
+     {
+         // what the next draw reads of the bound target (destination alpha, blend in the shader, Z alias)
+-        dkCmdBufBarrier(s->cmd, DkBarrier_Fragments, DkInvalidateFlags_Image);
++        // GOW_DK_NOBARRIER=1 / 3 (diagnostic, wrong pictures): skip these barriers to measure what they cost the GPU
++        static const int skip = [] { const char *e = std::getenv("GOW_DK_NOBARRIER"); return e ? std::atoi(e) : 0; }();
+         ++s->barrierCount;
++        if (skip & 1)
++            return;
++        dkCmdBufBarrier(s->cmd, DkBarrier_Fragments, DkInvalidateFlags_Image);
+     }
+     void dkCopyImageSubData(GLuint src, GLenum, GLint, GLint sx, GLint sy, GLint, GLuint dst, GLenum, GLint, GLint dx, GLint dy, GLint,
+                             GLsizei w, GLsizei h, GLsizei)
