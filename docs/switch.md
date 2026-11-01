@@ -128,8 +128,7 @@ The PAKs are 4 GB each: the SD card must be exFAT (FAT32 has a 4 GB file limit).
   carries a 0-byte placeholder under the program's name, so it needs sphaira with "skip if already installed" on
   (sphaira's installer checks `ncmContentStorageHas` and skips that NCA; with the option off it would install the empty
   file). `port/switch/nsp/pfs0.py` lists / extracts an NSP's small entries. The 10-18 NSP (program
-  f9795578e30c19d3f6422d18e299026b, 8.57 GB) is kept as `D:\Claude Archive\GoW-Archive\port\switch
-sp\outase_20261018_v0.nsp` for this (docs/storage.md).
+  f9795578e30c19d3f6422d18e299026b, 8.57 GB) is kept as `D:\Claude Archive\GoW-Archive\port\switch\nsp\out\base_20261018_v0.nsp` for this (docs/storage.md).
   Proven 2026-10-25: test title (icon shows, the reused program starts) and God of War (installed v65536 = that program
   + the new control). **The installed GoW is now v65536**: the next icon/name change needs `VERSION=131072`, any full NSP
   at least that too (a lower version is refused without sphaira's "allow downgrade").

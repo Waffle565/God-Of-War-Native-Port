@@ -24,7 +24,7 @@ the repo where possible). Nothing there is used by builds or runs; copy a thing 
 | `gamedata/disc-asia/`, `disc-jpn/`, `disc-kor/` | Regional discs extracted (docs/settings.md "Other regional discs"). `disc-jpn/` is the Japanese dub source for `tools/lang_pack.py --ja` / `tools/pc_release/make_pc_folder.ps1`: copy it back to the repo root before building a language pack with Japanese voices. |
 | `gamedata/ref/gow2/`, `ref/gow2demo/` | God of War II and its demo (ISO + extracted files), reference only. |
 | `port/natiop*/`, `port/core1/`, `port/natpc/` | Native IOP / core 1 gate runs (2026-10-19..26) named in sound.md, memory-card.md, switch-deko3d.md: logs, traces, captures. |
-| `port/switch/logs/`, `port/switch/sweep/`, `port/switch/sweep_movlang/`, `port/switch/shots/` | Console logs, sweep reports and screenshots older than 2 days at cleanup time. |
+| `port/switch/logs/`, `port/switch/sweep/`, `port/switch/sweep_movlang/`, `port/switch/shots/` | Console logs, sweep reports and screenshots older than 2 days at cleanup time (git-tracked ones stay in the repo too). |
 | `port/switch/nsp/out/` | `base_20261018_v0.nsp` (the full 10-18 NSP, needed as `REUSE_NSP` for a control-only package, docs/switch.md), old language pack `lang_nx/` (superseded by `lang_nx2/`), the former defaults `update_bugs1`, `update_mlangfog1`, `gow_icon_v65536.nsp`. |
 | `repo/`, `port/`, `scratchpad/`, `nat*/`, `switch/` | Earlier cleanup passes (2026-10-24/25): big run logs, VU1 work trees, old packages; `MOVED_LIST_first_pass.txt` lists them. |
 
