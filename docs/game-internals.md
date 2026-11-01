@@ -189,7 +189,8 @@ every case: 11 frees, 11 reports. The game kept running (port/shipcrash/selftest
 - Player object `*(*0x29CD58)` (class vtable 0x2BA528, shared by the enemies' creature objects): vtable pointer at +4,
   new transform +0x10..+0x4F, current transform +0x50..+0x8F (four rows, translation +0x80, y is up).
 - 0x1B26F0 (warp-point jump, a0 = warp point): new matrix from the warp point (0x1A95D8), written to +0x10..+0x4F, then
-  the virtual at vtable+0x2C (this + int16 vtable[+0x28]) applies it; with a camera (`*0x29E2A4`) 0x1EF0E0(old, new)
+  the virtual at vtable+0x2C (this + int16 vtable[+0x28], a1 = the new transform; creatures 0x1E6E18 -> 0x1DFE58
+  copy it into their node) applies it; with a camera (`*0x29E2A4`) 0x1EF0E0(old, new)
   moves the camera; then 0x1A8718, 0x2247E8(1), 0x1A5FC0, 0x1A9520. `GOW_TELEPORT` (docs/diagnostics.md) repeats the
   first three steps with a given translation.
 - Warp points: list at 0x302600 (node +0 next, +8 object); 0x1ADFF8(new zone, old zone) picks the object whose owner

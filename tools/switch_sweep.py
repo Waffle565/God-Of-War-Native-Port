@@ -53,7 +53,10 @@ FIGHTS = [('ATHN01D', 'Hydra 1, ship deck (R_AHA/R_AH2)'), ('ATHN01EE', 'Hydra 2
 # tools/gow_objscan.py on a RAM dump of the zone. The pad script attacks and mashes for --boss-stay seconds.
 BOSSES = [('ares', 'ATHN08C', 'Ares (boss bar from the warp point on)', ''),
           ('clones', 'ATHN08B', 'Ares: family defence vs Kratos clones (engaged at the warp point)', ''),
-          ('challenge', 'ARENA27', 'Challenge of the Gods 10/10 (cross dismisses the trial card)', '')]
+          ('challenge', 'ARENA27', 'Challenge of the Gods 10/10 (cross dismisses the trial card)', ''),
+          ('cerberus', 'PAND02I', 'Cerberus pair (R_CEP/R_CEA), engaged at the warp point', '')]
+# still open (docs/switch-sweep.md "Boss fights"): Hydra 1 (ATHN01D) and Hydra 2 (ATHN01E / 01EE) need the arena
+# position or story trigger, Pandora's Guardian (R_MI4: PAND03E / PAND04EE) was not found at its zones' warp points
 # the 43 movies with speech (European disc: five language tracks), dubbed from the lang pack (docs/settings.md
 # "Movies in other languages"): each must log `[disc] dub read: .../voice_<SWEEP_LANG>/<MOVIE>.DUB` (the intro
 # SEMO01: `overlay read: .../SEMO01.PSW`, its re-encoded card)
@@ -160,6 +163,10 @@ def items(args):
     if args.boss:
         out += [{'kind': 'boss', 'name': 'boss_' + k, 'zone': z, 'stay': args.boss_stay, 'note': n, 'teleport': tp}
                 for k, z, n, tp in BOSSES if not only or z in only or k.upper() in only]
+    # ad-hoc boss items (finding arena positions): --boss-item "key|ZONE|<GOW_TELEPORT value>", repeatable
+    for spec in args.boss_item:
+        k, z, tp = (spec.split('|') + ['', ''])[:3]
+        out.append({'kind': 'boss', 'name': 'boss_' + k, 'zone': z, 'stay': args.boss_stay, 'note': 'ad hoc', 'teleport': tp})
     if args.fights:
         out += [{'kind': 'fight', 'name': 'fight_' + z, 'zone': z, 'stay': args.fight_stay, 'note': n}
                 for z, n in FIGHTS if not only or z in only]
@@ -482,6 +489,7 @@ def main():
     ap.add_argument('--fight-stay', type=int, default=150)
     ap.add_argument('--boss', action='store_true', help='boss fights: warp + teleport into the arena (BOSSES)')
     ap.add_argument('--boss-stay', type=int, default=100)
+    ap.add_argument('--boss-item', action='append', default=[], help='ad-hoc boss item "key|ZONE|<GOW_TELEPORT value>"')
     ap.add_argument('--shot-every', type=int, default=15)
     ap.add_argument('--movie-batch-s', type=float, default=900)
     ap.add_argument('--out', default=os.path.join(ROOT, 'port', 'switch', 'sweep'))
@@ -491,7 +499,7 @@ def main():
     ap.add_argument('--package', default='', help='push this update package (port/switch/nsp/out/<name>) before the run')
     ap.add_argument('--rejudge', default='', help='judge the pulled logs of a run dir again (no console)')
     args = ap.parse_args()
-    if not (args.movies or args.levels or args.fights or args.boss):
+    if not (args.movies or args.levels or args.fights or args.boss or args.boss_item):
         args.movies = args.levels = args.fights = True
     todo = items(args)
     if args.dry:

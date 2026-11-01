@@ -193,7 +193,7 @@ namespace
     // warp arrived, move Kratos to the world position x,y,z (boss arenas, tools/switch_sweep.py --boss). The steps of
     // the game's own warp-point jump 0x1B26F0: player object *(*0x29CD58); its new transform (+0x10..+0x4F, four rows,
     // translation in +0x40) = the current one (+0x50..+0x8F) with the target translation; the object's virtual at
-    // vtable(+4)+0x2C (this + (int16)vtable[+0x28]) applies it; with a camera (*0x29E2A4 != 0) 0x1EF0E0(old, new) moves
+    // vtable(+4)+0x2C (this + (int16)vtable[+0x28], a1 = the new transform) applies it; with a camera (*0x29E2A4 != 0) 0x1EF0E0(old, new) moves
     // the camera along. Logs `[gow-teleport] to x,y,z at <t> s from x,y,z`.
     void gowTeleport(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime, const float target[3], double now)
     {
@@ -216,6 +216,7 @@ namespace
         const int16_t adjust = static_cast<int16_t>(readGuest32(rdram, vtable + 0x28u) & 0xFFFFu);
         R5900Context call = *ctx;
         SET_GPR_U32(&call, 4, player + static_cast<uint32_t>(static_cast<int32_t>(adjust)));
+        SET_GPR_U32(&call, 5, scratch + 0x40u); // the method (0x1DFE58 for creatures) takes the new transform in a1
         SET_GPR_U32(&call, 29, scratch - 0x200u);
         gowRunGuest(rdram, call, runtime, method);
         if (readGuest32(rdram, 0x29E2A4u) != 0u)

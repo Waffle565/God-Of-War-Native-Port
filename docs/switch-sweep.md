@@ -53,10 +53,33 @@ steps, square / triangle combos, circle mashing (QTEs) and a cross every 10 s (d
   warp points of the loaded zones, world positions). Resource WADs per zone (GODOFWAR.TOC) for the boss candidates:
   R_AHH/R_AHB ATHN01B, R_AHA/R_AH2 ATHN01D, R_AH3 ATHN01EE (Hydra), R_MI4 PAND04EE / PAND03E (Pandora's Guardian
   candidate), R_CEP/R_CEA PAND04Z, PAND04H, PAND02I (Cerberus), R_AB3/R_AB4 PAND03H.
+- Exploration on console (2026-11-01, port/switch/sweep/bossx/*, update_boss2 / update_boss3, screenshots every 4-6 s):
+  - Engaged at the warp point, no teleport needed: ATHN08C (Ares, boss bar), ATHN08B (clones / family), ARENA27
+    (trial 10/10), PAND02I (two Cerberus). PAND04Z: Kratos falls and the checkpoint restart puts him on the ship.
+    PAND02DD, PAND04H (caves), PAND04EE (stone corridor with a gate), PAND03H (altar room): no boss at the warp point.
+  - GOW_TELEPORT works from update_boss3 on (update_boss2 left a1 unset: the creature method 0x1DFE58 read a null
+    matrix and Kratos landed at 0,0,0): ATHN01D 5:-1000,60,-1450 lands on the lower deck at -1000,-63,-1450 below the
+    archers (the six y=94 creatures of the dump), not at a Hydra. A teleport over water or a pit is a fall death; the
+    death screen then takes the cross presses and the run ends at the title (later teleports never fire).
+  - Ship frame: ATHN01A start 1536,20,1957; ATHN01D warp -976,56,-393 (decks y 56 / -63, x about -700..-1120,
+    x -1250 and z -1100 at x -2718 are overboard); ATHN01E warp -2664,672,-695 (save altar on the deck outside the
+    cabin, x -2720..-2800, z -580..-730). ATHN01EE has a degenerate warp point (local 0,0,0) and no floor near it:
+    it looks like the Hydra-2 boss zone that the deck of ATHN01E uses once the story triggers it.
+  - Pandora's Guardian = the armoured undead minotaur of the Challenge of Hades (godofwar.fandom.com); R_MI4 loads in
+    PAND03E (lava corridor, warp point -282,496,-553; Kratos falls into the lava at ~g15) and PAND04EE. No creature
+    of it in the PAND03E dump at g12 (not spawned yet).
+- **Handoff (sw-sweep4, 2026-11-01 17:00)**: BOSSES has ares, clones, challenge, cerberus (no teleport). Open: Hydra 1,
+  Hydra 2, Pandora's Guardian. Next steps: (1) single-step teleports only (a fall ends the run); (2) Hydra 2: warp
+  ATHN01E and walk / teleport forward along the ship axis (direction about -0.85,-0.52 in x,z from ATHN01A to 01E),
+  or find the script trigger that starts the fight; (3) Hydra 1: GoW's first Hydra encounter is in ATHN01B
+  (R_AHH/R_AHB; the warp into 01B is impossible because 01B is the start zone, but a teleport from the start is
+  possible: walk trace xf in the first minute of a new game); (4) Guardian: PAND03E with a teleport past the lava
+  (dump later than g12, or walk). Full run for the found four: `python -I tools/switch_sweep.py --boss --package
+  update_boss3` (update_boss3 = dips32 + GOW_TELEPORT, md5 in port/switch/nsp/out/update_boss3).
 - Test package: `bash port/switch/boss_sb.sh <tag>` in WSL builds /root/src-boss (a copy of /root/src-mlang at the
   default's sources + port/overrides-usa/gow_overrides.cpp) in /root/gow-switch-boss, inside a private mount namespace
-  where both appear at the mlang paths (incremental build, the mlang tree untouched). update_boss2 = dips32 +
-  GOW_TELEPORT (md5 4a1d17c6). Run: `python -I tools/switch_sweep.py --boss --package update_boss2`.
+  where both appear at the mlang paths (incremental build, the mlang tree untouched). update_boss3 = dips32 +
+  GOW_TELEPORT (a1 fix, md5 e143a9e1). Run: `python -I tools/switch_sweep.py --boss --package update_boss3`.
 
 ## Judging
 
