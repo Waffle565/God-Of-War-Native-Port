@@ -1,0 +1,123 @@
+--- a/ps2xRuntime/include/runtime/ps2_vu1_native.h
++++ b/ps2xRuntime/include/runtime/ps2_vu1_native.h
+@@ -7,6 +7,7 @@
+ #define PS2_VU1_NATIVE_H
+ 
+ #include "runtime/ps2_vu1.h"
++#include "runtime/ps2_zva.h" // sw-dips9: XGKICK appends (nrun::kick)
+ 
+ #include <bit>
+ #include <cfloat>
+--- a/ps2xRuntime/include/runtime/ps2_zva.h
++++ b/ps2xRuntime/include/runtime/ps2_zva.h
+@@ -0,0 +1,47 @@
++#pragma once
++// GOW-Port (sw-dips9): appending to a byte buffer whose lines are not in this core's cache (the GS stage's packet
++// buffers: written on the VU1 worker, read on the stage thread). Each store to such a line first reads it (write
++// allocate: from L2, the other core or DRAM); DC ZVA allocates a whole cache line as zeros without that read. Before an
++// append of n bytes at the end of a vector with the capacity for it, the lines the append will overwrite entirely are
++// zeroed this way, then the copy writes them (same bytes in the buffer: the copy overwrites every zeroed byte).
++// GOW_KICK_ZVA=0: off. A no-op off AArch64 or where DCZID_EL0 prohibits DC ZVA.
++#include <cstddef>
++#include <cstdint>
++#include <cstdlib>
++#include <vector>
++
++namespace ps2_zva
++{
++#if defined(__aarch64__)
++    // the DC ZVA block size in bytes, 0 when off
++    inline uint32_t blockBytes()
++    {
++        static const uint32_t b = [] {
++            const char *e = std::getenv("GOW_KICK_ZVA");
++            if (e && e[0] == '0')
++                return 0u;
++            uint64_t d;
++            asm volatile("mrs %0, dczid_el0" : "=r"(d));
++            return (d & 16u) ? 0u : 4u << (d & 15u);
++        }();
++        return b;
++    }
++#endif
++    // call right before v.insert(v.end(), src, src + n) (or several inserts adding n bytes in all)
++    inline void prepareAppend(std::vector<uint8_t> &v, size_t n)
++    {
++#if defined(__aarch64__)
++        const uint32_t L = blockBytes();
++        if (!L || n < 2u * L || v.capacity() - v.size() < n) // (no capacity: insert reallocates, nothing to prepare)
++            return;
++        const uintptr_t b = reinterpret_cast<uintptr_t>(v.data() + v.size());
++        uintptr_t lo = (b + L - 1u) & ~static_cast<uintptr_t>(L - 1u);
++        const uintptr_t hi = (b + n) & ~static_cast<uintptr_t>(L - 1u);
++        for (; lo < hi; lo += L)
++            asm volatile("dc zva, %0" : : "r"(lo) : "memory");
++#else
++        (void)v;
++        (void)n;
++#endif
++    }
++}
+--- a/ps2xRuntime/src/lib/gs/gs_stage.cpp
++++ b/ps2xRuntime/src/lib/gs/gs_stage.cpp
+@@ -1,5 +1,6 @@
+ #include "runtime/ps2_perf.h"
+ #include "runtime/gs/gs_stage.h"
++#include "runtime/ps2_zva.h"
+ #include "ThreadNaming.h"
+ 
+ #include <atomic>
+@@ -272,6 +273,7 @@
+     {
+         Stage &s = stage();
+         Packet &p = *s.current;
++        ps2_zva::prepareAppend(p.data, size); // sw-dips9: no read of the destination lines (ps2_zva.h)
+         p.data.insert(p.data.end(), data, data + size);
+         p.sizes.emplace_back(path, size);
+         s.stagedBytes += size;
+--- a/ps2xRuntime/src/lib/vu/ps2_vu1_nat_run.inl
++++ b/ps2xRuntime/src/lib/vu/ps2_vu1_nat_run.inl
+@@ -269,9 +269,12 @@
+         inline __m128 bc(__m128 v) { return vu1n::bc<C>(v); }
+ 
+         // GIF packet at qw (XGKICK): tags until EOP, VU memory wraps at 1024 qw
++        // sw-dips9: the tags are walked first (each tag + its n qwords, at most 1024 qw per tag, as before), then the
++        // packet goes out in as few pieces as the wrap allows, its destination lines prepared with DC ZVA (ps2_zva.h)
+         inline void kick(const uint8_t *m, int32_t qw, std::vector<uint8_t> &out)
+         {
+-            uint32_t q = static_cast<uint32_t>(qw) & 0x3FFu;
++            const uint32_t q0 = static_cast<uint32_t>(qw) & 0x3FFu;
++            uint32_t q = q0, total = 0;
+             for (unsigned guard = 0; guard < 1024u; ++guard)
+             {
+                 uint64_t lo;
+@@ -281,16 +284,20 @@
+                 nreg = nreg ? nreg : 16u;
+                 const bool eop = (lo >> 15) & 1u;
+                 uint32_t n = flg == 0u ? nloop * nreg : flg == 1u ? (nloop * nreg + 1u) / 2u : nloop;
+-                // tag + n qwords, in at most two pieces (VU memory wraps at 1024 qw); n < 1024 for a real packet
+-                for (uint32_t left = std::min<uint32_t>(n + 1u, 1024u); left;)
+-                {
+-                    const uint32_t piece = std::min(left, 1024u - q);
+-                    out.insert(out.end(), m + q * 16u, m + (q + piece) * 16u);
+-                    q = (q + piece) & 0x3FFu;
+-                    left -= piece;
+-                }
++                // tag + n qwords (VU memory wraps at 1024 qw); n < 1024 for a real packet
++                const uint32_t len = std::min<uint32_t>(n + 1u, 1024u);
++                total += len;
++                q = (q + len) & 0x3FFu;
+                 if (eop)
+-                    return;
++                    break;
++            }
++            ps2_zva::prepareAppend(out, static_cast<size_t>(total) * 16u);
++            for (q = q0; total;)
++            {
++                const uint32_t piece = std::min(total, 1024u - q);
++                out.insert(out.end(), m + q * 16u, m + (q + piece) * 16u);
++                q = (q + piece) & 0x3FFu;
++                total -= piece;
+             }
+         }
+ 

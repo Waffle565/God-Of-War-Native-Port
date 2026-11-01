@@ -1099,3 +1099,36 @@ Details: docs/native-render-study.md "step 7 on the renderer side, part 3".
   of sw-k11 gave only -10 % on these draws, so fetches are not the cost; an untextured substitution run, a new key in
   dk_variant_keys.txt, would show whether the shader or the raster is the limit), the VU1 per-run prologues
   (runLit ~4 %, npart), the VIF unpack (~9 %) and the XGKICK memmove (~5 %).
+
+## Switch VU1 thread / GPU, sw-dips9: XGKICK appends with DC ZVA, the tag scan loop, a shader-cost diagnostic (2026-11-01, from update_dips25)
+- Profile re-read (prof_dips20_ATHN01D, function level, play windows 105-170 s, scratch funcs.sh = nm + bisect over
+  pcs_GSWorker.txt): npart::run 14.1 %, runLit 10.9 %, litLoopT 9.3 %, kCullClip 6.1 %, kUnlitSt 5.2 %,
+  processVIF1Data 4.9 %, **memcpy 4.9 %** (memmove is the same function in this libc), skinLoopT 4.1 %, tryRun 3.0 %,
+  unpackFast (all formats) ~8.6 %. memcpy's samples (3098) are ~85 % on the four `stp` of its 64-byte bulk loop:
+  the copy waits on its stores, not its loads (the source is VU memory, in L1): the destination is the GS stage's
+  packet buffer, whose lines were last read by the stage thread on another core, so every store first fetches its line.
+- runLit by source line (dips20 numbering = current): the batch prologue 860-950 ~30 % of runLit (~3.2 % of the
+  thread; its hottest samples sit after the FMAC overflow checks `umaxv / fmov / cmp / b.cs` of the sphere test, the
+  values already in NEON registers: no register-residency gain left there), and **the `switch (pc)` line alone 341
+  samples (0.54 %)**: GCC compiles the sparse case values into a compare tree and keeps `pc` on the stack, and the tag
+  scan 0x03a0 (`ilw vi5, 1(vi2); vi2++; ibgez vi5 -> 0x03a0`) went through the whole tree once per scanned qword.
+- dips27 (port/switch/dips27.patch; new include/runtime/ps2_zva.h): `ps2_zva::prepareAppend(vector, n)` zeroes with
+  `DC ZVA` the cache lines an append of n bytes will overwrite entirely (only within the vector's capacity: no
+  reallocation, partial lines at both ends left alone), so the stores no longer read them first; nrun::kick (native
+  runs, into the stage buffer) walks the GIF tags first and copies the packet in at most two pieces after it,
+  ps2_gs_stage::push (the arbiter's path) prepares its insert the same way. Same bytes in the buffer.
+  `GOW_KICK_ZVA=0` turns it off (A/B in one package); a no-op off AArch64 or when DCZID_EL0 prohibits DC ZVA.
+- dips29 (port/switch/dips29.patch, ps2_vu1_nat_lit.inl): the tag scan as its own loop, then straight into 0x03c0
+  (fallthrough); each scanned qword still counts against the 65536 guard (same decline at the same point).
+- dips28 (port/switch/dips28.patch, gs_hw_backend.cpp, **diagnostic, wrong pictures**): `GOW_DK_DIAGFS=1` draws the
+  fight's two hottest variants (207425, 203425: indexed bilinear) with their point-sampling siblings (207405 / 203405:
+  one index + one palette fetch, no gather / mixes), `=2` with the untextured 203000. One bench run each says whether
+  the fragment shading of p15 / p12 is the GPU's limit (shorter shaders worth writing: the alpha-test `switch (uAtst)`
+  compiles to a loop of up to eight uniform compare / branch pairs per fragment, ~25 of the ~95 TGSI ops) or the
+  raster / blend / bandwidth is.
+- Natcheck (harness /root/vu1h/f1 / f1a = dips27 + dips29 on dips23's VU code): x86 plain, x86 forced decline, a64
+  identical to e1 on all 40 recordings; GENTEST identical to plain (x86 and a64).
+- Package **update_dips29** = dips25 + dips26 + dips27 + dips28 + dips29 (ELF /root/elf_dips29.elf, exefs md5
+  04418c57). Bench env files port/switch/bench_env/d29*.txt (FAILGT included): `d29` (ZVA on), `d29_zva0` (ZVA off:
+  dips25 + the tag scan), `d29_gpu` / `d29_diagfs1` / `d29_diagfs2` (`GOW_DK_GPU_TIME=1`, the diagnostic levels).
+  Console A/B pending.

@@ -1,0 +1,18 @@
+--- a/ps2xRuntime/src/lib/gs/gpu/gs_hw_backend.cpp
++++ b/ps2xRuntime/src/lib/gs/gpu/gs_hw_backend.cpp
+@@ -3315,7 +3315,14 @@
+     void useDrawProgram(bool dualSource)
+     {
+         const Api &g = gl();
+-        DrawVariant &v = drawVariantFor(specializeDraws ? drawVariantKey(dualSource) : kUberVariant);
++        uint32_t key = specializeDraws ? drawVariantKey(dualSource) : kUberVariant;
++        // GOW_DK_DIAGFS (sw-dips9, diagnostic, wrong pictures): the fight's two hottest draw variants (207425, 203425: indexed
++        // bilinear, TFX modulate) with a cheaper shader, to see what their fragment work costs the GPU. 1: point sampling
++        // (207405 / 203405: one index + one palette fetch, no gather / mixes), 2: untextured (203000: the vertex colour)
++        static const int diagFs = [] { const char *e = std::getenv("GOW_DK_DIAGFS"); return e ? std::atoi(e) : 0; }();
++        if (diagFs && (key == 0x207425u || key == 0x203425u))
++            key = diagFs == 1 ? key - 0x20u : 0x203000u;
++        DrawVariant &v = drawVariantFor(key);
+         g.UseProgram(v.program);
+         for (int i = 0; i < kDrawUniforms; ++i)
+         {

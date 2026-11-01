@@ -1,0 +1,28 @@
+--- a/ps2xRuntime/src/lib/vu/ps2_vu1_nat_lit.inl
++++ b/ps2xRuntime/src/lib/vu/ps2_vu1_nat_lit.inl
+@@ -1069,10 +1069,21 @@
+                 return true;
+             }
+             case 0x03a0: // tag scan: ilw.x vi5, 1(vi2); iaddiu vi2, vi2, 1; ibgez vi5 -> 0x03a0
+-                v.seti(5, v.ilw(v.vi(2) + 1, 0));
+-                v.seti(2, v.vi(2) + 1);
+-                pc = v.vi(5) >= 0 ? 0x03a0u : 0x03c0u;
+-                continue;
++                // sw-dips9: the scan as a loop of its own, then straight on to 0x03c0 (each pass went through the
++                // switch's compare tree, the pc through the stack); every pass still counts against the guard
++                for (;;)
++                {
++                    v.seti(5, v.ilw(v.vi(2) + 1, 0));
++                    v.seti(2, v.vi(2) + 1);
++                    if (v.vi(5) < 0)
++                        break;
++                    if (++guard >= 65536u)
++                        return declinePc = 4u, false;
++                }
++                if (++guard >= 65536u)
++                    return declinePc = 4u, false;
++                pc = 0x03c0u;
++                [[fallthrough]];
+             case 0x03c0:
+             case 0x0e60:
+             {
