@@ -968,3 +968,34 @@ Details: docs/native-render-study.md "step 7 on the renderer side, part 3".
   and L2 cleaning did not help); (5) core 1 (EE 3.7 s + IOP 0.8 s per 5 s in ATHN01D/06C): at ~50 fps it would be the
   limit; its dispatchGuestBranch is 4 % and the chain copy (memmove) ~6 % of the EE thread; the EE thread's
   fsdev_write samples of prof_dips13 are all in the warp load (60-110 s), not in play.
+
+## Switch VU1 thread, sw-dips7: TLS addresses kept in registers; deterministic A/B (2026-11-01, from update_dips22)
+- **The TLS calls were rematerialised, not repeated lookups.** Static count of `bl __aarch64_read_tp` per function
+  (objdump of the ELF): npart::run 80 call sites (dips16 86, dips17 80: the per-run `Undo &u` / Gates of dips17 did not
+  remove them), tryRun 35, kCullClip 18, runNativeBody 22, runLit 12. Under `-mtp=soft` the address of a thread_local is
+  a call that GCC treats as cheap to recompute, so in the big inlined run functions it recomputed `&tls` at every use
+  (one call per `Undo::touch` site in npart) instead of keeping the reference in a register. kCullClip's store hook
+  (`Undo::logHook`, inlined through the constant function pointer) looked the undo log up per store.
+- dips23 (port/switch/dips23.patch, on dips22): `vu1nOpaque()` (ps2_vu1_native.h: the reference through an empty asm,
+  so the address is a value GCC keeps or spills) in `nrun::tls()`, `npart::gates()` / `progSlots()`, `liveStats()`;
+  `vu1hle::Ctx::onStore` takes a user pointer (the run's undo log). Call sites after: npart::run 2, kCullClip 0, tryRun
+  13, runNativeBody 19 (the rest in cold paths: litFixed once per code key, declines). Natcheck x86 plain / forced
+  decline / a64 identical to d7d (dips22) on all 40 recordings, GENTEST identical to plain (harness e1 / e1a).
+- Sweep A/B (port/switch/sweep/ab10_dips22 / ab10_dips23, stay 60 s; native us per run from `[vu1nat-run]` over the
+  play windows, tools: scratch fam2.py): native time per run ATHN01D 7.37 -> 7.32, ATHN04C 6.14 -> 6.25, ATHN06C
+  5.47 -> 5.33, OLYMP02 6.42 -> 6.28 us; the particle program 47.1 -> 41.4 us in ATHN01D, but the same package's
+  repeat (ab9 vs ab10 dips22) moves it 43.5 <-> 47.1: the walk changes the scene, the sweep cannot resolve 1-3 %.
+  Report fps (min / mean) 37.4 / 43.0 -> 37.8 / 40.9 (ATHN01D), 45.8 / 50.0 -> 46.6 / 49.9, 35.4 / 52.0 -> 35.6 / 52.2,
+  41.4 / 46.0 -> 41.6 / 44.0: noise. Small VU1 changes need the deterministic fight bench (docs/benchmark.md,
+  `tools/switch_bench.sh`: the "heavy" scene 10-20 game s is VU1-bound and repeats within 0.0-0.2 fps).
+- Fight bench (GOW_BENCH, `tools/switch_bench.sh`, port/switch/logs/bench_d22a / bench_d23a, FAILGT, default clocks):
+  | scene (game s) | fps dips22 -> dips23 | vu1 busy | gsgl busy (GS GL thread) | core 1 (ee + iop) |
+  |---|---|---|---|---|
+  | 0-10 | 48.9 -> 49.4 | 2220 | 3803 | 2838 |
+  | 10-20 heavy | 41.4 -> 41.4 | 4117 -> 4173 | 4335 | 3636 |
+  | 20-30 | 45.7 -> 45.8 | 3126 | 4131 | 3996 |
+  | 30-60 | 47.3 -> 47.2 | 3153 | 4138 | 4089 |
+  dips23 changes nothing measurable (the remaining `read_tp` calls were cheap; not installed). **The deck fight is not
+  VU1-bound**: outside the heavy scene the VU1 thread idles ~1.85 s per 5 s while the GS GL thread (core 0, deko3d
+  draws) is 83-87 % busy and the EE waits ~1.6 s per 5 s on the GS queue (`gsq`); core 1 is at ~80 %. In the heavy
+  scene VU1 (83 %) and the GS GL thread (87 %) are both near their limit. Fights >= 50 fps need the GS GL thread first.

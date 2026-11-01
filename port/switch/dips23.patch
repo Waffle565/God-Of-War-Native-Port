@@ -1,0 +1,112 @@
+--- a/ps2xRuntime/include/runtime/ps2_vu1_native.h
++++ b/ps2xRuntime/include/runtime/ps2_vu1_native.h
+@@ -371,6 +371,21 @@
+ #define VU1N_INLINE inline __attribute__((always_inline))
+ #define VU1N_NOINLINE __attribute__((noinline))
+ #endif
++// GOW-Port (sw-dips7): a reference to a thread_local, opaque to the optimiser. Under -mtp=soft (the Switch) the address of
++// a thread_local is a call (__aarch64_read_tp) that GCC treats as cheap to recompute: in the large inlined run functions
++// it rematerialised `&tls` at every use instead of keeping the reference in a register (npart::run had 80 such calls,
++// one per Undo::touch site). Through this the address is an asm result: computed once, kept or spilled like any value.
++template <class T>
++inline T &vu1nOpaque(T &r)
++{
++#if defined(__GNUC__) || defined(__clang__)
++    T *p = &r;
++    __asm__("" : "+r"(p));
++    return *p;
++#else
++    return r;
++#endif
++}
+ // --- flags across native blocks (inline: the generated blocks call these at every exit / entry-flag read) -------------
+ // Flags keep their latency across native blocks, and blocks that read older flags get their exact issue cycles from the
+ // pipeline state at entry (character shadows; docs/vu1-native-flags.md).
+--- a/ps2xRuntime/src/lib/vu/ps2_vu1_hle.inl
++++ b/ps2xRuntime/src/lib/vu/ps2_vu1_hle.inl
+@@ -28,7 +28,9 @@
+     VU1FlagRing *clipRing; // clip flags (likewise)
+     uint32_t *workingClip; // the clip flag chain (VU1Interpreter::m_workingClip)
+     // before a kernel's store to qword qw (null: none): the native runs' undo log (kCullClip, nat-vu1l)
+-    void (*onStore)(const uint8_t *data, uint32_t qw) = nullptr;
++    // (sw-dips7: with its user pointer, the undo log: the hook did a TLS lookup per store)
++    void (*onStore)(void *user, const uint8_t *data, uint32_t qw) = nullptr;
++    void *onStoreUser = nullptr;
+ };
+ 
+ using KernelFn = uint32_t (*)(Ctx &c, uint32_t entry);
+@@ -917,7 +919,7 @@
+         const auto stW = [&](int32_t qw, int comp, int32_t v) {
+             const uint32_t w = static_cast<uint16_t>(v & 0xFFFF);
+             if (c.onStore)
+-                c.onStore(d, static_cast<uint32_t>(qw) & 0x3FFu);
++                c.onStore(c.onStoreUser, d, static_cast<uint32_t>(qw) & 0x3FFu);
+             std::memcpy(qd(qw) + comp * 4, &w, 4);
+         };
+         if (reject) // 0df8: ADC 0x8001 into the vertex's w word
+--- a/ps2xRuntime/src/lib/vu/ps2_vu1_nat.inl
++++ b/ps2xRuntime/src/lib/vu/ps2_vu1_nat.inl
+@@ -1358,7 +1358,7 @@
+     inline LiveStats &liveStats()
+     {
+         thread_local LiveStats st; // the VU1 runs of one thread (GS worker or VU1 thread)
+-        return st;
++        return vu1nOpaque(st);
+     }
+     inline void liveReport(LiveStats &st, uint64_t now)
+     {
+--- a/ps2xRuntime/src/lib/vu/ps2_vu1_nat_misc.inl
++++ b/ps2xRuntime/src/lib/vu/ps2_vu1_nat_misc.inl
+@@ -708,7 +708,7 @@
+                 v.W<12>(19, fsub<12>(v.V(0), v.V(0), m));
+                 v.seti(13, v.vi(13) + 1);
+                 v.W<7>(29, fmadd<7, false>(v.A(), v.V(26), bc<2>(v.V(31)), m));
+-                vu1hle::Ctx c{s, mem, cyc, ~0ull, 0x0cd8u, &macRing, &clipRing, &workingClip, &nrun::Undo::logHook};
++                vu1hle::Ctx c{s, mem, cyc, ~0ull, 0x0cd8u, &macRing, &clipRing, &workingClip, &nrun::Undo::logHook, &v.u};
+                 if (vu1hle::kCullClip(c, 0u) != 0x0e18u)
+                     return declinePc = 0x0cd8u, false;
+                 s.clip = workingClip;
+--- a/ps2xRuntime/src/lib/vu/ps2_vu1_nat_part.inl
++++ b/ps2xRuntime/src/lib/vu/ps2_vu1_nat_part.inl
+@@ -64,7 +64,7 @@
+     inline Gates &gates()
+     {
+         thread_local Gates g;
+-        return g;
++        return vu1nOpaque(g);
+     }
+     inline bool &extOk() { return gates().ext; }
+     // nat-vu1k (census, ARENA20 / ATHN06A): the snippets 0x0d10-0x0d88 (keyframe lookup) and 0x0d88-0x0db0, gated by
+@@ -87,7 +87,7 @@
+     inline ProgSlots &progSlots()
+     {
+         thread_local ProgSlots p;
+-        return p;
++        return vu1nOpaque(p);
+     }
+     // sw-dips7: the micro memory under key changed in bytes [lo, hi): its slot is dropped when isProgram reads one of them
+     inline void invalidate(uint64_t key, uint32_t lo, uint32_t hi)
+--- a/ps2xRuntime/src/lib/vu/ps2_vu1_nat_run.inl
++++ b/ps2xRuntime/src/lib/vu/ps2_vu1_nat_run.inl
+@@ -130,7 +130,7 @@
+                 ++used, ++n;
+             }
+             VU1N_NOINLINE void logFull(const uint8_t *m) { snapshot(m); }
+-            static void logHook(const uint8_t *m, uint32_t q); // vu1hle::Ctx::onStore (below)
++            static void logHook(void *self, const uint8_t *m, uint32_t q) { static_cast<Undo *>(self)->log(m, q); } // vu1hle::Ctx::onStore
+             // a block of count qwords from q (wrapping at 1024); false: no room (the caller snapshots instead)
+             bool logRange(const uint8_t *m, uint32_t q, uint32_t count)
+             {
+@@ -177,11 +177,10 @@
+         inline Tls &tls()
+         {
+             thread_local Tls t;
+-            return t;
++            return vu1nOpaque(t);
+         }
+         inline Undo &undo() { return tls().u; }
+         inline size_t &pkBase() { return tls().pkBase; }
+-        inline void Undo::logHook(const uint8_t *m, uint32_t q) { undo().log(m, q); }
+         inline uint64_t &runGen() { return tls().gen; }
+         // GOW_VU1NAT_FORCE_DECLINE=1 (harness check of the undo, nat-vu1l): every finished run declines at its end, and the
+         // lit path logs / snapshots as if a decline could follow every loop (natcheck: "memory not restored" must stay 0)
