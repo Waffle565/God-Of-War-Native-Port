@@ -999,3 +999,55 @@ Details: docs/native-render-study.md "step 7 on the renderer side, part 3".
   VU1-bound**: outside the heavy scene the VU1 thread idles ~1.85 s per 5 s while the GS GL thread (core 0, deko3d
   draws) is 83-87 % busy and the EE waits ~1.6 s per 5 s on the GS queue (`gsq`); core 1 is at ~80 %. In the heavy
   scene VU1 (83 %) and the GS GL thread (87 %) are both near their limit. Fights >= 50 fps need the GS GL thread first.
+- Why the GS GL thread is busy in the fight (profile port/switch/logs/bench_d23p, `GOW_PC_SAMPLE=1000` on GSThread /
+  GSWorker, sampler on core 3, fight windows 75-155 s): **31.8 % of the GS GL thread is `svcWaitSynchronization <-
+  nvFenceWait`** (it waits on the GPU in present_submit: `[gs-dk] wait_ms` 1.56-1.93 s per 5 s, `[gs-gl] present`
+  1.6-2.0 s), 16.9 % idle; its own CPU work is submitKicks 11.2 %, draw 8.4 %, addVertexC 7.1 %, memmove 6.4 %,
+  ReadCT32 2.6 %. So the deck fight is still **GPU-bound** at the default clocks (as sw-k11 found: fragment throughput,
+  docs "The GPU at the default clocks"), while the sweep zones (ATHN01D / 04C / 06C / OLYMP02 warps) never wait on the
+  GPU (`[gs-dk] waits=0`) and are VU1-thread bound. Two separate targets: GPU fragment work for fights, the VU1
+  thread (then core 1) for gameplay.
+- GPU split in the fight now (`GOW_DK_GPU_TIME=1`, port/switch/logs/bench_d22g and its repeat bench_d22gf, update_dips22
+  + FAILGT; the repeat gives the same fps to 0.1-0.4 per scene: 48.7 / 49.2, 41.3 / 41.3, 45.7 / 45.9, 47.3 / 47.3):
+  GPU busy ~4.9 s per 5 s in 0-60 s; mid-fight windows: draws 3.66-3.85 s, the present upscale (`scale`, bicubic +
+  sharpen, 9 fetches per 720p pixel) 0.40-0.54 s, shuffles ~0.16 s, present composition ~0.1 s, clears ~0.05 s. Hottest
+  draw programs per 5 s: p15 (hash 1a341f4c) 0.9-1.1 s / 315-380 M fragments, p12 (a28a2b6a) 0.64-0.79 s / 176-218 M,
+  p11 (8fcb9766) 0.23 s, p18 (e95e045a) 0.21 s, p16 (35ba9dff) 0.18-0.20 s, p22 (8fbd20e5) 0.14 s.
+- `GOW_SCALER=fast` was not wired in the deko3d present (the shader has the 5-fetch branch, `uPlain < -0.5`, but
+  gs_dk.cpp only set 0 / 1): dips24 (port/switch/dips24.patch, gs_dk.cpp) sets `uPlain = -1` for it.
+  The table's scale binary predated that branch (tools/dk_shaders.py got it in 1eca623 after the table was generated),
+  so dips24 also replaces the scale fragment binary (`kCode_0000000000000002`) in gs_dk_shaders_gen.cpp with a fresh
+  uam build (regenerating the whole table also changed three other binaries with unchanged source keys, so only that
+  one line was taken). Env opt-in only; the default (bicubic + sharpen) is unchanged.
+- **The present scaler in the fight** (bench, update_dips24, `GOW_DK_GPU_TIME=1`, FAILGT; logs bench_d24f2 / bench_d24b):
+  | scene (game s) | bicubic + sharpen (default, d22g / d22gf) | `GOW_SCALER=fast` (d24f2) | `GOW_SCALER=bilinear` (d24b) |
+  |---|---|---|---|
+  | scale ms per 5 s (mid fight) | 400-540 | 370-480 | 95-117 |
+  | 0-10 | 48.7 / 49.2 | 49.9 | **53.4** |
+  | 10-20 heavy | 41.3 / 41.3 | 42.0 | **45.3** |
+  | 20-30 | 45.7 / 45.9 | 46.2 | **49.1** |
+  | 30-60 mid | 47.3 / 47.3 | 47.7 | **50.7** |
+  | 60-90 | 51.9 / 52.4 | 52.7 | **55.2** |
+  The 5-fetch sharpen saves only ~13 % of the pass (+0.4-0.7 fps): the pass is bound by its arithmetic (Catmull-Rom
+  weights, the normalisation divide, per-channel sqrt / divide of the sharpen), not by its 9 fetches. One bilinear tap
+  gives +3.4-4 fps in every scene of the fight (mid 47.3 -> 50.7: the fight target) at the cost of a softer picture:
+  a picture-quality decision for the user (bench shots in port/switch/logs/bench_d24b/shots vs bench_d22g/shots).
+  Middle ground to try: bicubic without the sharpen (5 taps, no sqrt / divide per channel), or the sharpen in fp16.
+- **Handoff (sw-dips7 stopped here)**: console default unchanged (update_dips22 + FAILGT, md5 53fd9135). Sources
+  /root/src-mlang = dips22 + dips23 (exact, neutral) + dips24 (GOW_SCALER=fast wiring + scale binary); originals per
+  step /root/dips23-orig, /root/dips24-orig; patch helper /root/dt/mkp.sh <orig dir> <out.patch>. CRLF-free copies of
+  the tools/vu1_nat scripts in /root/dt/vu1_nat (dips_hc.sh there builds the two harnesses one after the other;
+  /root/dt/vu1_harness links the repo's). Harnesses /root/vu1h/e1 / e1a (= dips23; nca_e1*_plain.txt). ELFs
+  /root/elf_dips23.elf, /root/elf_dips24.elf. Static TLS-call count per function: scratchpad-style script
+  `objdump -d | awk` on `bl <__aarch64_read_tp>` (see the dips23 entry above).
+  **Measure with the fight bench, not the sweep**: `UPDATE=port/switch/nsp/out/update_<pkg> bash tools/switch_bench.sh
+  <name> 420 <env file>` then `python -I tools/bench_report.py port/switch/logs/bench_<name>/log.txt --scenes
+  0-10,10-20,20-30,30-60,60-90` (repeat spread <= 0.4 fps; restore the default after: `TRANSFER=ftp bash
+  tools/switch_default.sh`, and never start a console run while a restore is still going). Where the time goes:
+  fights (bench deck fight): the GPU (fragment work ~3.7 s + present scaler ~0.45 s per 5 s at 47 fps); gameplay
+  zones (sweep warps ATHN01D / 04C / OLYMP02): the VU1 thread (native bodies ~76 %: npart 0.72 s, lit_st 0.8-0.95 s,
+  unlit 7ab32108 0.6-0.67 s per 5 s in ATHN01D), core 1 next.
+  Next levers: (1) user decision on the scaler (bilinear: fight mid 47.3 -> 50.7), or a cheaper sharpen (bicubic
+  only / fp16) to measure; (2) GPU draw programs p15 / p12 (~1.7-1.9 s of the 3.7 s draws: the paletted bilinear
+  alpha-tested model variants, docs "The GPU at the default clocks"); (3) VU1: runLit's prologue / the unlit runs
+  (7ab32108 + 3d0d1206 ~1 s per 5 s at 2.5-4.5 us per run in ATHN01D) register-resident like npart.
