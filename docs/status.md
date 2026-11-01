@@ -1146,3 +1146,10 @@ Run: `python -I tools/zones.py --slots 1,2,3,4` (scale: `PS2X_GS_HW_SCALE`); sav
   dips25: 0-10 48.9 -> 53.6, heavy 10-20 41.4 -> 45.5, 20-30 45.7 -> 49.2, mid 30-60 47.3 -> 50.9, 60-90 51.9 -> 55.3
   (= the env-var measurement). SEMO01 30.0 pictures/s; screenshots correct; title boots clean (Italian). **Console
   default = update_dips25 + FAILGT** (exefs md5 685588ef; tree /root/src-mlang = dips25, ELF /root/elf_dips25.elf).
+- 2026-11-01 (sw-sweep4): **update_dips31** (= dips25 + dips26..dips31: XGKICK / DMA-chain appends with DC ZVA, tag scan,
+  alpha-test lookup in the draw shader; docs/performance.md sw-dips9) installed after the console checks: fight bench
+  (bench_d31_gpu vs bench_d30_gpu, same frames to game 64 s) 0-10 53.3 -> 56.8, heavy 10-20 45.5 -> 48.5, 20-30 49.2 ->
+  53.0, 30-60 50.8 -> 54.7, 60-90 54.8 -> 57.4; p15 / p12 GPU ms per 5 s 107 / 949 -> 88 / 801; ZVA on / off = noise
+  (core 1 +0-60 ms); SEMO01 30.0, A06MP01 29.9 pictures/s (port/switch/sweep/inst_dips31); 4 title boots clean
+  (Italian title menu); bench shots correct (deck fight, HUD, Italian tutorial). **Console default = update_dips31 +
+  FAILGT** (exefs md5 895262fa); tools/switch_default.sh updated.
