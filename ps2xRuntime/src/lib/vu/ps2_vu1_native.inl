@@ -2,6 +2,7 @@
 #include "runtime/ps2_vu1_native.h"
 
 #include <memory>
+#include <type_traits>
 #include <unordered_map>
 
 namespace
@@ -652,7 +653,7 @@ void VU1NativeAccess::codeChanged(VU1Interpreter::NativeState &ns, const uint8_t
 {
     using NS = VU1Interpreter::NativeState;
     constexpr uint32_t kPairs = sizeof(ns.code) / 8u;
-    static_assert(kPairs == std::size(ns.slots));
+    static_assert(kPairs == std::extent_v<decltype(NS::slots)>); // clang: std::size on a reference parameter is not constant
     ++ns.codeChanges;
     if (!ns.codeValid)
     {

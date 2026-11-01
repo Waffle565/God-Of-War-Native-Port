@@ -1107,6 +1107,38 @@ void register_ps2_vu_tests()
             t.Equals(csrAfter & 0x6000u, 0x6000u, "the rounding mode is restored");
         });
 
+        // GOW-Port: x86 sqrtss/divss are correctly rounded. On arm64, sse2neon's SSE2NEON_PRECISE_SQRT path is an
+        // estimate plus Newton steps (1 ulp off for about half of all inputs, e.g. sqrt(2) -> 0x3FB504F4).
+        tc.Run("EE FPU sqrt/rsqrt/div are correctly rounded to nearest under a round-toward-zero MXCSR", [](TestCase &t)
+        {
+            const auto bits = [](float v) { uint32_t b; std::memcpy(&b, &v, sizeof(b)); return b; };
+            // volatile: runtime operands, not values the compiler folds
+            const auto value = [](uint32_t b) { float v; std::memcpy(&v, &b, sizeof(v)); volatile float x = v; return x; };
+            const auto opaque = [](float v) { volatile float x = v; return x; };
+            const uint32_t savedCsr = _mm_getcsr();
+            _mm_setcsr((savedCsr & ~0x6000u) | 0x6000u | 0x8000u | 0x0040u); // the EE thread's MXCSR
+            uint32_t fcr31 = 0u;
+            const uint32_t sqrtIn[] = {0x40000000u, 0x3F000000u, 0x447A0000u, 0x41000000u, 0x3A23D70Au};
+            const uint32_t sqrtOut[] = {0x3FB504F3u, 0x3F3504F3u, 0x41FCFB72u, 0x403504F3u, 0x3CCCCCCDu};
+            uint32_t sqrtGot[5];
+            for (int i = 0; i < 5; ++i)
+                sqrtGot[i] = bits(ps2FpuSqrt(fcr31, value(sqrtIn[i])));
+            const uint32_t rsqrt2 = bits(ps2FpuRsqrt(fcr31, opaque(1.0f), opaque(2.0f)));
+            const uint32_t rsqrt1000 = bits(ps2FpuRsqrt(fcr31, opaque(3.0f), opaque(1000.0f)));
+            const uint32_t divs[4] = {bits(ps2FpuDivide(fcr31, opaque(2.0f), opaque(3.0f))), bits(ps2FpuDivide(fcr31, opaque(1.0f), opaque(10.0f))),
+                                      bits(ps2FpuDivide(fcr31, opaque(7.0f), opaque(9.0f))), bits(ps2FpuDivide(fcr31, opaque(100.0f), opaque(7.0f)))};
+            _mm_setcsr(savedCsr);
+            for (int i = 0; i < 5; ++i)
+                t.Equals(sqrtGot[i], sqrtOut[i], "SQRT.S is the correctly rounded square root");
+            t.Equals(rsqrt2, 0x3F3504F3u, "RSQRT.S 1/sqrt(2) rounds to nearest");
+            t.Equals(rsqrt1000, 0x3DC24A54u, "RSQRT.S 3/sqrt(1000) rounds to nearest");
+            t.Equals(divs[0], 0x3F2AAAABu, "DIV.S 2/3 rounds to nearest");
+            t.Equals(divs[1], 0x3DCCCCCDu, "DIV.S 1/10 rounds to nearest");
+            t.Equals(divs[2], 0x3F471C72u, "DIV.S 7/9 rounds to nearest");
+            t.Equals(divs[3], 0x41649249u, "DIV.S 100/7 rounds to nearest");
+            t.Equals(fcr31, 0u, "no FCR31 flags for valid operands");
+        });
+
         tc.Run("LQ/SQ ignore the low four address bits", [](TestCase &t)
         {
             VuEnv env;

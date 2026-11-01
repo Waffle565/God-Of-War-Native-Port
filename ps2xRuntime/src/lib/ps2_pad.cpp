@@ -1,4 +1,5 @@
 #include "runtime/ps2_pad.h"
+#include "runtime/ps2_pad_keyboard.h"
 #include "ps2_host_backend.h"
 #include <cstdio>
 #include <cstring>
@@ -118,40 +119,38 @@ bool PSPadBackend::readState(int /*port*/, int /*slot*/, uint8_t *data, size_t s
         data[4] = static_cast<uint8_t>(128 + rx * 127);
         data[5] = static_cast<uint8_t>(128 + ry * 127);
     }
-    else
-    {
-        if (IsKeyDown(KEY_UP) || IsKeyDown(KEY_W))
-            clearBit(PAD_UP);
-        if (IsKeyDown(KEY_DOWN) || IsKeyDown(KEY_S))
-            clearBit(PAD_DOWN);
-        if (IsKeyDown(KEY_LEFT) || IsKeyDown(KEY_A))
-            clearBit(PAD_LEFT);
-        if (IsKeyDown(KEY_RIGHT) || IsKeyDown(KEY_D))
-            clearBit(PAD_RIGHT);
-        if (IsKeyDown(KEY_X) || IsKeyDown(KEY_SPACE))
-            clearBit(PAD_CROSS);
-        if (IsKeyDown(KEY_C) || IsKeyDown(KEY_ESCAPE))
-            clearBit(PAD_CIRCLE);
-        if (IsKeyDown(KEY_Z) || IsKeyDown(KEY_KP_0))
-            clearBit(PAD_SQUARE);
-        if (IsKeyDown(KEY_V) || IsKeyDown(KEY_KP_1))
-            clearBit(PAD_TRIANGLE);
-        if (IsKeyDown(KEY_Q))
-            clearBit(PAD_L1);
-        if (IsKeyDown(KEY_E))
-            clearBit(PAD_R1);
-        if (IsKeyDown(KEY_LEFT_SHIFT))
-            clearBit(PAD_L2);
-        if (IsKeyDown(KEY_RIGHT_SHIFT))
-            clearBit(PAD_R2);
-        if (IsKeyDown(KEY_ENTER))
-            clearBit(PAD_START);
-        if (IsKeyDown(KEY_TAB))
-            clearBit(PAD_SELECT);
-    }
 
     data[2] = static_cast<uint8_t>(btns & 0xFF);
     data[3] = static_cast<uint8_t>(btns >> 8);
+
+    // GOW-Port: keyboard + mouse always count, together with the gamepad (layout in ps2_pad_keyboard.h).
+    if (IsWindowReady())
+    {
+        PadKeyboardInput keys;
+        keys.w = IsKeyDown(KEY_W);
+        keys.a = IsKeyDown(KEY_A);
+        keys.s = IsKeyDown(KEY_S);
+        keys.d = IsKeyDown(KEY_D);
+        keys.up = IsKeyDown(KEY_UP);
+        keys.down = IsKeyDown(KEY_DOWN);
+        keys.left = IsKeyDown(KEY_LEFT);
+        keys.right = IsKeyDown(KEY_RIGHT);
+        keys.mouseLeft = IsMouseButtonDown(MOUSE_BUTTON_LEFT);
+        keys.mouseRight = IsMouseButtonDown(MOUSE_BUTTON_RIGHT);
+        keys.space = IsKeyDown(KEY_SPACE);
+        keys.e = IsKeyDown(KEY_E);
+        keys.q = IsKeyDown(KEY_Q);
+        keys.r = IsKeyDown(KEY_R);
+        keys.f = IsKeyDown(KEY_F);
+        keys.g = IsKeyDown(KEY_G);
+        keys.one = IsKeyDown(KEY_ONE);
+        keys.two = IsKeyDown(KEY_TWO);
+        keys.three = IsKeyDown(KEY_THREE);
+        keys.four = IsKeyDown(KEY_FOUR);
+        keys.enter = IsKeyDown(KEY_ENTER) || IsKeyDown(KEY_KP_ENTER);
+        keys.backspace = IsKeyDown(KEY_BACKSPACE);
+        ps2PadApplyKeyboard(keys, data);
+    }
 
     if (kGamepad != m_activeGamepad)
     {

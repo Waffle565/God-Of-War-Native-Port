@@ -2,6 +2,7 @@
 #include "runtime/gs/gs_backend.h"
 // GOW-Port: CPU de referencia por defecto; OpenGL/cola seleccionables.
 #include "runtime/gs/gs_threaded_backend.h"
+#include "runtime/gs/gs_null_backend.h"
 #include "runtime/gs/gs_shared_present.h"
 #include "ps2_log.h"
 #include "runtime/ps2_perf.h"
@@ -19,32 +20,31 @@
 #include <string>
 #include <vector>
 
+// GOW-Port: GOW_GS_ADC_STATS=1: every 5 s, packed XYZ(F)2 vertices that kick a primitive vs those with ADC set (VU1
+// culling writes ADC on rejected vertices): tells "the GS got no geometry" from "the renderer dropped it".
+static void gowAdcStat(bool adc, uint8_t prim)
+{
+    static const bool enabled = std::getenv("GOW_GS_ADC_STATS") != nullptr;
+    if (!enabled)
+        return;
+    static uint64_t counts[8][2] = {};
+    static auto last = std::chrono::steady_clock::now();
+    ++counts[prim & 7][adc ? 1 : 0];
+    const auto now = std::chrono::steady_clock::now();
+    if (now - last < std::chrono::seconds(5))
+        return;
+    last = now;
+    std::fprintf(stderr, "[gs-adc] kick/adc per prim:");
+    for (int i = 0; i < 8; ++i)
+        if (counts[i][0] || counts[i][1])
+            std::fprintf(stderr, " p%d=%llu/%llu", i, (unsigned long long)counts[i][0], (unsigned long long)counts[i][1]);
+    std::fprintf(stderr, "\n");
+    std::memset(counts, 0, sizeof(counts));
+}
+
 namespace
 {
     static constexpr uint32_t kHostFrameWidth = 640u;
-
-    // GOW-Port: what setRasterBackend(nullptr) installs (host shutdown): it releases the renderer and its GL context
-    // and ignores the GS packets the EE may still send while the process exits. The GS memory image stays as it is.
-    class GSNullBackend final : public GSRasterBackend
-    {
-    public:
-        void Initialize(uint8_t *, uint32_t) override {}
-        void Reset() override {}
-        void Submit(const GSPrimitiveBatch &) override {}
-        void LoadClut(const GSTex0Reg &, const GSTexClutReg &) override {}
-        void BeginTransfer(const GSTransferCommand &) override {}
-        void UploadImage(const uint8_t *, uint32_t) override {}
-        void Flush() override {}
-        void TextureFlush() override {}
-        void Sync(GSSyncReason) override {}
-        PresentationFrame Present(const GSPresentationRequest &) override { return {}; }
-        bool ClearFramebuffer(const GSContext &, uint32_t) override { return false; }
-        uint32_t ConsumeLocalToHostBytes(uint8_t *, uint32_t) override { return 0u; }
-        uint32_t ReadVram(uint32_t, uint32_t, uint32_t, uint32_t, uint32_t) const override { return 0u; }
-        void WriteVram(uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t) override {}
-        void SnapshotVram(std::vector<uint8_t> &out) const override { out.clear(); }
-        GSTransferSnapshot GetTransferSnapshot() const override { return {}; }
-    };
 
     // GOW-Port: fog/haze colour diagnostics (Desert of Lost Souls purple haze).
     //   PS2X_GS_FOG_DIAG=<s>      FOGCOL writes ([gs:fogcol]) and, from <s> seconds after the first draw, six
@@ -743,6 +743,22 @@ GSPresentationRequest GS::buildPresentationRequestUnlocked() const
     request.display2 = m_privRegs->display2;
     request.bgcolor = m_privRegs->bgcolor;
     request.vsyncTick = m_privRegs->vsyncTick.load(std::memory_order_acquire);
+#if defined(PS2X_HAVE_METAL)
+    {
+        // a handler that does not finish within two fields (a thread switch inside it) no longer freezes the display
+        std::lock_guard<std::mutex> held(m_heldDisplayMutex);
+        if (m_displayHeld && request.vsyncTick - m_heldDisplayTick <= 2u)
+        {
+            request.pmode = m_heldDisplay[0];
+            request.smode2 = m_heldDisplay[1];
+            request.dispfb1 = m_heldDisplay[2];
+            request.display1 = m_heldDisplay[3];
+            request.dispfb2 = m_heldDisplay[4];
+            request.display2 = m_heldDisplay[5];
+            request.bgcolor = m_heldDisplay[6];
+        }
+    }
+#endif
     request.contextFrames[0] = m_ctx[0].frame;
     request.contextFrames[1] = m_ctx[1].frame;
     request.preferredSource = m_preferredDisplaySourceFrame;
@@ -750,6 +766,24 @@ GSPresentationRequest GS::buildPresentationRequestUnlocked() const
     request.hasPreferredSource = m_hasPreferredDisplaySource;
     return request;
 }
+
+#if defined(PS2X_HAVE_METAL)
+void GS::holdDisplay(bool hold)
+{
+    std::lock_guard<std::mutex> held(m_heldDisplayMutex);
+    m_displayHeld = hold && m_privRegs;
+    if (!m_displayHeld)
+        return;
+    m_heldDisplayTick = m_privRegs->vsyncTick.load(std::memory_order_acquire);
+    m_heldDisplay[0] = m_privRegs->pmode;
+    m_heldDisplay[1] = m_privRegs->smode2;
+    m_heldDisplay[2] = m_privRegs->dispfb1;
+    m_heldDisplay[3] = m_privRegs->display1;
+    m_heldDisplay[4] = m_privRegs->dispfb2;
+    m_heldDisplay[5] = m_privRegs->display2;
+    m_heldDisplay[6] = m_privRegs->bgcolor;
+}
+#endif
 
 void GS::latchHostPresentationFrame()
 {
@@ -1255,6 +1289,7 @@ void GS::writeRegisterPacked(uint8_t regDesc, uint64_t lo, uint64_t hi)
         vtx.u = m_curU;
         vtx.v = m_curV;
         vtx.fog = f;
+        gowAdcStat(adk, static_cast<uint8_t>(m_prim.type));
         vertexKick(!adk);
         break;
     }
@@ -1293,6 +1328,7 @@ void GS::writeRegisterPacked(uint8_t regDesc, uint64_t lo, uint64_t hi)
         vtx.u = m_curU;
         vtx.v = m_curV;
         vtx.fog = m_curFog;
+        gowAdcStat(adk, static_cast<uint8_t>(m_prim.type));
         vertexKick(!adk);
         break;
     }

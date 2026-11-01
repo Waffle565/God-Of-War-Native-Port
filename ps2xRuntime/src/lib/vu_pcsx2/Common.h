@@ -37,10 +37,16 @@ struct alignas(16) s128 { s64 lo, hi; };
 
 #if defined(_MSC_VER)
 #define __fi __forceinline
+#define __ri inline
+#elif defined(__APPLE__)
+// GOW-Port (macOS): VUops.cpp/VUflags.cpp define __fi/__ri functions that other files call through extern
+// declarations (VUops.h, VUflags.h); clang emits no out-of-line copy of an inline function unless it is `used`.
+#define __fi inline __attribute__((always_inline, used))
+#define __ri inline __attribute__((used))
 #else
 #define __fi inline __attribute__((always_inline))
-#endif
 #define __ri inline
+#endif
 
 #define pxFail(msg) ((void)0)
 #define pxAssert(cond) ((void)0)

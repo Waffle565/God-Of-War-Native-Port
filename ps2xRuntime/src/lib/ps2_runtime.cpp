@@ -3,6 +3,9 @@
 #include "vu_pcsx2/pcsx2_vu1_bridge.h"
 static bool gowUsePcsx2Vu1(); // GOW_VU1_PCSX2=1, defined before PS2Runtime::initialize
 #include "runtime/gs/gs_host_present.h" // GOW-Port: consumidor privado del host.
+#if defined(PS2X_HAVE_METAL)
+#include "runtime/gs/gs_metal_layer.h" // macOS window: native fullscreen, title bar kept on screen
+#endif
 #include "ps2_log.h"
 #include "runtime/ps2_perf.h"
 #include "ps2_stubs.h"
@@ -19,7 +22,11 @@ static bool gowUsePcsx2Vu1(); // GOW_VU1_PCSX2=1, defined before PS2Runtime::ini
 #include "ps2_iop_host.h"
 #include "ps2x/iop/iop_subsystem.h"
 
+#if defined(USE_SSE2NEON)
+#include "sse2neon.h"
+#else
 #include <xmmintrin.h>
+#endif
 #include <iostream>
 #include <stdexcept>
 #include <fstream>
@@ -844,6 +851,14 @@ bool PS2Runtime::initialize(const char *title)
             if (IsWindowReady())
             {
                 SetExitKey(KEY_NULL); // GOW-Port: Esc is the pad's circle (ps2_pad.cpp), not raylib's quit key
+#if defined(PS2X_HAVE_METAL)
+                // macOS: a normal window inside the screen's visible area, and macOS fullscreen (own Space) instead of
+                // GLFW's exclusive fullscreen, which switches the display mode and leaves the desktop broken
+                GSMetalLayer::SetupWindow(GetWindowHandle());
+                const char *fullscreen = std::getenv("GOW_FULLSCREEN");
+                if (fullscreen != nullptr && std::strcmp(fullscreen, "1") == 0)
+                    GSMetalLayer::ToggleFullscreen(GetWindowHandle());
+#else
                 const int monitor = GetCurrentMonitor();
                 const int maxWidth = GetMonitorWidth(monitor), maxHeight = GetMonitorHeight(monitor);
                 if (maxWidth > 0 && maxHeight > 0 && (width > maxWidth || height > maxHeight))
@@ -857,6 +872,7 @@ bool PS2Runtime::initialize(const char *title)
                 const char *fullscreen = std::getenv("GOW_FULLSCREEN");
                 if (fullscreen != nullptr && std::strcmp(fullscreen, "1") == 0)
                     ToggleFullscreen();
+#endif
             }
         }
 #endif
@@ -2712,7 +2728,13 @@ void PS2Runtime::run()
         ps2_perf::report();
 #if !defined(PLATFORM_VITA)
         if (IsKeyPressed(KEY_F11))
+        {
+#if defined(PS2X_HAVE_METAL)
+            GSMetalLayer::ToggleFullscreen(GetWindowHandle()); // macOS fullscreen (same as the green button)
+#else
             ToggleFullscreen(); // GOW-Port: windowed <-> fullscreen, like a PC game
+#endif
+        }
 #endif
 
         if (WindowShouldClose())
