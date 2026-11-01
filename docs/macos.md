@@ -2,7 +2,7 @@
 
 Status (2026-10-31): the USA game (SCUS-97399) builds natively for arm64 with native VU1 and IOP code and a Metal
 GS renderer (`src/lib/gs/metal/`, the default on macOS; `PS2X_GS_NULL=1` runs headless). Title, menu and gameplay
-render with geometry and textures. The GL renderer needs OpenGL 4.3 and is not used on macOS (it stops at 4.1). Tracking: `odd/tasks/macos-port.md`.
+render with geometry and textures. The GL renderer needs OpenGL 4.3 and is not used on macOS (it stops at 4.1).
 
 ## Layout
 - Main checkout, branch `macos-port`. Runtime worktree `ext/PS2Recomp-kl`, branch `macos-runtime` (from `runtime`).

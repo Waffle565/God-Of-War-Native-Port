@@ -50,6 +50,10 @@ from the game's own data:
 
 The end goal: after the PC port is complete, the same native port running on the **Nintendo Switch**.
 
+**macOS (Apple Silicon):** the USA build also runs natively on arm64 Macs, with a Metal GS renderer, native VU1/IOP
+code, a launcher app, PCSX2-format HD texture packs and Spanish/French/German/Italian text and voices from your own
+European disc. See [`docs/macos.md`](docs/macos.md) and [`tools/macos/README.md`](tools/macos/README.md).
+
 ## Current status
 
 <a href="docs/status-map/detail.md"><img src="docs/status-map/map.svg" alt="Port status map: PS2 hardware layers and game features, coloured by status" width="100%"></a>
@@ -160,6 +164,12 @@ sound, memory card, game internals, Switch notes.
 - [KIexster/god-of-war-recomp](https://github.com/KIexster/god-of-war-recomp): a parallel God of War recompilation;
   its patch stack and function map were the starting point of the USA build, and its game-speed meter was ported.
 - [PCSX2](https://github.com/PCSX2/pcsx2): used as the reference for verification.
+- [LightVelox](https://github.com/LightVelox) and [HenryKun55/celosia](https://github.com/HenryKun55/celosia)
+  (Shadow of the Colossus on PS2Recomp, including its macOS/Metal work): references for the macOS port.
+- [PCSX2](https://github.com/PCSX2/pcsx2)'s Metal renderer and texture-replacement format: reference for the Metal GS
+  backend and HD texture pack support.
+- [sse2neon](https://github.com/DLTcollab/sse2neon), [raylib](https://github.com/raysan5/raylib) and libmpeg2.
+- macOS port by [bekandev](https://github.com/bekandev).
 - Developed by Waffle565 with [Claude](https://claude.com/claude-code) (Anthropic) as co-author.
 
 God of War is a trademark of Sony Interactive Entertainment. This project is not affiliated with or endorsed by Sony.

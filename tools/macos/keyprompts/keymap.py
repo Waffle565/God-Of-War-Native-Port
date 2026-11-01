@@ -1,4 +1,4 @@
-"""Key names for the game's button tokens, per text language (odd/tasks/macos-port.md S5 layout, S11).
+"""Key names for the game's button tokens, per text language.
 
 The message table (R_PERM.WAD msgs_en.txt) writes buttons as tokens such as [XButton], which the game draws as PS2
 icons. The keyboard overlays replace them with the key that the port's keyboard layout presses

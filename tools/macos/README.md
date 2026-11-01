@@ -26,7 +26,7 @@ and runs `GodOfWar <data>/SCUS_973.99` with `GOW_WINDOW=<w>x<h>`, `GOW_FULLSCREE
 `PS2X_GS_WORKER=1`, `GOW_GS_FINISH_ASINCRONO=1`, `GOW_AUDIO_DEVICE=default` (unless `GOW_AUDIO` is set). Log:
 `~/Library/Logs/God of War/game.log` (previous run: `game.log.1`). On the first start, when the build has a card at
 `GOWImportCard` and there is no save yet, the launcher offers to copy it. Language, 120 Hz and graphics options are
-shown greyed out until they exist (odd/tasks/macos-port.md T11-T13).
+shown greyed out until they exist.
 
 ## Languages
 With the European disc (SCES-53133) extracted next to the USA one, `python3 -I tools/lang_pack.py disc-usa disc-eu`

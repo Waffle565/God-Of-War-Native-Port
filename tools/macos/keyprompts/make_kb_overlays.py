@@ -10,7 +10,7 @@ kb_<text>_<voice>.layout when "Button prompts" is Keyboard.
 - FLP_HUD (the Power Up move list strings, English in every language): the strings are ActionScript push records
   inside a structure with pointers, so they are rewritten in place at the same length, padded with spaces.
 - Not changed: the menu and HUD legends drawn as Flash clips (the PS2 symbols, e.g. "X = Select"), which are shapes,
-  not text (odd/tasks/macos-port.md T17).
+  not text.
 The kb_text_<code>.bin files go past the end of the language overlays; the .layout files are written last.
 
 usage: python3 -I tools/macos/keyprompts/make_kb_overlays.py <disc folder> [--show <id>[,<id>...]]
