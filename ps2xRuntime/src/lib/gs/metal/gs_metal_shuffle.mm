@@ -197,6 +197,11 @@ void GSMetalBackend::Impl::flushShuffle()
         setPso(pipelineFor(Pso::Shuffle, mask, dst.depth != nil));
         NSUInteger offset = 0;
         id<MTLBuffer> vb = upload(q.data(), q.size() * sizeof(ShuffleVertex), offset);
+        if (!vb) // out of memory (upload logs it)
+        {
+            q.clear();
+            continue;
+        }
         [enc setVertexBuffer:vb offset:offset atIndex:0];
         [enc setFragmentBytes:&u length:sizeof(u) atIndex:0];
         [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:q.size()];

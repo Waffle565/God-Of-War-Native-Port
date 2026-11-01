@@ -548,6 +548,8 @@ void GSMetalBackend::Impl::draw(const GSDrawState &s, const std::vector<HwVertex
 
     NSUInteger offset = 0;
     id<MTLBuffer> vb = upload(dverts.data(), dverts.size() * sizeof(HwVertex), offset);
+    if (!vb) // out of memory (upload logs it): the batch is dropped
+        return;
     beginPass(rt);
     bool empty = false;
     scissor(enc, rt, c.scissor.x0, c.scissor.y0, c.scissor.x1, c.scissor.y1, empty);
@@ -650,6 +652,27 @@ void GSMetalBackend::Impl::reportStats()
                  (unsigned long long)stats.texHits, (unsigned long long)stats.depals, (unsigned long long)stats.skippedPsm, (unsigned long long)stats.skippedPrim,
                  (unsigned long long)stats.unsupportedBlend, textures.size(), (unsigned long long)stats.feedbackCopies, stats.feedbackPixels * 1e-6,
                  (unsigned long long)stats.commits, pipelines.size(), gpuNanos->exchange(0u) * 1e-6);
+    // GPU memory by owner (MB): the device total, the GS texture and palette-conversion caches, render targets, feedback
+    // copies and the vertex arena; command buffers in flight at a commit and the largest one's vertex data (both maxima)
+    const auto mb = [](uint64_t bytes) { return static_cast<double>(bytes) / (1024.0 * 1024.0); };
+    const auto texBytes = [](const auto &map)
+    {
+        uint64_t sum = 0;
+        for (const auto &kv : map)
+            sum += kv.second.tex ? kv.second.tex.allocatedSize : 0u;
+        return sum;
+    };
+    uint64_t rtBytes = 0, scratchBytes = 0, chunkBytes = 0;
+    for (const RenderTarget &t : targets)
+        rtBytes += (t.color ? t.color.allocatedSize : 0u) + (t.depth ? t.depth.allocatedSize : 0u);
+    for (const auto &kv : scratch)
+        scratchBytes += kv.second ? kv.second.allocatedSize : 0u;
+    for (const Chunk &c : chunks)
+        chunkBytes += c.buffer.allocatedSize;
+    std::fprintf(stderr, "[gs-mem] device_mb=%.0f textures=%zu (%.0f MB) depal=%zu (%.0f MB) palettes=%zu targets=%zu (%.0f MB) scratch=%zu (%.0f MB) chunks=%zu (%.0f MB) inflight_max=%llu cmd_mb_max=%.1f\n",
+                 mb(device.currentAllocatedSize), textures.size(), mb(texBytes(textures)), depalCache.size(), mb(texBytes(depalCache)),
+                 palettes.size(), targets.size(), mb(rtBytes), scratch.size(), mb(scratchBytes), chunks.size(), mb(chunkBytes),
+                 (unsigned long long)stats.inFlightMax, mb(stats.cmdBytesMax));
     stats = {};
     stats.last = now;
 }

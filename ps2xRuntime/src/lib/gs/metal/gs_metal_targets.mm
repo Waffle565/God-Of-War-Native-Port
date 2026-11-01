@@ -3,7 +3,28 @@
 // the GS behaviour are kept there).
 #include "gs_metal_impl.h"
 
+#include <sys/sysctl.h>
+
 using namespace gsmtl;
+
+namespace
+{
+    // entries of a texture cache not looked up during the last `age` lookups; `bytes` is the cache's byte count
+    template <class Map>
+    void dropIdle(Map &map, uint64_t now, uint64_t age, uint64_t &bytes)
+    {
+        for (auto it = map.begin(); it != map.end();)
+        {
+            if (it->second.lastUse + age < now)
+            {
+                bytes -= std::min(bytes, it->second.bytes);
+                it = map.erase(it);
+            }
+            else
+                ++it;
+        }
+    }
+}
 
 GSMetalBackend::Impl::RenderTarget &GSMetalBackend::Impl::target(uint32_t fbp, uint32_t fbw)
 {
@@ -88,17 +109,17 @@ GSMetalBackend::Impl::Texture &GSMetalBackend::Impl::textureFor(const GSDrawStat
         return tex;
     }
     ++stats.texDecodes;
-    std::vector<uint32_t> pixels;
+    std::vector<uint32_t> &pixels = pixelScratch;
     decodeDirect(s, pixels);
     tex.width = std::max<uint32_t>(1u, s.textureWidth);
     tex.height = std::max<uint32_t>(1u, s.textureHeight);
     tex.blockLo = t.tbp0;
     tex.blockHi = t.tbp0 + spanBlocks(t.psm, t.tbw, tex.height);
-    tex.tex = newTexture(MTLPixelFormatRGBA8Unorm, tex.width, tex.height, false);
+    setTexture(tex, MTLPixelFormatRGBA8Unorm, 4u, textureBytes);
     [tex.tex replaceRegion:MTLRegionMake2D(0, 0, tex.width, tex.height) mipmapLevel:0 withBytes:pixels.data() bytesPerRow:tex.width * 4u];
     tex.valid = true;
     tex.repl = {}; // new data: the replacement names are computed again
-    if (textures.size() > 6000u)
+    if (textures.size() > 6000u || textureBytes > kTextureBudget)
         evictOld();
     return textures[key];
 }
@@ -156,12 +177,12 @@ GSMetalBackend::Impl::Texture &GSMetalBackend::Impl::indexTextureFor(const GSDra
         GSMem::ReadIndexRun(vram, t.psm, t.tbp0, t.tbw, 0u, y, tex.width, indices.data() + static_cast<size_t>(y) * tex.width);
     tex.blockLo = t.tbp0;
     tex.blockHi = t.tbp0 + spanBlocks(t.psm, t.tbw, tex.height);
-    tex.tex = newTexture(MTLPixelFormatR8Unorm, tex.width, tex.height, false);
+    setTexture(tex, MTLPixelFormatR8Unorm, 1u, textureBytes);
     [tex.tex replaceRegion:MTLRegionMake2D(0, 0, tex.width, tex.height) mipmapLevel:0 withBytes:indices.data() bytesPerRow:tex.width];
     tex.generation = ++textureGeneration;
     tex.indices = std::move(indices);
     tex.valid = true;
-    if (textures.size() > 6000u)
+    if (textures.size() > 6000u || textureBytes > kTextureBudget)
         evictOld();
     return textures[key];
 }
@@ -189,17 +210,17 @@ GSMetalBackend::Impl::Texture &GSMetalBackend::Impl::depalTextureFor(const GSDra
         store.BuildPalette(s, colors);
         tex.width = index.width;
         tex.height = index.height;
-        std::vector<uint32_t> pixels(index.indices.size());
+        std::vector<uint32_t> &pixels = pixelScratch;
+        pixels.resize(index.indices.size());
         for (size_t i = 0; i < pixels.size(); ++i)
             pixels[i] = colors[index.indices[i]];
-        tex.tex = newTexture(MTLPixelFormatRGBA8Unorm, tex.width, tex.height, false);
+        setTexture(tex, MTLPixelFormatRGBA8Unorm, 4u, depalBytes);
         [tex.tex replaceRegion:MTLRegionMake2D(0, 0, tex.width, tex.height) mipmapLevel:0 withBytes:pixels.data() bytesPerRow:tex.width * 4u];
         tex.valid = true;
     }
     // animated CLUTs (the title's fire) make new copies every frame: keep the set small, drop what was not used lately
-    if (depalCache.size() > 1024u)
-        for (auto it = depalCache.begin(); it != depalCache.end();)
-            it = it->second.lastUse + 3000u < useCounter ? depalCache.erase(it) : std::next(it);
+    if (depalCache.size() > 1024u || depalBytes > kDepalBudget)
+        dropIdle(depalCache, useCounter, 3000u, depalBytes);
     return depalCache[key];
 }
 
@@ -220,13 +241,62 @@ id<MTLBuffer> GSMetalBackend::Impl::paletteFor(const GSDrawState &s)
 
 void GSMetalBackend::Impl::evictOld()
 {
-    for (auto it = textures.begin(); it != textures.end();)
+    dropIdle(textures, useCounter, 3000u, textureBytes);
+}
+
+void GSMetalBackend::Impl::setTexture(Texture &entry, MTLPixelFormat format, uint32_t bytesPerPixel, uint64_t &total)
+{
+    total -= std::min(total, entry.bytes);
+    entry.tex = newTexture(format, entry.width, entry.height, false);
+    entry.bytes = entry.tex ? static_cast<uint64_t>(entry.width) * entry.height * bytesPerPixel : 0u;
+    total += entry.bytes;
+}
+
+// Vertex chunks: the arena grows to what the frames in flight need at their busiest and would keep that forever (324 MB
+// after the first fight on the ship), so chunks idle for 30 s are released down to 8. Under memory pressure (warn or
+// critical, again every 5 s while it lasts) every cache drops what the last frames did not use: GS textures and their
+// RGBA conversions, palettes, feedback copies, idle vertex chunks and the pack's replacements; they are rebuilt on demand.
+// The level is the system's (kern.memorystatus_vm_pressure_level: 1 normal, 2 warn, 4 critical), polled: a
+// DISPATCH_SOURCE_TYPE_MEMORYPRESSURE source got no event during minutes at warn (the kernel notifies a few chosen processes).
+void GSMetalBackend::Impl::trimCaches()
+{
+    if (presentCount % 60 == 0)
     {
-        if (it->second.lastUse + 3000u < useCounter)
-            it = textures.erase(it);
+        int value = 0;
+        size_t length = sizeof(value);
+        if (sysctlbyname("kern.memorystatus_vm_pressure_level", &value, &length, nullptr, 0) == 0)
+            memoryPressure = value >= 4 ? 2 : value >= 2 ? 1 : 0;
+    }
+    const int level = memoryPressure;
+    const bool pressure = level != 0 && (level > pressureHandled || presentCount % 300 == 0);
+    if (level != pressureHandled && level == 0)
+        std::fprintf(stderr, "[gs-mtl] memory pressure over (device %.0f MB)\n", device.currentAllocatedSize / 1048576.0);
+    pressureHandled = level;
+    const uint64_t done = completedSerial->load(std::memory_order_acquire);
+    id<MTLBuffer> active = activeChunk >= 0 ? chunks[activeChunk].buffer : nil;
+    const double before = device.currentAllocatedSize / 1048576.0;
+    for (auto it = chunks.begin(); it != chunks.end();)
+    {
+        const bool idle = it->buffer != active && it->serial <= done && (pressure || presentCount - it->lastPresent > 1800);
+        if (idle && (pressure || chunks.size() > 8u))
+            it = chunks.erase(it);
         else
             ++it;
     }
+    activeChunk = -1;
+    for (size_t i = 0; active && i < chunks.size(); ++i)
+        if (chunks[i].buffer == active)
+            activeChunk = static_cast<int>(i);
+    if (!pressure)
+        return;
+    dropIdle(textures, useCounter, 300u, textureBytes);
+    dropIdle(depalCache, useCounter, 300u, depalBytes);
+    palettes.clear();
+    clutCache.clear();
+    scratch.clear();
+    const size_t replMb = repl ? repl->trim() >> 20 : 0u;
+    std::fprintf(stderr, "[gs-mtl] memory pressure %s: caches trimmed, device %.0f -> %.0f MB (replacements -%zu MB)\n",
+                 level == 2 ? "critical" : "warn", before, device.currentAllocatedSize / 1048576.0, replMb);
 }
 
 void GSMetalBackend::Impl::invalidateBlocks(uint32_t lo, uint32_t hi)

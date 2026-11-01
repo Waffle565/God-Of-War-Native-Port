@@ -122,7 +122,15 @@ id<MTLTexture> GSMetalBackend::Impl::newTexture(MTLPixelFormat format, uint32_t 
     d.usage = MTLTextureUsageShaderRead | (renderTarget ? MTLTextureUsageRenderTarget : 0);
     // render targets live in GPU memory; uploaded textures are written by the CPU (unified memory)
     d.storageMode = renderTarget ? MTLStorageModePrivate : MTLStorageModeShared;
-    return [device newTextureWithDescriptor:d];
+    id<MTLTexture> texture = [device newTextureWithDescriptor:d];
+    if (!texture && !allocationFailed)
+    {
+        // out of GPU memory: draws that would use it sample nothing / write nowhere until a later allocation succeeds
+        std::fprintf(stderr, "[gs-mtl] texture allocation failed (%ux%u, device %.0f MB); drawing without it\n", width, height,
+                     device.currentAllocatedSize / 1048576.0);
+        allocationFailed = true;
+    }
+    return texture;
 }
 
 id<MTLCommandBuffer> GSMetalBackend::Impl::commands()
@@ -214,6 +222,9 @@ void GSMetalBackend::Impl::commit(bool wait)
     cmd = nil;
     activeChunk = -1;
     ++stats.commits;
+    stats.inFlightMax = std::max<uint64_t>(stats.inFlightMax, cmdSerial - completedSerial->load(std::memory_order_acquire));
+    stats.cmdBytesMax = std::max<uint64_t>(stats.cmdBytesMax, cmdBytes);
+    cmdBytes = 0;
 }
 
 id<MTLRenderPipelineState> GSMetalBackend::Impl::pipelineFor(Pso kind, uint8_t writeMask, bool hasDepth, const BlendDesc &b, int texPath,
@@ -364,15 +375,26 @@ id<MTLBuffer> GSMetalBackend::Impl::upload(const void *data, size_t bytes, NSUIn
         {
             Chunk chunk;
             chunk.buffer = [device newBufferWithLength:std::max(kChunkBytes, bytes) options:MTLResourceStorageModeShared];
+            if (!chunk.buffer)
+            {
+                if (!allocationFailed)
+                    std::fprintf(stderr, "[gs-mtl] vertex buffer allocation failed (device %.0f MB); draws skipped\n",
+                                 device.currentAllocatedSize / 1048576.0);
+                allocationFailed = true;
+                offset = 0;
+                return nil; // the caller skips the draw
+            }
             chunks.push_back(chunk);
             activeChunk = static_cast<int>(chunks.size() - 1u);
         }
     }
     Chunk &chunk = chunks[activeChunk];
     chunk.serial = cmdSerial;
+    chunk.lastPresent = presentCount;
     offset = chunk.used;
     std::memcpy(static_cast<uint8_t *>(chunk.buffer.contents) + chunk.used, data, bytes);
     chunk.used += bytes;
+    cmdBytes += bytes;
     return chunk.buffer;
 }
 
@@ -411,6 +433,11 @@ void GSMetalBackend::Impl::readback(id<MTLTexture> texture, uint32_t x, uint32_t
     const size_t bytes = static_cast<size_t>(w) * h * 4u;
     if (!readbackBuffer || readbackBuffer.length < bytes)
         readbackBuffer = [device newBufferWithLength:bytes options:MTLResourceStorageModeShared];
+    if (!texture || !readbackBuffer)
+    {
+        std::memset(out, 0, bytes);
+        return;
+    }
     endEncoder();
     id<MTLBlitCommandEncoder> blit = [commands() blitCommandEncoder];
     [blit copyFromTexture:texture sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(x, y, 0) sourceSize:MTLSizeMake(w, h, 1)

@@ -98,6 +98,7 @@ namespace gsmtl
         uint32_t blockLo = 0, blockHi = 0;
         bool valid = false;
         uint64_t lastUse = 0;
+        uint64_t bytes = 0;             // GPU size of tex (cache budgets)
         uint64_t generation = 0;        // decode number (paletted textures: keys the converted RGBA copies)
         std::vector<uint8_t> indices;   // paletted textures: the indices, kept to convert them with a CLUT on the CPU
         // the pack's replacement for this decode (direct / depal entries) per CLAMP region + mip registers, which are part
@@ -215,9 +216,12 @@ struct GSMetalBackend::Impl
         id<MTLBuffer> buffer = nil;
         size_t used = 0;
         uint64_t serial = 0; // command buffer that last used it
+        int lastPresent = 0; // presentCount when it was last used (idle chunks are released, trimCaches)
     };
     std::vector<Chunk> chunks;
     int activeChunk = -1;
+    bool allocationFailed = false; // a buffer or texture allocation returned nil (logged once)
+    uint64_t cmdBytes = 0; // vertex bytes of the open command buffer (stats)
 
     bool ensure();
     void buildTables();
@@ -288,7 +292,20 @@ struct GSMetalBackend::Impl
     id<MTLTexture> replacementFor(const GSDrawState &s, Texture &entry, const Texture *index);
     std::unique_ptr<gsrepl::Store> repl; // null: no pack and no dump
     std::vector<uint8_t> replScratch;
+    std::vector<uint32_t> pixelScratch; // texels of a decode / palette conversion on their way to the GPU (reused)
     void evictOld();
+    // GPU bytes of the GS texture caches (`textures`: direct + index, `depalCache`), held under these budgets by dropping
+    // entries not used lately; the GS rewrites textures all the time, so stale decodes would otherwise pile up
+    uint64_t textureBytes = 0, depalBytes = 0;
+    static constexpr uint64_t kTextureBudget = 256ull << 20, kDepalBudget = 128ull << 20;
+    // a new MTLTexture for `entry` (the previous one stays alive in the command buffers that use it), byte count kept
+    void setTexture(Texture &entry, MTLPixelFormat format, uint32_t bytesPerPixel, uint64_t &total);
+    // the system's memory pressure (0 normal, 1 warn, 2 critical), read once a second by trimCaches; pressureHandled: the
+    // level the caches were last trimmed for
+    int memoryPressure = 0, pressureHandled = 0;
+    // once per presented frame: vertex chunks idle for a while are released; under memory pressure every cache drops what
+    // the last frames did not use (logged)
+    void trimCaches();
     void invalidateBlocks(uint32_t lo, uint32_t hi);
     RenderTarget *findReinterpretSource(uint32_t tbp, uint8_t tpsm);
     bool overwrittenByDepth(const RenderTarget &t) const;
@@ -335,7 +352,7 @@ struct GSMetalBackend::Impl
     struct Stats
     {
         uint64_t shuffles = 0, draws = 0, batches = 0, skippedPsm = 0, unsupportedBlend = 0, texDecodes = 0, texHits = 0, depals = 0,
-                 skippedPrim = 0, feedbackCopies = 0, feedbackPixels = 0, commits = 0;
+                 skippedPrim = 0, feedbackCopies = 0, feedbackPixels = 0, commits = 0, inFlightMax = 0, cmdBytesMax = 0;
         std::chrono::steady_clock::time_point last = std::chrono::steady_clock::now();
     } stats;
     bool statsEnabled = std::getenv("GOW_GS_HW_STATS") != nullptr;
