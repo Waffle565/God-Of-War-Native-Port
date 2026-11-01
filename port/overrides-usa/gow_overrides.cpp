@@ -280,6 +280,14 @@ namespace
 
     void gowPad2ReadState(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime);
 
+    constexpr uint32_t kGowApertureFactor = 0x3F100000u; // 0.5625f = 9/16, see gowPad2ReadState
+    // GOW_PANORAMICO=ampliado (KIexster's override, read once): 0.75f in gameplay, a wider view (x4/3 aperture, nothing
+    // cropped vertically). Menus keep 9/16: their 3D backdrops are framed for it (the difficulty menu shows the set's edge).
+    const bool kGowWideView = [] {
+        const char *v = std::getenv("GOW_PANORAMICO");
+        return v && std::strcmp(v, "ampliado") == 0;
+    }();
+
     void gowPad2Read(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
         gowPad2ReadState(rdram, ctx, runtime);
@@ -300,19 +308,18 @@ namespace
             put32(0x002FD968u, 0x3FE38E39u);
             put32(0x0032F1B0u, 0x3FE38E39u);
         }
+        // GOW-Port: the USA recompile (port/usa/recomp.toml [patches], 0x169298-0x1692F4) makes the camera projection
+        // (0x169238) multiply its aperture by factor x aspect, with the factor read from 0x000FFFF0 (free RAM below the
+        // ELF). 9/16 x the 16:9 aspect above = 1, the game's own projection. Without it the factor is 0, m00/m11 become
+        // +-FLT_MAX and the VU1 clip test rejects (ADC) nearly every vertex.
+        const uint32_t aperture = (kGowWideView && readGuest32(rdram, 0x29E560u) == 11u) ? 0x3F400000u : kGowApertureFactor;
+        std::memcpy(rdram + 0x000FFFF0u, &aperture, sizeof(aperture));
         auto *buffer = padBuffer(rdram, GPR_U32(ctx, 5), 18);
         const auto *socket = padSocket(ctx);
         uint8_t state[32]{};
         if (!buffer || !socket || socket->port != 0 || !runtime ||
             !runtime->padBackend().readState(0, 0, state, sizeof(state))) { padReturn(ctx, 0xffffffffu); return; }
-        // GOW-Port: keyboard sticks only without any gamepad (PSPadBackend uses the first available slot).
-        if (!IsGamepadAvailable(0) && !IsGamepadAvailable(1) && !IsGamepadAvailable(2) && !IsGamepadAvailable(3))
-        {
-            state[6] = IsKeyDown(KEY_A) ? 0 : IsKeyDown(KEY_D) ? 255 : 128;
-            state[7] = IsKeyDown(KEY_W) ? 0 : IsKeyDown(KEY_S) ? 255 : 128;
-            state[4] = IsKeyDown(KEY_J) ? 0 : IsKeyDown(KEY_L) ? 255 : 128;
-            state[5] = IsKeyDown(KEY_I) ? 0 : IsKeyDown(KEY_K) ? 255 : 128;
-        }
+        // Keyboard + mouse (sticks included) come from PSPadBackend::readState (runtime ps2_pad_keyboard.h).
         // Opt-in smoke test: advance title/new-game prompts without host UI input.
         // Capture the GS's own presented pixels; normal play never injects input.
         static const bool smokeTest = [] {
