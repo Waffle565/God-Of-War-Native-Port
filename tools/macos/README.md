@@ -32,7 +32,9 @@ shown greyed out until they exist (odd/tasks/macos-port.md T11-T13).
 With the European disc (SCES-53133) extracted next to the USA one, `python3 -I tools/lang_pack.py disc-usa disc-eu`
 writes `disc-usa/lang/` (text + voice overlays for en, es, fr, de, it; docs/settings.md). The launcher's Text and
 Voice menus are enabled when the disc folder has `lang/`; on Play it sets `PS2X_DISC_OVERLAY=lang/<text>_<voice>.layout`
-(settings.ini `[Game] Text`, `Voice`). Menus and HUD screens stay in English.
+(settings.ini `[Game] Text`, `Voice`). Menus and HUD screens stay in English. The voice also picks the title sequence's
+sound bank (`lang/shell_<voice>.bin`: Kratos's line before the intro movie, "Los dioses del Olimpo me han abandonado."
+for es), taken from the European `R_SHELL<letter>.WAD`.
 
 Movies: `lang_pack.py` also writes `lang/movies_<code>.bin` (fr, de, it, es; ~240 MB each), the dubbed sound of the 44
 movies the European disc dubs (the intro included). When Voice is not English and the file exists, the launcher sets

@@ -87,5 +87,35 @@ class MovieVoices(unittest.TestCase):
         self.assertEqual((blob[144:164], blob[176:177], blob[192:195], len(blob)), (b'x' * 20, b'y', b'abc', 208))
 
 
+def wad(*records):
+    """WAD bytes from (tag, name, body) records"""
+    return b''.join(struct.pack('<II', tag, len(body)) + name.ljust(24, b'\0') + body + b'\0' * (-len(body) % 16)
+                    for tag, name, body in records)
+
+
+class ShellVoice(unittest.TestCase):
+    """R_SHELL.WAD holds the title sequence's sound bank (SBK_Title01: Kratos's "The gods of Olympus have abandoned
+    me." before the intro movie); the European R_SHELL<letter>.WAD has it dubbed, the rest of the shell stays USA."""
+
+    usa = wad((30, b'WAD_R_Shell', b'w' * 8), (30, b'SBK_Title01', b'E' * 40), (24, b'GroupEnd', b''),
+              (30, b'FLP_Shell', b'usa menus'))
+    eu = wad((30, b'WAD_R_ShellS', b'w' * 8), (30, b'SBK_Title01', b'S' * 24), (24, b'GroupEnd', b''),
+             (30, b'FLP_ShellS', b'european menus'))
+
+    def test_voice_takes_the_european_title_sound_bank(self):
+        shell = lang_pack.voiced_shell(self.usa, self.eu)
+        self.assertEqual(shell, wad((30, b'WAD_R_Shell', b'w' * 8), (30, b'SBK_Title01', b'S' * 24),
+                                    (24, b'GroupEnd', b''), (30, b'FLP_Shell', b'usa menus')))
+        self.assertEqual(len(lang_pack.wad_records(shell)), 4)
+
+    def test_shell_without_european_bank_unchanged(self):
+        eu = wad((30, b'WAD_R_ShellS', b'w' * 8), (30, b'FLP_ShellS', b'european menus'))
+        self.assertEqual(lang_pack.voiced_shell(self.usa, eu), self.usa)
+
+    def test_overlay_uses_the_shell_of_its_voice(self):
+        self.assertEqual(lang_pack.overlay_files('fr', 'es'), ['shell_es', 'text_fr', 'voice_es'])
+        self.assertEqual(lang_pack.overlay_files('es', 'en'), ['shell', 'text_es'])
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -14,6 +14,7 @@ USA disc stays untouched.
 Output in <usa disc>/lang/:
   text_<code>.bin       R_PERM.WAD: wording + message table in <code>
   shell.bin             R_SHELL.WAD: wording
+  shell_<code>.bin      R_SHELL.WAD: wording + the title sequence's sound bank in <code> (not for en)
   voice_<code>.bin      the dubbed voice files of <code>, one after the other (not for en)
   movies_<code>.bin     the dubbed movie sound of <code> (not for en; not part of the overlays: the runtime reads it
                         through PS2X_MOVIE_VOICES and puts it in place of the USA movies' PCM, see movie_voices)
@@ -125,6 +126,29 @@ def localized_perm(usa_perm, eu_perm):
         else:
             out += usa_perm[pos:pos + 32 + ((body + 15) & ~15)]
     return bytes(out)
+
+
+def voiced_shell(usa_shell, eu_shell):
+    """USA R_SHELL.WAD with its sound banks (SBK_*) taken from a European R_SHELL<letter>.WAD. SBK_Title01 holds the
+    line Kratos says before the intro movie ("The gods of Olympus have abandoned me."), dubbed per language there;
+    the menus (FLP_Shell) stay USA: the European ones expect the European executable."""
+    banks = {name.split(b'\0')[0]: eu_shell[pos + 32:pos + 32 + size]
+             for pos, tag, size, name, body in wad_records(eu_shell) if name.startswith(b'SBK')}
+    out = bytearray()
+    for pos, tag, size, name, body in wad_records(usa_shell):
+        bank = banks.get(name.split(b'\0')[0])
+        if bank is not None:
+            out += struct.pack('<II', tag, len(bank)) + name + bank + b'\0' * (-len(bank) % 16)
+        else:
+            out += usa_shell[pos:pos + 32 + ((body + 15) & ~15)]
+    return bytes(out)
+
+
+def overlay_files(text, voice):
+    """the blobs of overlay <text>_<voice>: the shell with the voice's title line, the text, the dubbed voices"""
+    if voice == 'en':
+        return ['shell', f'text_{text}']
+    return [f'shell_{voice}', f'text_{text}', f'voice_{voice}']
 
 
 # Movie voices. The European movies are PAL (640x512, 25 fps) and carry five language tracks: private stream 1,
@@ -264,6 +288,8 @@ def main(usa, eu=None):
         perm = gow_wording.apply(perm)
         add(f'text_{code}', perm, {'R_PERM.WAD': (0, len(perm))})
     for code in langs[1:]:
+        voiced = voiced_shell(shell, read_file(eu, eu_entries, f'R_SHELL{TEXT_LETTER[code]}.WAD'))
+        add(f'shell_{code}', voiced, {'R_SHELL.WAD': (0, len(voiced))})
         data, members = bytearray(), {}
         for name in sorted({e[1] for e in entries}):
             base, ext = os.path.splitext(name)
@@ -285,7 +311,7 @@ def main(usa, eu=None):
 
     for text in langs:
         for voice in langs:
-            used = ['shell', f'text_{text}'] + ([f'voice_{voice}'] if voice != 'en' else [])
+            used = overlay_files(text, voice)
             patched = bytearray(raw)
             for blob in used:
                 lsn, _, members = blobs[blob]
