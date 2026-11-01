@@ -60,6 +60,10 @@ SEMO01A-E from USA sample 1741265) and the runtime (`MovieVoice`, `PS2X_MOVIE_VO
 the track and replaces the USA PCM byte for byte while the movie is demuxed; timing is untouched. The macOS launcher
 sets it when Voice is not English.
 
+Pre-intro voice: Kratos's line before the intro movie ("The gods of Olympus have abandoned me.") is in the sound
+bank `SBK_Title01` of `R_SHELL.WAD`; each European `R_SHELL<letter>.WAD` has it dubbed, so lang_pack writes
+`shell_<voice>.bin` (the USA shell with the European bank; menus stay USA) and the overlays for a dubbed voice use it.
+
 Not localized: the menus and the in-game message screens (save, death, pause, upgrade texts) keep the USA art and
 English text: their text lives in the Flash chunks with the USA font (below), and the European versions of those
 chunks expect the European executable (swapping whole European WADs leaves the title menu empty after Start). 
