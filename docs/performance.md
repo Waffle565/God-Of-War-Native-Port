@@ -1145,3 +1145,16 @@ Details: docs/native-render-study.md "step 7 on the renderer side, part 3".
   except 205405, 2 bytes in 2048, and one compute shader); the 68 draw fragment binaries (uber + 67 variants) are new.
   Pictures should be identical (integer test, same outcome); the A/B: fight bench with `GOW_DK_GPU_TIME=1`
   (bench_env/d29_gpu.txt) on update_dips30 and **update_dips31** (exefs md5 895262fa), compare p15 / p12 ms and fps.
+- **Handoff (sw-dips9 stopped here)**: console default unchanged (**update_dips25 + FAILGT**). Sources /root/src-mlang
+  = dips25 + dips26 + dips27 + dips28 + dips29 + dips30 + dips31 (originals per step /root/dips{27..31}-orig, patch
+  helper /root/dt/mkp.sh). Packages waiting for console A/B (port/switch/nsp/out): update_dips30 (VU1 / EE: ZVA +
+  tag scan; `GOW_ZVA=0` = off), update_dips31 (+ the alpha-test lookup). Env files port/switch/bench_env/. Harnesses
+  /root/vu1h/f1 / f1a (= dips27 + dips29 VU code; nca_f1*.txt, nca_f1*_plain.txt). Shader work: scratch copies of the
+  backend + tools/dk_shaders.py runs (generator on Windows; `--work` dir per run); merge rule: keep the shipped kCode
+  bytes of every unchanged source hash. Offline tools used: function-level / per-source-line sample counts from a
+  pcs file (nm + bisect, addr2line -i, outermost line of a given file), static spill / instruction counts of a
+  function (objdump + grep). Next, depending on the A/B: if diagfs1 / diagfs2 raise the fight fps clearly, the hot
+  draw shaders are worth shortening further (TFX modulate per channel: FLR / MAX / MIN after two MULs; the Q select);
+  if not, the fight GPU time is raster / blend / bandwidth (overdraw of the alpha-tested models). VU1 levers left are
+  each < 0.5 %: runLit's `switch (pc)` compare tree for the other transitions, kUnlitSt (bound on its madd -> 1/w
+  chain), the prologue's FMAC overflow checks.
