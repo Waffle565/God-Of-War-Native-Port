@@ -1,0 +1,36 @@
+--- a/ps2xRuntime/include/runtime/ps2_zva.h
++++ b/ps2xRuntime/include/runtime/ps2_zva.h
+@@ -4,7 +4,7 @@
+ // allocate: from L2, the other core or DRAM); DC ZVA allocates a whole cache line as zeros without that read. Before an
+ // append of n bytes at the end of a vector with the capacity for it, the lines the append will overwrite entirely are
+ // zeroed this way, then the copy writes them (same bytes in the buffer: the copy overwrites every zeroed byte).
+-// GOW_KICK_ZVA=0: off. A no-op off AArch64 or where DCZID_EL0 prohibits DC ZVA.
++// GOW_ZVA=0: off. A no-op off AArch64 or where DCZID_EL0 prohibits DC ZVA.
+ #include <cstddef>
+ #include <cstdint>
+ #include <cstdlib>
+@@ -17,7 +17,7 @@
+     inline uint32_t blockBytes()
+     {
+         static const uint32_t b = [] {
+-            const char *e = std::getenv("GOW_KICK_ZVA");
++            const char *e = std::getenv("GOW_ZVA");
+             if (e && e[0] == '0')
+                 return 0u;
+             uint64_t d;
+--- a/ps2xRuntime/src/lib/ps2_memory.cpp
++++ b/ps2xRuntime/src/lib/ps2_memory.cpp
+@@ -1,4 +1,5 @@
+ #include "runtime/ps2_memory.h"
++#include "runtime/ps2_zva.h"
+ #include "ThreadNaming.h"
+ #include "runtime/ps2_perf.h"
+ #include "runtime/gs/gs_stage.h"
+@@ -1834,6 +1835,7 @@
+         if (offset >= size)
+             offset = 0u;
+         const uint32_t chunk = std::min(bytes, size - offset);
++        ps2_zva::prepareAppend(out, chunk); // sw-dips9: the DMA buffers were last read on the worker's core (ps2_zva.h)
+         out.insert(out.end(), base + offset, base + offset + chunk);
+         bytes -= chunk;
+         offset += chunk;

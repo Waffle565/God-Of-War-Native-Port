@@ -1128,7 +1128,10 @@ Details: docs/native-render-study.md "step 7 on the renderer side, part 3".
   raster / blend / bandwidth is.
 - Natcheck (harness /root/vu1h/f1 / f1a = dips27 + dips29 on dips23's VU code): x86 plain, x86 forced decline, a64
   identical to e1 on all 40 recordings; GENTEST identical to plain (x86 and a64).
-- Package **update_dips29** = dips25 + dips26 + dips27 + dips28 + dips29 (ELF /root/elf_dips29.elf, exefs md5
-  04418c57). Bench env files port/switch/bench_env/d29*.txt (FAILGT included): `d29` (ZVA on), `d29_zva0` (ZVA off:
-  dips25 + the tag scan), `d29_gpu` / `d29_diagfs1` / `d29_diagfs2` (`GOW_DK_GPU_TIME=1`, the diagnostic levels).
-  Console A/B pending.
+- dips30 (port/switch/dips30.patch, ps2_memory.cpp + ps2_zva.h): the EE thread's DMA chain copy
+  (`appendGuestBytes`, ~6 % of the EE thread as memmove) prepares its appends the same way (the DMA buffers come back
+  from the worker's core); the switch is renamed `GOW_ZVA=0` (was GOW_KICK_ZVA in dips27).
+- Package **update_dips30** = dips25 + dips26 + dips27 + dips28 + dips29 + dips30 (ELF /root/elf_dips30.elf, exefs md5
+  3dbed415; update_dips29 = the same without dips30, superseded). Bench env files port/switch/bench_env/*.txt (FAILGT
+  included): `d29` (ZVA on), `d30_zva0` (ZVA off: dips25 + the tag scan), `d29_gpu` / `d29_diagfs1` / `d29_diagfs2`
+  (`GOW_DK_GPU_TIME=1`, the diagnostic levels). Console A/B pending.
