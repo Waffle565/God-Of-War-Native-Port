@@ -12,7 +12,7 @@ def num(key, line):
 
 
 for d in sys.argv[1:]:
-    for L in sorted(glob.glob(d + '/*/*/log.txt')):
+    for L in sorted(glob.glob(d + '/*/log.txt') + glob.glob(d + '/*/*/log.txt')):
         arrived = False
         perf, split, nat, gl = [], [], [], []
         for l in open(L, encoding='utf-8', errors='replace'):

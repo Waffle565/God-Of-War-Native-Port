@@ -1227,3 +1227,36 @@ default clocks. Mean of the zone means 58.1, median 59.7; no zone minimum < 25 (
 | ATHN04C | 49.5 | 48.2 | |
 
 Mean < 50 and min < 40: ATHN06C, ATHN01D, PAND02B, fight_ATHN01D. Game speed 0.98-1.00 in every zone.
+
+## What limits each zone below 50 fps on dips32; FastOps for three more VU1 loops (sw-dips11, 2026-11-02)
+- Limits per zone, from the dips32 sweep logs (run 20261101_1211, median of the windows after the warp; scratch
+  lim.py / fam2.py; ms per 5 s): **VU1 thread** (`[gsw-split] job_ms` 4.6-4.8 s, `[gsw-idle]` 230-410 ms) in OLYMP02,
+  ATHN01D, PAND02B, ATHN06B, ATHN03D, ATRET01B, ATHN04C; **GS GL thread** (`[gs-gl] busy_ms` 4.5-4.8 s) in ATHN06C
+  (also VU1 at 4.2 s; EE waits on the GS: gsq 400) and ARENA14 (gsq 1.1 s), ATHN04C 4.46 s next to VU1; the GPU
+  never waits (`[gs-dk] waits=0` in all of them). Fights (fight_ATHN01D heavy part, the bench) stay GPU-bound
+  (sw-dips7..10). ATHN06B's EE (4.3 s) is mostly the spin on the VU1 (guest_wait 40 ms).
+- VU1 native time per family in the VU1-bound windows (job > 4 s), ms per 5 s (us per run):
+  | zone | top families |
+  |---|---|
+  | PAND02B | nmisc kind21 = entry fbde7722 1630 (29.1), 39f38df4 576, 6df5c750 361 |
+  | OLYMP02 | 3d0d1206 936, 39f38df4 690, kind21 682 (6.1), kind7 = b66a3e7a 364, part 300 |
+  | ATHN01D | 93febeec 793, part 767, 7ab32108 626, 3d0d1206 372, 39f38df4 349 |
+  | ATHN06B | 93febeec 991, 39f38df4 697, kind12 = 9ffe612e 445, kind10 = c79fec55 414 (43.5) |
+  | ATHN03D | kind21 770, 3d0d1206 684, 7ab32108 654, 39f38df4 382, part 349 |
+  | ATRET01B | 39f38df4 1524, 7ab32108 450, 3d0d1206 357, 93febeec 335 |
+  | ATHN04C | 7ab32108 1404, 39f38df4 782, kind12 317 |
+  | ATHN06C | 3d0d1206 1156, 7ab32108 362, 39f38df4 350 |
+  (`kind<k>` = nrun CodeInfo kind = 7 + index in nmisc::kEntries.) The lit / skin loops (93febeec, 39f38df4, 6df5c750)
+  already run in the FastOps form, the unlit kernels (3d0d1206, 7ab32108) without overflow tests; the nwind / nmisc
+  loops still used the exact per-operation form (operand normalisation BIC / UMIN / BSL per operand, an overflow test
+  UMAXV -> FMOV -> CMP -> B.CS per FMAC: loopFbde was ~155 A57 instructions per vertex).
+- dips33 (port/switch/dips33.patch, ps2_vu1_nat_wind.inl + ps2_vu1_nat_misc.inl): `nwind::loopFbde` (fbde7722's loop,
+  kind21), `nmisc::texDivLoop` (b66a3e7a's module) and `nmisc::colDivLoop` (9ffe612e / b45e3bab) in the FastOps form of
+  litLoopT: loads first, plain MUL / ADD with every result tracked, one overflow test per pass, a failing pass redone
+  with the exact operations, the pass's stores after it (same order and addresses; they store values of the pass
+  before or of this pass, never read by this pass's loads). Operands normalised once (the rows, the ADDA of a row with
+  vf0, the entry registers the first pass reads before the loop rewrites them; lanes no kept result uses zeroed so they
+  cannot fail the test; raw w lanes put back at exit). Natcheck (harness /root/vu1h/g2 / g2a): x86 plain, x86 forced
+  decline, a64 identical to f1 on all 40 recordings; GENTEST identical to plain; and with FastOps::ok() forced false
+  (every pass through the exact redo, harness g2x / g2xa) identical as well. The recordings run fbde7722 104 times,
+  b66a3e7a / 9ffe612e / b45e3bab ~50 times.
