@@ -108,13 +108,21 @@ Packs are downloaded by the player and never shipped with the port.
 |---|---|
 | `GOW_TEXTURES_DIR` | the pack's folder of replacement files, scanned recursively (point it at the files for SCUS-97399, not at a pack root whose `dumps/` hold originals under the same names); default `~/Library/Application Support/God of War/textures/SCUS-97399/replacements` |
 | `GOW_GS_MTL_TEXREPL=0` | replacement off |
-| `GOW_GS_MTL_TEXREPL_MB` | GPU budget in MB (default 2048) |
+| `GOW_GS_MTL_TEXREPL_MB` | GPU budget in MB (default RAM/16: 1024 MB on 16 GB, 256-2048) |
 | `GOW_GS_MTL_TEXDUMP=<dir>` | writes every new texture as a PNG under its PCSX2 name (for making packs) |
 | `GOW_GS_MTL_TEXREPL_LOG=1` | logs every texture seen/matched |
 
 The launcher's Textures row turns a pack on and chooses its folder. DDS (BC1/BC3/BC7, RGBA8) loads straight into GPU
 formats; PNG through ImageIO; loading is asynchronous (the original is drawn until the replacement is ready). Not
 reproduced: PCSX2's region guess from recent uploads (two full-screen textures of the pack).
+
+## Memory
+The Metal backend keeps its caches bounded (GS textures 256 MB, palette conversions 128 MB, replacement textures
+RAM/16, idle vertex buffers released after 30 s down to 8) and polls the system memory pressure level once a second
+(`kern.memorystatus_vm_pressure_level`; the dispatch pressure source is not delivered to this process): at warn or
+critical it drops idle cache entries (`[gs-mtl] memory pressure ...` / `... over`). A failed Metal allocation skips
+the draw and is logged once. `GOW_GS_HW_STATS=1` adds a `[gs-mem]` line (device MB, caches, frames in flight). Measured:
+10-minute fights flat at ~300-450 MB of GPU memory, 56-60 fps also with 8 parallel compiles and under warn pressure.
 
 ## macOS-specific build settings
 In the top-level CMakeLists (`APPLE AND aarch64` only): `-fsigned-char` (x86 `char`), `-ffp-contract=off` (Apple clang
