@@ -1,7 +1,7 @@
 # Disc
 
 ## The disc
-- User's redump: `iso/God of War (Europe, Australia) (En,Fr,De,Es,It).iso`, 8,018,624,512 bytes, PAL, SCES-53133.
+- User's redump (archived: `D:\Claude Archive\GoW-Archive\gamedata\iso\`, docs/storage.md): `God of War (Europe, Australia) (En,Fr,De,Es,It).iso`, 8,018,624,512 bytes, PAL, SCES-53133.
   `SYSTEM.CNF`: `BOOT2 = cdrom0:\SCES_531.33;1`, `VER = 1.00`, `VMODE = PAL`.
 - Dual-layer DVD, **UDF bridge** (ISO9660 + UDF). Sector 16 PVD (volume "GODOFWAR", publisher SCEE),
   17 terminator, 18 `BEA01`, 19 `NSR02`, 20 `TEA01`, UDF anchor area further on. Root directory LBA 261.

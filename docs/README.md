@@ -44,13 +44,14 @@ The user wants the game **totally playable**; work continues until then. Game da
 | [switch-deko3d.md](switch-deko3d.md) | Switch GS renderer on deko3d: GL table over deko3d, uam-prebuilt shaders, GPU present, console results; stream-buffer memblock reuse and CLUT loads without a flush (`GOW_GS_HW_CLUT_KEEP`); draw count, GS stage PACKED fast path (`GOW_GS_FASTPACK`), per-core budget and IOP thread variants on the console; core 1 budget: idle IOP batches deferred (`GOW_IOP_IDLE_DEFER`), import decode cache, what the IOP time is. |
 | [switch-sweep.md](switch-sweep.md) | Console sweep (tools/switch_sweep.py): every movie, level (one warp per boot) and boss fight run on the Switch with scripted input; how items are judged (crash, hang, black/frozen, fps, game speed, errors), the boot options it uses, results of the runs. |
 | [switch-env-setup.md](switch-env-setup.md) | Recreating the Switch cross-build environment (WSL Ubuntu + devkitPro, Cloudflare workaround, sync/build/package commands, compiler flags of the Switch build (no -fPIC on the static libraries, VU1 sources at -O3), backup with `wsl --export`); what the 2026-10-23 loss of the distro cost. |
+| [storage.md](storage.md) | What is kept in the repo folder vs the HDD archive `D:\Claude Archive\GoW-Archive` (game archives, ISOs, regional discs, old runs/logs/packages) and the cleanup policy. |
 | [gemini-helper.md](gemini-helper.md) | Read-only helper agent (`agy`/Gemini) to offload log/dump analysis: when and how to call it. |
 
 ## Project layout
 
     God Of War/
       docs/                this documentation
-      iso/                 the user's redump ISO (kept, not used at runtime)
+      iso-usa/             the USA ISO (tools/zones.py, perf_run.sh); other ISOs are archived on D: (storage.md)
       disc/                all 16 disc files extracted + .disc_layout/.disc_meta + imgui.ini (runtime cwd)
       port/gow.toml        recompiler config        port/functions.csv  function map (tools/find_functions.py)
       port/output/         generated C++ (regenerated, never edited)
