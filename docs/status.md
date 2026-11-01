@@ -1153,3 +1153,10 @@ Run: `python -I tools/zones.py --slots 1,2,3,4` (scale: `PS2X_GS_HW_SCALE`); sav
   (core 1 +0-60 ms); SEMO01 30.0, A06MP01 29.9 pictures/s (port/switch/sweep/inst_dips31); 4 title boots clean
   (Italian title menu); bench shots correct (deck fight, HUD, Italian tutorial). **Console default = update_dips31 +
   FAILGT** (exefs md5 895262fa); tools/switch_default.sh updated.
+- 2026-11-01 (sw-sweep4): **update_dips32** (= dips31 + exact shorter draw shaders, sw-dips10, docs/performance.md)
+  replaces dips31 the same day: fight bench (bench_d32_gpu vs bench_d31_gpu, `GOW_DK_GPU_TIME=1`, same frames to game
+  72 s) 0-10 56.8 -> 58.1, heavy 10-20 48.5 -> 49.3, 20-30 53.0 -> 55.6, 30-60 54.7 -> 56.2, 60-90 57.4 -> 59.1; GPU ms
+  per 5 s in the fight p15 88 -> 75, p12 801 -> 714, p11 (004c21) 183 -> 124; GPU busy ~4.8 -> ~4.5 s per 5 s.
+  Screenshots side by side (deck spray, fog, blood blending, HUD, death screen) identical in look; SEMO01 30.0 /
+  A06MP01 29.9 pictures/s, 4 title boots clean (port/switch/sweep/inst_dips32). **Console default = update_dips32 +
+  FAILGT** (exefs md5 c0893f9b); tools/switch_default.sh updated.
