@@ -49,8 +49,9 @@ toolchain (`deko3d` 0.5.0 with the `uam` shader compiler, `/opt/devkitpro/tools/
   - Regenerate: `python -I tools/dk_shaders.py ext/PS2Recomp-kl-swdeko ext/PS2Recomp-kl-swdeko/switch/dk_variant_keys.txt
     ext/PS2Recomp-kl-swdeko/ps2xRuntime/src/lib/gs/gpu/gs_dk_shaders_gen.cpp` (Windows Python, calls uam in WSL).
 - **Presentation stays on the GPU.** The backend's shared-presentation path calls `GSGL::PublishSharedTexture` with
-  the composed frame; on deko3d that draws the frame onto the next 1280x720 swapchain image (Catmull-Rom bicubic +
-  sharpen like the PC host scaler, `GOW_SCALER=bilinear` for one tap; `GOW_SHARPEN`) and presents it with swap
+  the composed frame; on deko3d that draws the frame onto the next 1280x720 swapchain image (one bilinear tap by
+  default since 2026-11-01; `GOW_SCALER=sharp` Catmull-Rom bicubic + sharpen like the PC host scaler, `fast` its 5-fetch
+  form, `GOW_SHARPEN`; docs/settings.md "Switch picture scaler") and presents it with swap
   interval 1, from the GS thread. Nothing is read back, uploaded again or drawn by the host thread.
 - **No raylib window.** The swapchain needs the default display window, which raylib's SDL would otherwise take, so
   `ps2_runtime.cpp` opens no window under `PS2X_DK`: the host loop only latches each vsync's Present and sleeps
@@ -109,8 +110,8 @@ game kept reading an old `env.txt` with scale 1; the "1.6" figures before 2026-1
 | **deko3d, scale 1 (640x448 internal), bicubic GPU upscale to 720p: the default** | **27.8-29.2** | **19.4-28.0** (19.4-20.6 in the longest fight) |
 
 - Rendering at 720p is GPU-bound in gameplay; the PS2's own resolution with the GPU upscale is the default
-  (`ps2_switch_runtime.cpp`: `PS2X_GS_HW_SCALE=1`, bicubic + sharpen; env.txt `PS2X_GS_HW_SCALE=1.6` /
-  `GOW_SCALER=bilinear` choose otherwise).
+  (`ps2_switch_runtime.cpp`: `PS2X_GS_HW_SCALE=1`, since 2026-11-01 `GOW_SCALER=bilinear`; env.txt
+  `PS2X_GS_HW_SCALE=1.6` / `GOW_SCALER=sharp` choose otherwise).
 - Where VU1 has little to do (the pause screen) the whole pipeline already runs at 59.6-59.8 fps.
 - Gameplay per 5 s at scale 1: VU1 ~4.0 s, EE ~2.7 s, GS thread ~1.0 s busy (deko3d): **VU1 is the limit**, then the
   EE. The renderer is no longer what keeps the game under 60.

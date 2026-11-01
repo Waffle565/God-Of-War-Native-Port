@@ -1051,3 +1051,18 @@ Details: docs/native-render-study.md "step 7 on the renderer side, part 3".
   only / fp16) to measure; (2) GPU draw programs p15 / p12 (~1.7-1.9 s of the 3.7 s draws: the paletted bilinear
   alpha-tested model variants, docs "The GPU at the default clocks"); (3) VU1: runLit's prologue / the unlit runs
   (7ab32108 + 3d0d1206 ~1 s per 5 s at 2.5-4.5 us per run in ATHN01D) register-resident like npart.
+
+## Switch present scaler: bilinear by default; sw-dips8 (2026-11-01, from update_dips22)
+- dips25 (port/switch/dips25.patch, ps2_switch_runtime.cpp): the deko3d build sets `GOW_SCALER=bilinear` unless env.txt
+  sets it (user decision after the sw-dips7 scaler bench). Package update_dips25 = dips22 + dips23 + dips24 + dips25.
+- Fight bench (port/switch/logs/bench_d25a, update_dips25 + FAILGT + `GOW_DK_GPU_TIME=1`, no GOW_SCALER line), vs the
+  env-var run (bench_d24b) and the old default (d22a):
+  | scene (game s) | dips22 (bicubic) | dips24 + env bilinear | **dips25 (built-in)** |
+  |---|---|---|---|
+  | 0-10 | 48.9 | 53.4 | **53.6** |
+  | 10-20 heavy | 41.4 | 45.3 | **45.5** |
+  | 20-30 | 45.7 | 49.1 | **49.2** |
+  | 30-60 mid | 47.3 | 50.7 | **50.9** |
+  | 60-90 | 51.9 | 55.2 | **55.3** |
+  scale pass 83-126 ms per 5 s. SEMO01 30.0 pictures/s (port/switch/sweep/mov_dips25), title boots clean, bench shots
+  correct. **Installed 2026-11-01: update_dips25 + FAILGT** (exefs md5 685588ef); tools/switch_default.sh updated.

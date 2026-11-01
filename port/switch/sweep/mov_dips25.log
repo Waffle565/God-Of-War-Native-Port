@@ -1,0 +1,6 @@
+[sweep] package update_dips25
+[sweep] 10:37:27 movies_SEMO01
+[sweep] movies_SEMO01 PASS  
+[sweep] default restored
+[sweep] exefs md5 53fd9135 = default
+[sweep] report port/switch/sweep/mov_dips25\20261101_1037\report.md

@@ -1138,3 +1138,11 @@ Run: `python -I tools/zones.py --slots 1,2,3,4` (scale: `PS2X_GS_HW_SCALE`); sav
   -> 43.3, ATHN06C equal. x86 / a64 natcheck identical on all 40 recordings, also with GOW_VU1NAT_GENTEST (the cached
   path); SEMO01 30.0 pictures/s; screenshots correct; title boots clean. **Console default = update_dips22 + FAILGT**
   (exefs md5 53fd9135; tree /root/src-mlang = dips22, ELF /root/elf_dips22.elf).
+
+- 2026-11-01 (sw-dips8): **update_dips25** = update_dips22 sources + port/switch/dips23..25.patch: dips23 (TLS
+  addresses in registers, exact, neutral), dips24 (`GOW_SCALER=fast` wired, scale shader binary rebuilt), dips25
+  (**one bilinear tap is the built-in present scaler**, user decision 2026-11-01; `GOW_SCALER=sharp` / `fast` in env.txt
+  choose the bicubic passes, docs/settings.md "Switch picture scaler"). Fight bench (default clocks, FAILGT) dips22 ->
+  dips25: 0-10 48.9 -> 53.6, heavy 10-20 41.4 -> 45.5, 20-30 45.7 -> 49.2, mid 30-60 47.3 -> 50.9, 60-90 51.9 -> 55.3
+  (= the env-var measurement). SEMO01 30.0 pictures/s; screenshots correct; title boots clean (Italian). **Console
+  default = update_dips25 + FAILGT** (exefs md5 685588ef; tree /root/src-mlang = dips25, ELF /root/elf_dips25.elf).

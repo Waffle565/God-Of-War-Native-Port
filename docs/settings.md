@@ -279,3 +279,16 @@ rename) and the save list; tools/savetest.py in Italian: 129 pages written into 
 slot di salvataggio 1?", "Salvataggio in corso / nello slot 1... / Non chiudere / il gioco.", "Salvataggio
 completato.". fr_fr, de_de, es_es: title, load and save list in their language. English output is byte-identical to
 before (shell_en.bin = the former shell.bin).
+
+## Switch picture scaler (`GOW_SCALER`, env.txt)
+The deko3d build draws the PS2's 640x448 frame and stretches it to the 1280x720 screen in one present pass
+(gs_dk.cpp). `ps2_switch_runtime.cpp` sets the default when env.txt does not:
+
+| `GOW_SCALER` | Present pass | Fight bench (mid scene, default clocks) |
+|---|---|---|
+| `bilinear` (**default since 2026-11-01**, user decision) | one bilinear tap: softer picture, ~0.1 s GPU per 5 s | 50.7 fps |
+| `fast` | Catmull-Rom bicubic + sharpen, sharpen from the bicubic taps (5 fetches) | 47.7 fps |
+| `sharp` (any other value) | Catmull-Rom bicubic + contrast-adaptive sharpen (9 fetches), `GOW_SHARPEN` strength (0.5) | 47.3 fps |
+
+The bicubic pass costs ~0.4-0.5 s of GPU time per 5 s in a fight, where the GPU is the limit (docs/performance.md,
+sw-dips7). The PC build keeps bicubic + sharpen (gs_host_present.cpp); the GL Switch build was always bilinear.

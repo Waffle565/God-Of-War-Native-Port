@@ -5,7 +5,7 @@
 set -u
 cd "$(dirname "$0")/.."
 . tools/switch_lib.sh
-PKG=${DEFAULT_PKG:-update_dips22}
+PKG=${DEFAULT_PKG:-update_dips25}
 sw_transfer
 sw_push_update port/switch/nsp/out/$PKG || { echo "exefs push failed"; exit 1; }
 mkdir -p port/switch/logs/default_env && cp tools/switch/default_env.txt port/switch/logs/default_env/env.txt

@@ -1,0 +1,12 @@
+--- a/ps2xRuntime/src/lib/ps2_switch_runtime.cpp
++++ b/ps2xRuntime/src/lib/ps2_switch_runtime.cpp
+@@ -699,6 +699,9 @@
+         // GPU by the bicubic + sharpen present pass. Console 2026-10-19, gameplay: 1x 19-28 fps, 1.6x (720 lines) 12-15 fps.
+         // env.txt PS2X_GS_HW_SCALE=1.6 renders at 720p, GOW_SCALER=bilinear presents with one tap.
+         setenv("PS2X_GS_HW_SCALE", "1", 0);
++        // one bilinear tap to present by default (user decision 2026-11-01, sw-dips8): fight bench +3.4-4 fps per scene
++        // (mid 47.3 -> 50.7); env.txt GOW_SCALER=sharp (bicubic + sharpen) or fast (5-fetch sharpen) choose otherwise
++        setenv("GOW_SCALER", "bilinear", 0);
+ #else
+         // one bilinear tap to present (the bicubic + sharpen pass costs GPU time the Tegra lacks, and crashes Citron)
+         setenv("GOW_SCALER", "bilinear", 0);
