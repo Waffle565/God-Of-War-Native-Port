@@ -189,8 +189,8 @@ namespace
         gowRunGuest(rdram, call, runtime, 0x001AFAD0u);
     }
 
-    // GOW-Port: GOW_TELEPORT=<s>:<x>,<y>,<z>[;<s>:<x>,<y>,<z>...] (test only, with GOW_WARP): <s> seconds after the
-    // warp arrived, move Kratos to the world position x,y,z (boss arenas, tools/switch_sweep.py --boss). The steps of
+    // GOW-Port: GOW_TELEPORT=<s>:<x>,<y>,<z>[;<s>:<x>,<y>,<z>...] (test only): <s> seconds after the warp arrived
+    // (without GOW_WARP: after gameplay started, e.g. a loaded save, + GOW_WARP_DELAY), move Kratos to the world position x,y,z (boss arenas, tools/switch_sweep.py --boss). The steps of
     // the game's own warp-point jump 0x1B26F0: player object *(*0x29CD58); its new transform (+0x10..+0x4F, four rows,
     // translation in +0x40) = the current one (+0x50..+0x8F) with the target translation; the object's virtual at
     // vtable(+4)+0x2C (this + (int16)vtable[+0x28], a1 = the new transform) applies it; with a camera (*0x29E2A4 != 0) 0x1EF0E0(old, new) moves
@@ -245,7 +245,9 @@ namespace
             }
             return list;
         }();
-        if (zones.empty())
+        // GOW_TELEPORT without GOW_WARP (a run from a save): the steps count from the first gameplay frame + the delay
+        static const bool teleportOnly = zones.empty() && std::getenv("GOW_TELEPORT") != nullptr;
+        if (zones.empty() && !teleportOnly)
             return;
         static const double delay = std::getenv("GOW_WARP_DELAY") ? std::atof(std::getenv("GOW_WARP_DELAY")) : 0.5;
         static const double stay = std::getenv("GOW_WARP_STAY") ? std::atof(std::getenv("GOW_WARP_STAY")) : 60.0;
@@ -332,6 +334,8 @@ namespace
             return;
         if (next >= zones.size())
         {
+            if (teleportOnly && arrivedAt < 0.0)
+                arrivedAt = now;
             std::fprintf(stderr, "[gow-warp] done at %.1f s\n", now);
             due = 1e30;
             return;
@@ -728,6 +732,7 @@ namespace
         // the file is read; a line "<seq> <x> <y> <s> [<buttons hex>]" with a new seq holds the left stick at x,y (-1..1,
         // y up) and the PS2 buttons (active-high mask of state bytes 2/3: 0x4000 cross, 0x8000 square, 0x1000
         // triangle, 0x2000 circle, 0x0200 R2 ...) for <s> seconds. Logs `[gow-live] seq x y s buttons`.
+        // "<seq> T <x> <y> <z>" teleports Kratos there; <file>.pos holds his position every second (below).
         if (static const char *livePath = std::getenv("GOW_PAD_LIVE"); livePath)
         {
             static auto lastRead = std::chrono::steady_clock::now();
@@ -744,9 +749,21 @@ namespace
                     long seq = -1;
                     float x = 0, y = 0, s = 0;
                     unsigned buttons = 0;
-                    const int n = std::fscanf(file, "%ld %f %f %f %x", &seq, &x, &y, &s, &buttons);
+                    char line[160] = {};
+                    const bool got = std::fgets(line, sizeof(line), file) != nullptr;
                     std::fclose(file);
-                    if (n >= 4 && seq != lastSeq)
+                    const int n = got ? std::sscanf(line, "%ld %f %f %f %x", &seq, &x, &y, &s, &buttons) : 0;
+                    // "<seq> T <x> <y> <z>": teleport Kratos (gowTeleport, the GOW_TELEPORT steps) during gameplay
+                    float target[3]{};
+                    if (got && std::sscanf(line, "%ld T %f %f %f", &seq, &target[0], &target[1], &target[2]) == 4)
+                    {
+                        if (seq != lastSeq && readGuest32(rdram, 0x29E560u) == 11u)
+                        {
+                            lastSeq = seq;
+                            gowTeleport(rdram, ctx, runtime, target, 0.0);
+                        }
+                    }
+                    else if (n >= 4 && seq != lastSeq)
                     {
                         lastSeq = seq;
                         liveX = std::clamp(x, -1.0f, 1.0f);
@@ -755,6 +772,25 @@ namespace
                         holdUntil = nowLive + std::chrono::milliseconds(static_cast<long>(s * 1000.0f));
                         std::fprintf(stderr, "[gow-live] seq %ld x %.2f y %.2f s %.2f buttons %x\n", seq, liveX, liveY, s, liveButtons);
                     }
+                }
+            }
+            // <file>.pos, rewritten every second: Kratos's xf position (GOW_TELEPORT coordinates), game state and
+            // zone, so a live session can read where Kratos is (the log stays locked while the game runs)
+            static auto lastPos = nowLive;
+            if (nowLive - lastPos >= std::chrono::seconds(1))
+            {
+                lastPos = nowLive;
+                float xf[3]{};
+                const uint32_t holder = readGuest32(rdram, 0x29CD58u) & 0x01FFFFFFu;
+                if (const uint32_t po = holder >= 0x100000u && holder < 0x2000000u ? readGuest32(rdram, holder) & 0x01FFFFFFu : 0u;
+                    po >= 0x100000u && po < 0x1FFFF00u)
+                    std::memcpy(xf, rdram + po + 0x80u, sizeof(xf));
+                static const std::string posPath = std::string(livePath) + ".pos";
+                if (std::FILE *pos = std::fopen(posPath.c_str(), "wb"))
+                {
+                    std::fprintf(pos, "%.1f %.1f %.1f state=%u zone=%s\n", xf[0], xf[1], xf[2], readGuest32(rdram, 0x29E560u),
+                                 gowCurrentZone(rdram, ctx, runtime).c_str());
+                    std::fclose(pos);
                 }
             }
             if (nowLive < holdUntil)

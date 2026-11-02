@@ -57,7 +57,8 @@ BOSSES = [('ares', 'ATHN08C', 'Ares (boss bar from the warp point on)', ''),
           ('cerberus', 'PAND02I', 'Cerberus pair (R_CEP/R_CEA), engaged at the warp point', '')]
 # boss fights from a save (story-triggered fights: no warp): (key, card under port/switch/boss_cards, slot, pad steps
 # from gameplay start to the trigger, g second the fight pattern starts, note). The card is pushed as
-# sdmc:/switch/gow/boss.mcd and used through GOW_MC0 (the player's play.mcd stays untouched).
+# sdmc:/switch/gow/boss.mcd and used through GOW_MC0 (the player's play.mcd stays untouched); last field: GOW_TELEPORT
+# value or '' (without GOW_WARP its seconds count from gameplay start, package update_boss7+).
 SAVE_BOSSES = []
 # still open (docs/switch-sweep.md "Boss fights"): Hydra 1 (ATHN01D) and Hydra 2 (ATHN01E / 01EE) need the arena
 # position or story trigger, Pandora's Guardian (R_MI4: PAND03E / PAND04EE) was not found at its zones' warp points
@@ -180,13 +181,14 @@ def items(args):
                 for k, z, n, tp in BOSSES if not only or z in only or k.upper() in only]
     if args.boss:
         out += [{'kind': 'boss', 'name': 'boss_' + k, 'zone': '', 'stay': args.boss_stay, 'note': n, 'card': c,
-                 'slot': sl, 'pre': pre, 'fight_from': ff} for k, c, sl, pre, ff, n in SAVE_BOSSES
+                 'slot': sl, 'pre': pre, 'fight_from': ff, 'teleport': tp} for k, c, sl, pre, ff, n, tp in SAVE_BOSSES
                 if not only or k.upper() in only]
-    # ad-hoc save items (finding the trigger walk): --boss-save "key|card|slot|<pad steps>|<fight from g s>"
+    # ad-hoc save items (finding the trigger walk): --boss-save "key|card|slot|<pad steps>|<fight from g s>[|<teleport>]"
+    # (teleport: a GOW_TELEPORT value, seconds counted from gameplay start + 0.5 s; package update_boss7+)
     for spec in args.boss_save:
-        k, c, sl, pre, ff = (spec.split('|') + ['', '', '1', '', '4'])[:5]
+        k, c, sl, pre, ff, tp = (spec.split('|') + ['', '', '1', '', '4', ''])[:6]
         out.append({'kind': 'boss', 'name': 'boss_' + k, 'zone': '', 'stay': args.boss_stay, 'note': 'ad hoc save',
-                    'card': c, 'slot': int(sl or 1), 'pre': pre, 'fight_from': float(ff or 4)})
+                    'card': c, 'slot': int(sl or 1), 'pre': pre, 'fight_from': float(ff or 4), 'teleport': tp})
     # ad-hoc boss items (finding arena positions): --boss-item "key|ZONE|<GOW_TELEPORT value>[|<pad steps>|<fight from>]"
     for spec in args.boss_item:
         k, z, tp, pre, ff = (spec.split('|') + ['', '', '', '4'])[:5]
@@ -384,7 +386,7 @@ def run_item(item, outdir, args, sizes):
                 r['fail'].append('card push failed')
                 return r
             os.remove(tmp)
-            extra += ['GOW_MC0=sdmc:/switch/gow/boss.mcd']
+            extra += ['GOW_MC0=sdmc:/switch/gow/boss.mcd'] + ([f"GOW_TELEPORT={item['teleport']}"] if item.get('teleport') else [])
             budget = 75 + 40 + ff + item['stay']
         else:
             extra += ['GOW_WARP=' + item['zone'], f"GOW_WARP_STAY={item['stay']}"] + \
