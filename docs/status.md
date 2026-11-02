@@ -1181,3 +1181,9 @@ Run: `python -I tools/zones.py --slots 1,2,3,4` (scale: `PS2X_GS_HW_SCALE`); sav
   EE + IOP ms per frame 18.3/15.3, 18.0/17.7, 13.9/18.4; screenshots identical. SEMO01 30.0 pictures/s and 4 clean
   title boots (port/switch/sweep/semo_dips37c_1..4). **Console default = update_dips37c + FAILGT** (exefs md5
   c9248241); tools/switch_default.sh updated. (dips36b was A/B'd before and not taken: port/switch/sweep/ab_dips36b.)
+- 2026-11-02 (sw-dips18): **update_dips40** (= dips37c + windLoop FastOps, SoundMix boost 0, chain copier off by
+  default; docs/performance.md, sw-dips16 / sw-dips18) replaces dips37c. All checks PASS (port/switch/sweep/d17l_*,
+  mov_dips40, boot_dips40, d17b_*): levels 3 interleaved rounds each equal or better except the GL-bound ATHN06C corridor
+  (-0.8 fps, 38.3 vs 39.1); SEMO01 30.0 pictures/s; 4 clean Italian title boots; Hydra 1 min/mean 49.0/53.4, 50.0/52.6
+  vs 46.6/51.5, 48.4/51.3. **Console default = update_dips40 + FAILGT** (exefs md5 be819616, read back from the
+  console); tools/switch_default.sh updated.

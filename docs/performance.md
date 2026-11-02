@@ -1624,3 +1624,29 @@ Mean < 50 and min < 40: ATHN06C, ATHN01D, PAND02B, fight_ATHN01D. Game speed 0.9
 - **Handoff (sw-dips17)**: default dips37c; next: run check40.sh when memory allows (close other memory users first),
   then the kCullClip harness checks above. Open from sw-dips16: why the chain copier slows the VU1 thread (moot while
   dips40 ships it off).
+
+## dips40 installed as the default (sw-dips18, 2026-11-02)
+- boss18 built (`bossb.sh boss18` = dips40 + test options, exefs md5 a5f6fa77), then port/switch/tools_dips17/check40.sh
+  (16:15-18:45, log port/switch/logs/d18/check40.log). **Everything PASS.**
+- Levels, dips37c / dips40 interleaved, 3 rounds (sweep/d17l_<pkg>, fps min / mean per round):
+  | zone | dips37c | dips40 |
+  |---|---|---|
+  | ATHN01D | 40.0/40.7, 38.8/44.3, 40.0/40.9 | 37.4/45.8, 41.0/46.8, 39.8/46.6 |
+  | ATHN06C, GL-bound corridor windows (glb.py) | 38.9, 40.0, 38.3 (24.2/23.5/24.5 ms GL per frame) | 38.2, 38.7, 37.9 (24.8/24.4/24.5) |
+  | ATRET01B | 52.0/56.3, 55.6/58.2, 54.6/58.6 | 49.2/57.3, 53.8/57.2, 57.4/59.7 |
+  | PAND02B | 48.6/55.4, 47.6/50.9, 48.6/56.7 | 49.2/57.8, 48.6/56.3, 50.0/56.3 |
+  The whole-run ATHN06C numbers depend on how long the camera stays in the corridor (dips40 had two runs with open views,
+  55.0/59.1 and 36.0/49.8), so the same-view comparison is the corridor's GL-bound windows: dips40 -0.8 fps (~2 %).
+  Everything else is equal or better.
+- SEMO01 30.0 pictures/s (sweep/mov_dips40); 4 title boots in Italian, 0 error-like lines (sweep/boot_dips40).
+- Fights, boss18 vs boss10 (= dips37c + test options), interleaved, 2 rounds (sweep/d17b_<pkg>, fightvu.py min / mean,
+  VU1 us per program run):
+  | fight | boss18 (dips40) | boss10 (dips37c) |
+  |---|---|---|
+  | Hydra 1 | 49.0/53.4 (9.34), 50.0/52.6 (9.33) | 46.6/51.5 (9.41), 48.4/51.3 (9.34) |
+  | clones | 46.4/52.3 (35 s, 12.62), 47.8/55.0 (120 s, 12.38) | 48.2/54.0 (95 s, 12.90), 51.4/53.9 (30 s, 12.90) |
+  Clones' fight windows differ per run (the AI decides how long the heavy part lasts: 35-120 s); per program run the VU1
+  thread is faster on dips40 and the means are equal, so the lower clones minimums are the fight's content, not the build.
+- Verdict: fights better (Hydra 1 +2 min, +1.6 mean), levels equal or better, one GL-bound corridor ~2 % lower.
+  **update_dips40 installed as the console default** (+ FAILGT; tools/switch_default.sh; exefs md5 be819616 read back
+  from the console).
