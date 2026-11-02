@@ -1357,3 +1357,55 @@ Mean < 50 and min < 40: ATHN06C, ATHN01D, PAND02B, fight_ATHN01D. Game speed 0.9
   ATRET01B (spread over the set-up cases, dips32 lit.inl lines 1327 / 1373 / 1379 / 1343 / 1057 on top: lines.py), windLoop and kCullClip
   (PAND02B 5.4 / 3.8 %), the GL thread's addVertexC emplace (stores; a fixed-size pending block written with plain
   stores instead of emplace_back's default-member-initialised construction).
+
+## The particle program's operand views kept beside the registers (sw-dips13, 2026-11-02)
+- Where the dips35 A/B leaves the weak zones (port/switch/sweep/ab_dips35 vs ab_dips32c, VU1 native ms per 5 s by family,
+  scratch famtot.py): ATHN01D 3527 ms (93febeec 749, **part 657**, 7ab32108 575, 3d0d1206 556, 39f38df4 343), PAND02B
+  3399 (kind21 1331, 39f38df4 609), ATRET01B 2982 (39f38df4 1213), OLYMP02 2690 (39f38df4 886, 3d0d1206 827), ATHN06C
+  2581 (7ab32108 642, 3d0d1206 560). ATHN01D's core 1 is near its limit too (dips32c: EE 3.9 s + IOP 0.75 s per 5 s):
+  VU1 savings alone cannot bring that zone to 50.
+- npart::run by inlined function (port/switch/tools_dips12/lines3.py: addr2line -f -i, first frame that is not a
+  one-line helper; prof_dips20_ATHN01D, npart unchanged since): the samples are spread over the per-op form (element
+  11 %, sq 13 %, body 8 %, eexp 7 %, msub / madd ~10 %, W blends ~8 %); by source line the operand view
+  `R(r) = nrm(rf[r])` (BIC / UMIN / BSL on every operand, on the FMAC chains) was 19 % (lines2.py: first frame in a file).
+- dips36 (port/switch/dips36.patch, ps2_vu1_nat_part.inl):
+  - `rn[32]` beside `rf[32]` with the invariant rn[r] == vu1n::nrm(rf[r]): the FMAC helpers (add / sub / mul / addF /
+    madd / msub) return `Nv` (a clamped result, finite: clampv's output, or maddc's fast path where |product| and |sum|
+    <= 0x7F7FFFFE), and `W(r, Nv)` sets the view to the value itself; a raw write (lq, conversions, moves, MFIR, MIN /
+    MAX copies) normalises once at the write (`W(r, __m128)`, lane-wise, so blends commute). R() reads rn. Same operand
+    bits as before, so same results; GCC drops views nothing reads (constant indices).
+  - eexp / erleng in scalar float arithmetic (same IEEE single operations in the same order, same rounding / flush
+    mode, -ffp-contract=off; `std::sqrt` is FSQRT): the _ss forms were a vector op plus a lane insert per step under
+    sse2neon.
+- **Finding: the Switch build's ERLENG in npart was not exact.** With `SSE2NEON_PRECISE_SQRT=1` (the Switch build's
+  define) sse2neon's `_mm_sqrt_ps` / `_mm_sqrt_ss` on AArch64 take the FRSQRTE + two Newton steps path, not
+  `vsqrtq_f32` (the define only makes sense on ARMv7): dips35's npart::run has one `frsqrte`, dips36 none. This is the
+  long-standing "a64 harness differs from its own oracle" of docs/native-render-study.md (nat-vu1n; qemu's FPCR was the
+  suspect): P and vf5-vf9 of particle runs in pcfight (10 packets), pcwalk (20 packets / 1 memory / 21 registers) and
+  k_ATHN01D (20 / 1 / 20). The only other `_mm_sqrt_ss` in the runtime (ps2FpuSqrtNearest) is in the non-AArch64
+  branch. So the console's particle quads (ribbon builder 0x16d8) now match the PC and the exact engine.
+- Checks (harness m1 / m1a = dips35 + dips36, NCHECK build m1n / m1na with `-DGOW_VU1NAT_PART_NCHECK`, which aborts if
+  an Nv value is not its own view): x86 plain and x86 forced decline identical to f1 on all 40 recordings; GENTEST
+  identical to plain (x86 and a64); NCHECK x86 / a64 no abort, outputs identical to m1 / m1a. a64 differs from f1a in
+  exactly those three recordings' particle runs, where it now equals the oracle and the x86 harness (the remaining
+  line, "second-program runs where the native blocks differ from the exact + hw MAX reference" x86 30 / a64 0, is the
+  same in f1 / f1a).
+  - `refreshViews` at the element loop's head (rn = nrm(rf) for the registers the iteration reads): with the views
+    carried across the loop's back edge (first build, update_dips36, md5 657725fc, not for the console) both copies
+    stayed live and spilled more. Static code of npart::run (aarch64 objdump), dips35 / first build / **dips36**:
+    instructions 14589 / 14812 / **14460**, UMIN (one per operand view) 338 / 187 / **157**, BIC 641 / 506 / **474**,
+    q-register reloads from the stack 363 / 490 / **363**, q stores to the stack 288 / 296 / **180**.
+- Package **update_dips36b** (exefs md5 afc3f2c7, ELF /root/elf_dips36b.elf) = dips35 + dips36 (with refreshViews).
+  Console A/B requested: same session, dips36b then the default, sweep `--levels --only
+  ATHN01D,PAND02B,ATRET01B,OLYMP02,ATHN06C,ARENA14` (out port/switch/sweep/ab_dips36b / ab_dips35b); compare `part`
+  us/run with port/switch/tools_dips12/famab_med.py (part is 18 % of ATHN01D's VU1 native time) and VU1 ms per frame;
+  then SEMO01 (30 pictures/s) and the title boot. Particle pictures (Blades trail, ribbons) should look the same; their
+  ERLENG values now follow the PC.
+- **Handoff (sw-dips13)**: console default unchanged (**update_dips35 + FAILGT**, md5 80608ad3). Sources /root/src-mlang
+  = dips35 + dips36 (refreshViews version; original of the touched file /root/dips36-orig; patch helper /root/dt/mkp.sh).
+  Harnesses /root/vu1h/m2 / m2a (= dips36 VU code; m1 / m1a the first build, m1n / m1na the NCHECK build). Tools
+  port/switch/tools_dips12/lines2.py (per line, first inline frame in a given file) and lines3.py (per inlined function).
+  WSL: sw-boss3 builds through port/switch/boss_sb.sh, which runs /root/dt/dips_sb.sh in a private mount namespace on
+  the same paths: check `pgrep -f "ninja|dips_sb.sh"` before a build. Next levers: the rest of npart (sq / Undo::touch
+  ~13 %, element / body dispatch, maddc's per-FMAC overflow test: an element-level FastOps would need the element's
+  stores deferred), runLit set-up (OLYMP02 / ATRET01B), core 1 for ATHN01D (EE + IOP ~4.6 s per 5 s at 41 fps).

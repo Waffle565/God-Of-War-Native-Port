@@ -1,0 +1,166 @@
+--- a/ps2xRuntime/src/lib/vu/ps2_vu1_nat_part.inl
++++ b/ps2xRuntime/src/lib/vu/ps2_vu1_nat_part.inl
+@@ -144,23 +144,52 @@
+         // at its end (load / store). Every member function is forced inline into run(), all register numbers are constants
+         // there, so GCC's SRA keeps the registers in NEON / general registers instead of VU1State memory (the old W<M>
+         // stored each result and the next R() reloaded it: store-to-load forwarding on the hot path).
++        // sw-dips13: rn[r] == vu1n::nrm(rf[r]) at all times, the operand view kept beside the raw register. Every FMAC
++        // result is clamped (finite: its view is itself, type Nv), so an operand read after one costs nothing (R() was
++        // BIC / UMIN / BSL per operand on the FMAC chains, ~1/5 of npart's samples); a raw write (load, conversion, move,
++        // MFIR) normalises once at the write. GCC drops the views nothing reads (constant indices, SRA).
+         __m128 rf[32];
++        __m128 rn[32];
+         __m128 racc;
+         int32_t rvi[16];
+         float ri, rq, rp;
+         uint32_t rclip;
++        // a value known to be its own operand view (vu1n::nrm(v) == v bit for bit: the clamped FMAC results)
++        struct Nv
++        {
++            __m128 v;
++            VU1N_INLINE operator __m128() const { return v; }
++        };
++#if defined(GOW_VU1NAT_PART_NCHECK)
++        // harness check (natcheck build with -DGOW_VU1NAT_PART_NCHECK): every Nv written is its own view
++        static void ncheck(__m128 v)
++        {
++            alignas(16) uint32_t a[4], b[4];
++            _mm_store_si128(reinterpret_cast<__m128i *>(a), _mm_castps_si128(v));
++            _mm_store_si128(reinterpret_cast<__m128i *>(b), _mm_castps_si128(vu1n::nrm(v)));
++            if (std::memcmp(a, b, 16) != 0)
++            {
++                std::fprintf(stderr, "[vu1nat-part] NCHECK: an Nv value is not its own view\n");
++                std::abort();
++            }
++        }
++#endif
+         // (constant indices only: one variable index would keep the whole array in memory)
+         template <std::size_t... K>
+-        VU1N_INLINE void loadF(std::index_sequence<K...>) { ((rf[K + 1] = vu1n::ldr(s.vf[K + 1])), ...); }
++        VU1N_INLINE void loadF(std::index_sequence<K...>) { ((rf[K + 1] = vu1n::ldr(s.vf[K + 1]), rn[K + 1] = vu1n::nrm(rf[K + 1])), ...); }
+         template <std::size_t... K>
+         VU1N_INLINE void storeF(std::index_sequence<K...>) { (vu1n::str<15>(s.vf[K + 1], rf[K + 1]), ...); }
++        // the views again from the registers (the element loop's head: the views are then dead across its back edge, so
++        // they need no registers / stack slots there; GCC keeps only those the iteration reads)
++        template <std::size_t... K>
++        VU1N_INLINE void refreshViews(std::index_sequence<K...>) { ((rn[K + 1] = vu1n::nrm(rf[K + 1])), ...); }
+         template <std::size_t... K>
+         VU1N_INLINE void loadI(std::index_sequence<K...>) { ((rvi[K] = s.vi[K]), ...); }
+         template <std::size_t... K>
+         VU1N_INLINE void storeI(std::index_sequence<K...>) { ((s.vi[K + 1] = rvi[K + 1]), ...); }
+         VU1N_INLINE void load()
+         {
+-            rf[0] = nrun::vf0();
++            rf[0] = rn[0] = nrun::vf0();
+             loadF(std::make_index_sequence<31>{});
+             loadI(std::make_index_sequence<16>{});
+             racc = vu1n::ldr(s.acc);
+@@ -175,19 +204,34 @@
+         }
+         template <int C>
+         static VU1N_INLINE float lane(__m128 x) { return ((vu1n::vf4)x)[C]; }
+-        VU1N_INLINE __m128 R(int r) const { return r ? vu1n::nrm(rf[r]) : nrun::vf0(); } // operand view (Inf/NaN as +-FLT_MAX; denormals flushed by DAZ in arithmetic)
++        VU1N_INLINE __m128 R(int r) const { return r ? rn[r] : nrun::vf0(); } // operand view (Inf/NaN as +-FLT_MAX; denormals flushed by DAZ in arithmetic)
+         VU1N_INLINE __m128 Raw(int r) const { return r ? rf[r] : nrun::vf0(); }
+         VU1N_INLINE __m128 Iv() const { return _mm_set1_ps(ri); }
+         VU1N_INLINE __m128 Qv() const { return _mm_set1_ps(rq); }
++        // a raw value: its view is normalised here (lane-wise, so the blend of the views is the view of the blend)
+         template <int M>
+         VU1N_INLINE void W(int r, __m128 x)
+         {
+             if (!r)
+                 return;
+             if constexpr (M == 15)
+-                rf[r] = x;
++                rf[r] = x, rn[r] = vu1n::nrm(x);
++            else if constexpr (M != 0)
++                rf[r] = _mm_blend_ps(rf[r], x, M), rn[r] = _mm_blend_ps(rn[r], vu1n::nrm(x), M);
++        }
++        // a clamped FMAC result: the value is its own view
++        template <int M>
++        VU1N_INLINE void W(int r, Nv x)
++        {
++#if defined(GOW_VU1NAT_PART_NCHECK)
++            ncheck(x.v);
++#endif
++            if (!r)
++                return;
++            if constexpr (M == 15)
++                rf[r] = x.v, rn[r] = x.v;
+             else if constexpr (M != 0)
+-                rf[r] = _mm_blend_ps(rf[r], x, M);
++                rf[r] = _mm_blend_ps(rf[r], x.v, M), rn[r] = _mm_blend_ps(rn[r], x.v, M);
+         }
+         template <int M>
+         VU1N_INLINE void WA(__m128 x)
+@@ -207,12 +251,13 @@
+         // FMAC
+         // MAC flags are computed only where the program reads them (addF: the op before FMAND at 0x02a0); the others
+         // only clamp (nat-vu1j: macBitsNeon after every FMAC was ~15 A57 instructions with a NEON -> GPR move)
+-        template <int M> VU1N_INLINE __m128 add(__m128 a, __m128 b) { return vu1n::clampv(_mm_add_ps(a, b)); }
+-        template <int M> VU1N_INLINE __m128 addF(__m128 a, __m128 b) { return nrun::fadd<M>(a, b, mac); }
+-        template <int M> VU1N_INLINE __m128 sub(__m128 a, __m128 b) { return vu1n::clampv(_mm_sub_ps(a, b)); }
+-        template <int M> VU1N_INLINE __m128 mul(__m128 a, __m128 b) { return vu1n::clampv(_mm_mul_ps(a, b)); }
+-        template <int M> VU1N_INLINE __m128 madd(__m128 a, __m128 b) { __m128 raw; return vu1n::maddc<false>(A(), a, b, raw); }
+-        template <int M> VU1N_INLINE __m128 msub(__m128 a, __m128 b) { __m128 raw; return vu1n::maddc<true>(A(), a, b, raw); }
++        // (the results are clamped, or maddc's fast path with |product| and |sum| below FLT_MAX: finite, type Nv)
++        template <int M> VU1N_INLINE Nv add(__m128 a, __m128 b) { return {vu1n::clampv(_mm_add_ps(a, b))}; }
++        template <int M> VU1N_INLINE Nv addF(__m128 a, __m128 b) { return {nrun::fadd<M>(a, b, mac)}; }
++        template <int M> VU1N_INLINE Nv sub(__m128 a, __m128 b) { return {vu1n::clampv(_mm_sub_ps(a, b))}; }
++        template <int M> VU1N_INLINE Nv mul(__m128 a, __m128 b) { return {vu1n::clampv(_mm_mul_ps(a, b))}; }
++        template <int M> VU1N_INLINE Nv madd(__m128 a, __m128 b) { __m128 raw; return {vu1n::maddc<false>(A(), a, b, raw)}; }
++        template <int M> VU1N_INLINE Nv msub(__m128 a, __m128 b) { __m128 raw; return {vu1n::maddc<true>(A(), a, b, raw)}; }
+         template <int C> static __m128 bc(__m128 x) { return vu1n::bc<C>(x); }
+         static __m128 yzx(__m128 x) { return _mm_shuffle_ps(x, x, _MM_SHUFFLE(3, 0, 2, 1)); }
+         static __m128 zxy(__m128 x) { return _mm_shuffle_ps(x, x, _MM_SHUFFLE(3, 1, 0, 2)); }
+@@ -243,28 +288,28 @@
+ 
+         // EFU (the exact engine's formulas; P as queueP leaves it)
+         static float sf(__m128 x) { return _mm_cvtss_f32(x); }
++        // sw-dips13: in scalar float arithmetic (the same IEEE single operations in the same order under the same rounding
++        // and flush mode, -ffp-contract=off: bit-identical); the _ss forms were a vector operation plus a lane insert per
++        // step under sse2neon, on the polynomial's dependency chain
+         VU1N_INLINE void eexp(float x)
+         {
+             static const float c[6] = {0.249998688697815f, 0.031257584691048f, 0.002591371303424f,
+                                        0.000171562001924f, 0.000005430199963f, 0.000000690600018f};
+-            const __m128 xv = _mm_set_ss(vu1n::qnorm(x));
+-            __m128 p = _mm_set_ss(c[5]);
++            const float xv = vu1n::qnorm(x);
++            float p = c[5];
+             for (int k = 4; k >= 0; --k)
+-                p = _mm_add_ss(_mm_set_ss(c[k]), _mm_mul_ss(xv, p));
+-            p = _mm_add_ss(_mm_set_ss(1.0f), _mm_mul_ss(xv, p));
+-            p = _mm_mul_ss(p, p);
+-            p = _mm_mul_ss(p, p);
+-            const float pf = sf(p);
+-            rp = vu1n::qfinish(pf != 0.0f ? sf(_mm_div_ss(_mm_set_ss(1.0f), p)) : FLT_MAX);
++                p = c[k] + xv * p;
++            p = 1.0f + xv * p;
++            p = p * p;
++            p = p * p;
++            rp = vu1n::qfinish(p != 0.0f ? 1.0f / p : FLT_MAX);
+         }
+         VU1N_INLINE void erleng(int r)
+         {
+-            alignas(16) float f[4];
+-            _mm_store_ps(f, Raw(r));
+-            const __m128 x = _mm_set_ss(vu1n::qnorm(f[0])), y = _mm_set_ss(vu1n::qnorm(f[1])), z = _mm_set_ss(vu1n::qnorm(f[2]));
+-            const __m128 sum = _mm_add_ss(_mm_add_ss(_mm_mul_ss(x, x), _mm_mul_ss(y, y)), _mm_mul_ss(z, z));
+-            const __m128 len = _mm_sqrt_ss(sum);
+-            rp = vu1n::qfinish(sf(len) != 0.0f ? sf(_mm_div_ss(_mm_set_ss(1.0f), len)) : sf(len));
++            const __m128 v = Raw(r);
++            const float x = vu1n::qnorm(lane<0>(v)), y = vu1n::qnorm(lane<1>(v)), z = vu1n::qnorm(lane<2>(v));
++            const float len = std::sqrt((x * x + y * y) + z * z);
++            rp = vu1n::qfinish(len != 0.0f ? 1.0f / len : len);
+         }
+ 
+         VU1N_INLINE bool decline(uint32_t pc)
+@@ -1231,6 +1276,7 @@
+             kick(vi(1));
+             for (unsigned guard = 0;; ++guard)
+             {
++                refreshViews(std::make_index_sequence<31>{});
+                 if (guard > 4096u)
+                     return decline(0x0088u);
+                 // element at vi10: the key lists

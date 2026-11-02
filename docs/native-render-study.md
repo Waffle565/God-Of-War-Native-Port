@@ -1520,7 +1520,9 @@ harness (below) gives summaries identical to bb234d3's aarch64 harness; `GOW_VU1
   ...`): the same harness through sse2neon with the Switch build's defines, so the `#if __aarch64__` paths are checked
   on the PC. Under qemu the NEON build differs from its own oracle on some runs already at bb234d3 (pcfight 10 packets,
   pcwalk 20 packets / 1 memory / 21 registers, ...): compare against the aarch64 build of the base commit, not against
-  zero (qemu's FPCR rounding / flush emulation is the suspect, not checked).
+  zero (qemu's FPCR rounding / flush emulation is the suspect, not checked); found 2026-11-02, sw-dips13: not qemu but sse2neon's
+  `_mm_sqrt_ss` in npart's ERLENG, which with SSE2NEON_PRECISE_SQRT=1 is FRSQRTE + Newton on AArch64, inexact; dips36
+  uses std::sqrt and the a64 harness then matches its oracle there, docs/performance.md).
 - **Merges**: agent/natvu1m 9e1cf56 then d32e48d (gs_hw single-pass alpha test, RGB_ONLY select, FAILGT / FAILSPLIT;
   the git-ignored gs_dk_shaders_gen.cpp copied from the natvu1m worktree) and agent/sw-vu1gpu (the deko3d GPU timer
   `GOW_DK_GPU_TIME`, which agent/natvu1 lacked: nv5b1 printed no `[gs-dk-gpu]` lines). One conflict in gs_dk.cpp's
