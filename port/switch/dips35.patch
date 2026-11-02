@@ -1,0 +1,295 @@
+--- a/ps2xRuntime/src/lib/gs/gpu/gs_hw_backend.cpp
++++ b/ps2xRuntime/src/lib/gs/gpu/gs_hw_backend.cpp
+@@ -3610,12 +3610,26 @@
+         rt.lastDrawSeq = ++writeSeq;
+         {
+             // real extent of what was drawn (vertices clipped to the scissor), not the scissor itself
+-            float maxX = 0.0f, maxY = 0.0f;
+-            for (const HwVertex &v : verts)
++            // sw-dips12: four independent max chains (the one-chain loop, a compare + select per vertex on the chain,
++            // was 80 % of draw() in ATHN06C, ~8 % of the GL thread). Same value: the max of the non-NaN x (y) and +0
++            // (std::max keeps the left operand on NaN and on equal values, so -0 never replaces the +0 start; equal
++            // non-zero floats have equal bits), whatever the order.
++            float mx[4] = {0.0f, 0.0f, 0.0f, 0.0f}, my[4] = {0.0f, 0.0f, 0.0f, 0.0f};
++            const size_t nv = verts.size(), n4 = nv & ~size_t(3);
++            const HwVertex *pv = verts.data();
++            for (size_t i = 0; i < n4; i += 4)
++                for (int k = 0; k < 4; ++k)
++                {
++                    mx[k] = std::max(mx[k], pv[i + k].x);
++                    my[k] = std::max(my[k], pv[i + k].y);
++                }
++            for (size_t i = n4; i < nv; ++i)
+             {
+-                maxX = std::max(maxX, v.x);
+-                maxY = std::max(maxY, v.y);
++                mx[0] = std::max(mx[0], pv[i].x);
++                my[0] = std::max(my[0], pv[i].y);
+             }
++            const float maxX = std::max(std::max(mx[0], mx[1]), std::max(mx[2], mx[3]));
++            const float maxY = std::max(std::max(my[0], my[1]), std::max(my[2], my[3]));
+             const uint32_t bx = static_cast<uint32_t>(std::min<float>(std::max(maxX, 0.0f), static_cast<float>(c.scissor.x1 + 1u)));
+             const uint32_t by = static_cast<uint32_t>(std::min<float>(std::max(maxY, 0.0f), static_cast<float>(c.scissor.y1 + 1u)));
+             rt.usedW = std::max<uint32_t>(rt.usedW, std::min<uint32_t>(bx, rt.pxW));
+--- a/ps2xRuntime/src/lib/gs/ps2_gs_memory.cpp
++++ b/ps2xRuntime/src/lib/gs/ps2_gs_memory.cpp
+@@ -1,3 +1,4 @@
++#include <algorithm>
+ #include <array>
+ #include <mutex>
+ 
+@@ -363,12 +364,51 @@
+ 
+     namespace
+     {
++        // GOW-Port (sw-dips11): a row run is cut where it crosses into the next page column; within one piece the page
++        // (PageId: base, bw, x / page width, y / page height) and the table row (block % blocks per page, y % page height)
++        // are the same for every pixel, so they are taken once and each pixel costs its table entry, the address and the
++        // store. Same pixel address, the same bit / byte arithmetic and the same stores in the same order as
++        // PixelStorageTraits<psm>::Write per pixel (exhaustive check against it: scratch wrtest.cpp, sw-dips11).
+         template<PixelStorageMode psm, typename Table, typename Fetch>
+         void writeRunT(const Table& table, u8* data, u32 bp, u32 bw, u32 x, u32 y, u32 count, Fetch fetch)
+         {
+-            using Packed = typename PixelStorageTraits<psm>::PackedT;
+-            for (u32 i = 0; i < count; ++i)
+-                PixelStorageTraits<psm>::Write(table, data, bp, bw, x + i, y, static_cast<Packed>(fetch(i)));
++            using T = PixelStorageTraits<psm>;
++            using Packed = typename T::PackedT;
++            constexpr auto pe = T::PageExtent();
++            const u32 blk = bp % T::BlocksPerPage(), py = y % pe.y;
++            u32 i = 0;
++            while (i < count)
++            {
++                const u32 xi = x + i;
++                const u32 px = xi % pe.x;
++                const u32 seg = std::min<u32>(count - i, static_cast<u32>(pe.x) - px);
++                const u32 page = static_cast<u32>(T::PageId(bp, bw, xi, y));
++                for (u32 k = 0; k < seg; ++k)
++                {
++                    const u32 pixel_addr = static_cast<u32>((page * T::PixelsPerPage()) + table[blk][py][px + k]);
++                    const u32 bits = static_cast<u32>(pixel_addr * UnpackedBitWidth(psm) + T::BitOffset());
++                    const u32 byte_addr = static_cast<u32>((bits / 8) & (MEMORY_SIZE - sizeof(Packed)));
++                    const u32 shift = bits % 8;
++                    u8* ptr = &data[byte_addr];
++                    Packed value = static_cast<Packed>(fetch(i + k));
++                    if constexpr (psm == C24 || psm == Z24)
++                    {
++                        Packed old;
++                        std::memcpy(&old, ptr, sizeof(Packed));
++                        value = (old & 0xFF000000) | (value & 0x00FFFFFF);
++                    }
++                    else if constexpr (psm == P4 || psm == P4HL || psm == P4HH)
++                    {
++                        Packed old;
++                        std::memcpy(&old, ptr, sizeof(Packed));
++                        value = (old & ~(0x0F << shift)) | ((value & 0x0F) << shift);
++                    }
++                    else
++                        (void)shift;
++                    std::memcpy(ptr, &value, sizeof(Packed));
++                }
++                i += seg;
++            }
+         }
+     }
+ 
+--- a/ps2xRuntime/src/lib/vu/ps2_vu1_nat_lit.inl
++++ b/ps2xRuntime/src/lib/vu/ps2_vu1_nat_lit.inl
+@@ -700,6 +700,114 @@
+             // register, then writes the results, ACC and the last FMAC's MAC state once. Its rows are independent (each
+             // starts with a full-width MULA), so the core overlaps them; per row the same operations in the same order.
+             VU1N_INLINE void macLast(int mask, __m128 raw) { macR = (MacBits)raw, macM = static_cast<double>(mask); }
++            // sw-dips12: the strip clip test loop 0x1728-0x17f8 (with 0x1bc8) on locals. The per-op form (Op::add / madd /
++            // msub on VU1State) stored every result and ACC to the register file and reloaded them for the next op
++            // (PAND02B profile: half of runLit's samples, a quarter of those the reloads). Here the same operations in the
++            // same order; the registers the loop touches (vf1 vf2 vf15-19, ACC, vi1-3 vi5 vi6 vi8-11 vi15, CLIP, the last
++            // FMAC's MAC state) stay in NEON / general registers and are written back once at the exit; VU memory is read
++            // and written in place (lq vf1, ilw 928, the sq.w of 0x1bc8 through the undo log). Returns the next pc: 0x1bb0
++            // (vi5 ran out) or 0x1808 (a triangle partly outside: the polygon clipper).
++            uint32_t strip1728()
++            {
++                using vu1n::nrm;
++                const __m128 z0 = nrun::vf0(), zx = bc<0>(z0);
++                const __m128 n22 = V(22), n23 = V(23), w22 = bc<3>(n22), f15w = vu1n::ftoiv<15>(z0);
++                __m128 r1 = raw(1), r2 = raw(2), r15 = raw(15), r16 = raw(16), r17 = raw(17), r18 = raw(18), r19 = raw(19);
++                __m128 acc = A(), mr = _mm_setzero_ps(), t;
++                int mm = 0;
++                uint32_t clip = s.clip;
++                int32_t vi1 = s.vi[1], vi2 = s.vi[2], vi3 = s.vi[3], vi5 = s.vi[5], vi6 = s.vi[6], vi8 = s.vi[8], vi9 = s.vi[9],
++                        vi10 = s.vi[10], vi11 = s.vi[11], vi15 = s.vi[15];
++                const int32_t vi4 = s.vi[4];
++                auto i16 = [](int32_t x) { return static_cast<int32_t>(static_cast<int16_t>(x)); };
++                uint32_t next;
++                for (;;)
++                {
++                    t = _mm_add_ps(nrm(r16), zx); // add.xyzw vf17, vf16, vf0x | iadd vi2, vi2, vi4
++                    r17 = vu1n::clampv(t);
++                    vi2 = i16(vi2 + vi4);
++                    t = _mm_add_ps(nrm(r15), zx); // 0x1730 add.xyzw vf16, vf15, vf0x | lq vf1, 0(vi2)
++                    r16 = vu1n::clampv(t);
++                    r1 = vu1n::ldm(m, qa(vi2));
++                    t = _mm_sub_ps(z0, z0); // 0x1738 suba.xy ACC, vf0, vf0 | ibeq vi5 -> 0x1bb0
++                    acc = _mm_blend_ps(acc, vu1n::clampv(t), 3);
++                    const bool end = vi5 == 0;
++                    t = _mm_add_ps(z0, w22); // delay 0x1740 addaw.z ACC, vf0, vf22w | isubiu vi5, vi5, 1
++                    acc = _mm_blend_ps(acc, vu1n::clampv(t), 4);
++                    vi5 = i16(vi5 - 1);
++                    if (end)
++                    {
++                        mr = t, mm = 4;
++                        next = 0x1bb0u;
++                        break;
++                    }
++                    vi8 = i16(vi10 & vi11); // 0x1748
++                    const __m128 n1 = nrm(r1);
++                    t = _mm_add_ps(nrm(r19), bc<2>(n1)); // 0x1750 addz.w vf15, vf19, vf1z | ior vi9, vi10, vi11
++                    r15 = _mm_blend_ps(r15, vu1n::clampv(t), 8);
++                    const uint32_t macW = vu1n::macValRt(t, 8u); //   (its MAC flags: the FMAND at 0x1770 reads them)
++                    vi9 = i16(vi10 | vi11);
++                    r2 = _mm_blend_ps(r2, vu1n::maddc<false>(acc, n1, n22, t), 7); // 0x1758 madd.xyz vf2, vf1, vf22 | iadd vi11, vi10, vi0
++                    vi11 = vi10;
++                    vi1 = i16(vu1n::laneBits16<3>(r1)); // 0x1760 madd.xyz vf15, vf1, vf23 | mtir vi1, vf1w
++                    r15 = _mm_blend_ps(r15, vu1n::maddc<false>(acc, n1, n23, t), 7);
++                    r18 = _mm_blend_ps(r18, vu1n::maddc<true>(acc, n1, n22, t), 3); // 0x1768 msub.xy vf18 | iaddiu vi15, vi0, 16
++                    vi15 = 16;
++                    r19 = _mm_blend_ps(r19, vu1n::maddc<true>(acc, n1, n23, t), 3); // 0x1770 msub.xy vf19 | fmand vi15, vi15
++                    mr = t, mm = 3;
++                    vi15 = i16(static_cast<int32_t>(macW & static_cast<uint32_t>(vi15) & 0xFFFFu));
++                    const __m128 n15 = nrm(r15);
++                    clip = vu1n::clipValv(nrm(r2), n15, clip); // 0x1778 clip.xyz vf2, vf15w | ibeq vi15 -> 0x17a0
++                    const bool wide = vi15 == 0; // w >= 0 not set: the second frustum pair (0x17a0, nat-vu1h)
++                    clip = vu1n::clipValv(n15, n15, clip); // delay 0x1780 clip.xyz vf15, vf15w | iaddiu vi3, vi0, 63
++                    vi3 = 63;
++                    if (wide)
++                    {
++                        clip = vu1n::clipValv(nrm(r18), n15, clip); // 0x17a0 clip.xyz vf18, vf15w | mfir.x vf1, vi10
++                        r1 = _mm_blend_ps(r1, _mm_castsi128_ps(_mm_set1_epi32(static_cast<int16_t>(vi10))), 1);
++                        clip = vu1n::clipValv(nrm(r19), n15, clip); // 0x17a8 clip.xyz vf19, vf15w | iaddiu vi15, vi0, 3055
++                        vi15 = 3055;
++                        vi10 = i16(vu1n::laneBits16<0>(r1));              // 0x17b0 mtir vi10, vf1x
++                        vi10 = i16(static_cast<int32_t>(clip & 0xFFFu)); // 0x17b8 fcget vi10 (both clips)
++                        vi10 = i16(vi15 - vi10);                          // 0x17c0 isub vi10, vi15, vi10
++                    }
++                    else
++                    {
++                        vi10 = i16(vu1n::laneBits16<0>(r19));             // 0x1788 mtir vi10, vf19x
++                        vi10 = i16(static_cast<int32_t>(clip & 0xFFFu)); // 0x1790 b -> 0x17c8; delay fcget vi10
++                    }
++                    r1 = _mm_blend_ps(r1, f15w, 8); // 0x17c8 ftoi15.w vf1, vf0 | ibltz vi1 -> 0x1728
++                    const bool adc = vi1 < 0;
++                    vi8 = i16(vi8 & vi10); // delay 0x17d0
++                    if (adc)
++                        continue;
++                    vi9 = i16(vi9 | vi10);
++                    vi9 = i16(vi9 & vi3);
++                    const bool out = vi8 != 0; // 0x17e8 ibne vi8 -> 0x1bc8; delay ilw.x vi8, 928
++                    vi8 = i16(ilw(928, 0));
++                    if (out)
++                    {
++                        u.log(m, static_cast<uint32_t>(vi2) & 0x3FFu); // 0x1bc8 b -> 0x1728; delay sq.w vf1, 0(vi2): the ADC bit
++                        vu1n::stmT<8>(m, qa(vi2), r1);
++                        continue;
++                    }
++                    const bool inside = vi9 == 0; // 0x17f8 ibeq vi9 -> 0x1728; delay iaddiu vi6, vi0, 0
++                    vi6 = 0;
++                    if (!inside)
++                    {
++                        next = 0x1808u;
++                        break;
++                    }
++                }
++                vu1n::str<15>(s.vf[1], r1), vu1n::str<15>(s.vf[2], r2), vu1n::str<15>(s.vf[15], r15);
++                vu1n::str<15>(s.vf[16], r16), vu1n::str<15>(s.vf[17], r17), vu1n::str<15>(s.vf[18], r18);
++                vu1n::str<15>(s.vf[19], r19), vu1n::str<15>(s.acc, acc);
++                s.vi[1] = vi1, s.vi[2] = vi2, s.vi[3] = vi3, s.vi[5] = vi5, s.vi[6] = vi6, s.vi[8] = vi8, s.vi[9] = vi9;
++                s.vi[10] = vi10, s.vi[11] = vi11, s.vi[15] = vi15;
++                s.clip = clip;
++                macLast(mm, mr);
++                return next;
++            }
+             // 0x0428-0x0478 / 0x0ec8-0x0f18: second matrix vf12-15 = (vf20-23 - vf12-15 at 16(ITOP + vf1.w)) * I
+             // per k: mulai.xyzw ACC, vf2x, I | lq.xyzw vf1x, 16 + k(vi11); msubi.xyzw vf1x, vf1x, I (the loaded value only
+             // feeds the MSUBI, whose full write replaces it)
+@@ -1622,80 +1730,9 @@
+                 if (!nclip::secondPass(v, mem, code, packets, declinePc, unlit != 0, pc))
+                     return false;
+                 continue;
+-            case 0x1728:
+-            {
+-                v.add<15>(17, v.V(16), Op::bc<0>(v.V(0))); // | iadd vi2, vi2, vi4
+-                v.seti(2, v.vi(2) + v.vi(4));
+-                v.add<15>(16, v.V(15), Op::bc<0>(v.V(0))); // 0x1730 | lq vf1, 0(vi2)
+-                v.lq<15>(1, v.vi(2));
+-                v.suba<3>(v.V(0), v.V(0)); // 0x1738 | ibeq vi5 -> 0x1bb0
+-                const bool end = v.vi(5) == 0;
+-                v.adda<4>(v.V(0), Op::bc<3>(v.V(22))); // delay 0x1740 addaw.z | isubiu vi5, vi5, 1
+-                v.seti(5, v.vi(5) - 1);
+-                if (end)
+-                {
+-                    pc = 0x1bb0u;
+-                    continue;
+-                }
+-                v.seti(8, v.vi(10) & v.vi(11));             // 0x1748
+-                v.add<8>(15, v.V(19), Op::bc<2>(v.V(1)));   // 0x1750 addz.w vf15, vf19, vf1z | ior vi9, vi10, vi11
+-                const uint32_t macW = v.macNow();              //   (its MAC flags: the FMAND at 0x1770 reads them)
+-                v.seti(9, v.vi(10) | v.vi(11));
+-                v.madd<7>(2, v.V(1), v.V(22));              // 0x1758 | iadd vi11, vi10, vi0
+-                v.seti(11, v.vi(10));
+-                v.seti(1, vu1n::laneBits16<3>(v.raw(1)));   // 0x1760 madd.xyz vf15, vf1, vf23 | mtir vi1, vf1w
+-                v.madd<7>(15, v.V(1), v.V(23));
+-                v.msub<3>(18, v.V(1), v.V(22));             // 0x1768 | iaddiu vi15, vi0, 16
+-                v.seti(15, 16);
+-                v.msub<3>(19, v.V(1), v.V(23));             // 0x1770 | fmand vi15, vi15
+-                v.seti(15, static_cast<int32_t>(macW & static_cast<uint32_t>(v.vi(15)) & 0xFFFFu));
+-                s.clip = vu1n::clipValv(v.V(2), v.V(15), s.clip); // 0x1778 clip.xyz vf2, vf15w | ibeq vi15 -> 0x17a0
+-                const bool wide = v.vi(15) == 0; // w >= 0 not set: the second frustum pair (0x17a0, nat-vu1h)
+-                s.clip = vu1n::clipValv(v.V(15), v.V(15), s.clip); // delay 0x1780 clip.xyz vf15, vf15w | iaddiu vi3, vi0, 63
+-                v.seti(3, 63);
+-                if (wide)
+-                {
+-                    s.clip = vu1n::clipValv(v.V(18), v.V(15), s.clip); // 0x17a0 clip.xyz vf18, vf15w | mfir.x vf1, vi10
+-                    v.mfir<1>(1, 10);
+-                    s.clip = vu1n::clipValv(v.V(19), v.V(15), s.clip); // 0x17a8 clip.xyz vf19, vf15w | iaddiu vi15, vi0, 3055
+-                    v.seti(15, 3055);
+-                    v.seti(10, vu1n::laneBits16<0>(v.raw(1)));         // 0x17b0 mtir vi10, vf1x (stalls on the MFIR)
+-                    v.seti(10, static_cast<int32_t>(s.clip & 0xFFFu)); // 0x17b8 fcget vi10 (both clips)
+-                    v.seti(10, v.vi(15) - v.vi(10));                   // 0x17c0 isub vi10, vi15, vi10
+-                }
+-                else
+-                {
+-                    v.seti(10, vu1n::laneBits16<0>(v.raw(19))); // 0x1788 mtir vi10, vf19x
+-                    v.seti(10, static_cast<int32_t>(s.clip & 0xFFFu)); // 0x1790 b -> 0x17c8; delay fcget vi10
+-                }
+-                v.W<8>(1, vu1n::ftoiv<15>(v.V(0))); // 0x17c8 ftoi15.w vf1, vf0 | ibltz vi1 -> 0x1728
+-                const bool adc = v.vi(1) < 0;
+-                v.seti(8, v.vi(8) & v.vi(10)); // delay 0x17d0
+-                if (adc)
+-                {
+-                    pc = 0x1728u;
+-                    continue;
+-                }
+-                v.seti(9, v.vi(9) | v.vi(10));
+-                v.seti(9, v.vi(9) & v.vi(3));
+-                const bool out = v.vi(8) != 0; // 0x17e8 ibne vi8 -> 0x1bc8; delay ilw.x vi8, 928
+-                v.seti(8, v.ilw(928, 0));
+-                if (out)
+-                {
+-                    v.sq<8>(1, v.vi(2)); // 0x1bc8 b -> 0x1728; delay sq.w vf1, 0(vi2): the ADC bit
+-                    pc = 0x1728u;
+-                    continue;
+-                }
+-                const bool inside = v.vi(9) == 0; // 0x17f8 ibeq vi9 -> 0x1728; delay iaddiu vi6, vi0, 0
+-                v.seti(6, 0);
+-                if (!inside)
+-                {
+-                    pc = 0x1808u; // the polygon clipper (ps2_vu1_nat_clip.inl, nat-vu1h)
+-                    continue;
+-                }
+-                pc = 0x1728u;
++            case 0x1728: // the strip clip test loop (sw-dips12: Op::strip1728, on locals)
++                pc = v.strip1728();
+                 continue;
+-            }
+             case 0x1bb0:
+             {
+                 v.add<4>(8, v.V(0), Op::bc<3>(v.V(0))); // addw.z vf8, vf0, vf0w | ilw.x vi1, 928

@@ -1312,3 +1312,48 @@ Mean < 50 and min < 40: ATHN06C, ATHN01D, PAND02B, fight_ATHN01D. Game speed 0.9
   GS stage thread on core 3, ~50 % idle), runLit (15-25 % of the VU1 thread everywhere: per-run prologue, `switch (pc)`
   tree), windLoop (PAND02B 5.4 %, ATRET01B 3.3 %: exact per-op form with MAC flags / FMEQ, FastOps needs the flag
   evaluation kept), kCullClip 3-4 %. Fights stay GPU-bound (sw-dips10's list).
+
+## dips34's mixed VU1 us/run explained; strip clip loop on locals, draw() extent loop (sw-dips12, 2026-11-02)
+- **The mixed VU1 us/run of the dips34 A/B (ab_dips34 vs ab_dips32b) is not a slower loop.** Per family
+  (port/switch/tools_dips12/famab.py: means; famab_med.py: median of the per-window us/run, then the zone's us/run at
+  the baseline's family mix): the "losses" came from single spike windows (ARENA14: one window with 39f38df4 at
+  132.8 us/run and one with 3d0d1206 at 56.8; PAND02B: 39f38df4 102.5; ATHN01D's baseline: 93febeec 34.8 and 140.5;
+  hitches / warp captures, ~1 window in 30) and from the walk content (ATHN06B: 39f38df4's share 0.12 vs 0.21, the
+  baseline ended in a lighter place: GS GL busy 2.5 s vs 3.8 s). At the same mix with medians dips34 is faster or
+  equal everywhere: PAND02B -8.6 %, OLYMP02 -7.1, ATHN06C -4.1, ATHN04C -2.4, ATHN06B -0.9, ATHN01D -0.8, ATRET01B
+  -0.5, ARENA14 -0.4. Per loop: the dips34 nmisc loops -16..-38 % (kind21 / loopF38d -18..-26, kind12 colDivLoop -16..-38,
+  kind7 texDivLoop -21..-28, kind11 -11..-28), 6df5c750 (unlit11Loop) -5 %; no loop slower. Only 39f38df4 (untouched)
+  is +1.4..1.9 % in every zone (code layout of runLit, not attributable). VU1 ms per frame (vu_ms / fps): PAND02B 17.5
+  vs 19.4, OLYMP02 16.3 vs 17.6. ARENA14's fps gain (51.8 vs 49.4) is the GS side (WriteRun). So dips34 has no losers
+  to drop; it stays whole in the next package.
+- Profiles by source line (port/switch/tools_dips12/lines.py <elf> <pcs> <lo-hi s> <symbol prefix>: samples of one
+  function per innermost / outermost source line via addr2line -i): in PAND02B half of runLit's samples (12 % of the
+  VU1 thread) are the strip clip test loop 0x1728-0x17f8 (case 0x1728), a quarter of those the register-file reloads
+  (`vu1n::ldr`) of the per-op form. In OLYMP02 / ATRET01B runLit's time is spread over the set-up cases (no single
+  hot spot). GS GL thread ATHN06C: `draw()` is 80 % one loop (the drawn extent, maxX / maxY over the batch's vertices:
+  ~8 % of the thread); addVertexC is mostly the emplace (stores of the new vertex, 43 %), the Z conversion ~20 %;
+  submitKicks' top line is the stall after the kick-flag load (the stage thread's data). Moving the conversion to the
+  stage thread would move the same cross-core reads to the GL thread's copy of HwVertex (52 bytes instead of 40): not
+  pursued.
+- dips35 (port/switch/dips35.patch, full diff from dips34):
+  - `Op::strip1728` (ps2_vu1_nat_lit.inl): the strip clip test loop on locals (vf1 vf2 vf15-19, ACC, the vi it uses,
+    CLIP, the last FMAC's MAC state in registers, written back once at the exit), same operations in the same order
+    as the per-op form; VU memory in place (lq, ilw 928, 0x1bc8's sq.w through the undo log). Natcheck harness g7 / g7a:
+    x86 plain, x86 forced decline, a64 identical to f1 on all 40 recordings; GENTEST identical to plain. Coverage
+    (counting build g7c): 17 of the 40 recordings run it, 1972 calls, 82 021 passes (880 through the second frustum pair, 35 558 marked outside (0x1bc8), 558 to the clipper).
+  - draw()'s extent loop with four independent max chains (gs_hw_backend.cpp): same maxX / maxY bits (max of the non-NaN
+    values and +0, order-independent). Check: tools_dips12/maxtest.cpp, 2 M vertex sets (random bits incl. NaN / Inf /
+    -0 / denormals, coordinates), x86 and a64 (qemu): no difference.
+- Package **update_dips35** (exefs md5 80608ad3, ELF /root/elf_dips35.elf) = dips32 + dips34 + dips35. Console A/B
+  requested (same session, dips35 then the default): sweep `--levels --only PAND02B,ATRET01B,OLYMP02,ATHN01D,ATHN06C,ARENA14`
+  with `--package update_dips35` (out port/switch/sweep/ab_dips35) and on the default (ab_dips32c); compare per zone the
+  VU1 ms per frame (`[gsw-split] vu_ms` / fps), famab_med.py per family (strip1728 shows in the lit families' us/run,
+  most in PAND02B) and the GS GL busy per frame (ATHN06C, ARENA14); then SEMO01 (30 pictures/s) and the title boot.
+- **Handoff (sw-dips12 stopped here)**: console default unchanged (**update_dips32 + FAILGT**, md5 c0893f9b). Sources
+  /root/src-mlang = dips32 + dips34 + dips35 (originals of the dips35 files: /root/dips35-orig; the old case 0x1728
+  body: /root/dips35_old1728.txt). Harnesses /root/vu1h/g7 / g7a (= dips35 VU code), counting build g7c. Tools
+  port/switch/tools_dips12: famab.py / famab_med.py (per-family A/B of two sweep dirs), lines.py (per-line profile of
+  one function), enttime.sh (harness per-entry us/run), maxtest.cpp. Next levers: runLit's set-up cases in OLYMP02 /
+  ATRET01B (spread over the set-up cases, dips32 lit.inl lines 1327 / 1373 / 1379 / 1343 / 1057 on top: lines.py), windLoop and kCullClip
+  (PAND02B 5.4 / 3.8 %), the GL thread's addVertexC emplace (stores; a fixed-size pending block written with plain
+  stores instead of emplace_back's default-member-initialised construction).
