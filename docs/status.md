@@ -1174,3 +1174,10 @@ Run: `python -I tools/zones.py --slots 1,2,3,4` (scale: `PS2X_GS_HW_SCALE`); sav
   **Console default = update_dips35 + FAILGT** (exefs md5 80608ad3); tools/switch_default.sh updated. The default
   dips32 had crashed once in an A/B (ATHN03D, JALR to 0 from 0x1d6d44 during the new-game load,
   port/switch/sweep/ab_dips32b/20261102_0155); 12 later ATHN03D boots on sw-crash2's diagnostic packages: no repeat.
+- 2026-11-02 (sw-boss3 for sw-dips14): **update_dips37c** (= dips35 + dips37 with the exact ERLENG fix,
+  docs/performance.md) replaces dips35. Level A/B (same session, port/switch/sweep/ab_dips37c vs ab_dips35c, fps
+  min/mean): ATHN01D 42.2/49.4 vs 37.8/42.9, ATHN06C 53.0/56.6 vs 35.6/53.6, ATRET01B 57.2/59.7 vs 45.8/48.6, PAND02B
+  48.6/57.3 vs 46.0/49.3 (most of the mean gain is likely the capture-writer fix: the 35c windows hold ~3 s PPM stalls);
+  EE + IOP ms per frame 18.3/15.3, 18.0/17.7, 13.9/18.4; screenshots identical. SEMO01 30.0 pictures/s and 4 clean
+  title boots (port/switch/sweep/semo_dips37c_1..4). **Console default = update_dips37c + FAILGT** (exefs md5
+  c9248241); tools/switch_default.sh updated. (dips36b was A/B'd before and not taken: port/switch/sweep/ab_dips36b.)
