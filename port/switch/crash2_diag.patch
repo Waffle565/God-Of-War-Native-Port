@@ -1,0 +1,212 @@
+--- a/ps2xRuntime/src/lib/ps2_runtime.cpp	2026-11-02 03:37:16.903762300 +0100
++++ b/ps2xRuntime/src/lib/ps2_runtime.cpp	2026-11-02 03:34:35.376906500 +0100
+@@ -1535,6 +1535,8 @@
+     m_missingFunctionReported.store(false, std::memory_order_release);
+ }
+ 
++void gowCrashExtra(uint8_t *rdram, R5900Context *ctx, const char *why); // sw-crash2 diagnostics, below
++
+ void PS2Runtime::reportMissingFunction(uint8_t *rdram,
+                                        R5900Context *ctx,
+                                        uint32_t targetPc,
+@@ -1673,6 +1675,7 @@
+             std::lock_guard<std::mutex> lock(s_missingFunctionLogMutex);
+             std::cerr << oss.str() << std::endl;
+         }
++        gowCrashExtra(rdram, ctx, "missing-target");
+     }
+ 
+     if (firstReport && policy == MissingFunctionPolicy::BreakOnce)
+@@ -1706,6 +1709,151 @@
+         std::fprintf(stderr, "  src=%08x dst=%08x ra=%08x kind=%u\n", r.src, r.dst, r.ra, r.kind);
+     }
+ }
++// sw-crash2 diagnostics (docs/diagnostics.md "EE crash diagnostics").
++// gowCrashExtra: on the first guest crash report, all GPRs, the branch ring and (GOW_CRASH_DUMP=<path prefix>) the 32 MB
++// EE RAM to <prefix>_<why>.bin.
++static double gowDiagSeconds()
++{
++    static const auto start = std::chrono::steady_clock::now();
++    return std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
++}
++static PS2Runtime *g_gowDiagRuntime = nullptr; // for the IOP RAM dump
++static void gowDumpRam(uint8_t *rdram, const char *why)
++{
++    static const char *prefix = std::getenv("GOW_CRASH_DUMP");
++    static int dumps = 0;
++    if (!prefix || !rdram || dumps >= 3)
++        return;
++    ++dumps;
++    const std::string path = std::string(prefix) + "_" + why + ".bin";
++    if (std::FILE *file = std::fopen(path.c_str(), "wb"))
++    {
++        std::fwrite(rdram, 1, PS2_RAM_SIZE, file);
++        std::fclose(file);
++        std::fprintf(stderr, "[gow-crash] EE RAM dumped to %s\n", path.c_str());
++    }
++    else
++        std::fprintf(stderr, "[gow-crash] cannot write %s\n", path.c_str());
++    if (g_gowDiagRuntime)
++    {
++        std::vector<uint8_t> iop(0x200000u);
++        if (g_gowDiagRuntime->readIopMemory(0u, iop.data(), iop.size()))
++            if (std::FILE *file = std::fopen((std::string(prefix) + "_" + why + "_iop.bin").c_str(), "wb"))
++            {
++                std::fwrite(iop.data(), 1, iop.size(), file);
++                std::fclose(file);
++            }
++    }
++}
++void gowCrashExtra(uint8_t *rdram, R5900Context *ctx, const char *why)
++{
++    if (ctx)
++    {
++        std::string line = "[gow-crash] " + std::string(why) + " t=" + std::to_string(gowDiagSeconds()) + " gpr:";
++        for (int i = 1; i < 32; ++i)
++        {
++            char buf[24];
++            std::snprintf(buf, sizeof buf, " %d=%x", i, (uint32_t)_mm_cvtsi128_si32(ctx->r[i]));
++            line += buf;
++        }
++        std::fprintf(stderr, "%s\n", line.c_str());
++    }
++    if (rdram)
++    {
++        // GoW: player controller *0x29CD58 (its +0 = player object) and pool *0x29C708 (0x24-byte nodes).
++        auto rd = [rdram](uint32_t a) { uint32_t v = 0; a &= 0x01FFFFFCu; std::memcpy(&v, rdram + a, 4); return v; };
++        const uint32_t g = rd(0x29CD58u) & 0x01FFFFFFu;
++        std::fprintf(stderr, "[gow-crash] ctl=%x [%x %x %x %x] low[c0]=%x %x %x %x %x state=%u levelReady=%u pool=%x head=%x\n",
++                     g, rd(g), rd(g + 4), rd(g + 8), rd(g + 12), rd(0xC0), rd(0xC4), rd(0xC8), rd(0xCC), rd(0xD0),
++                     rd(0x29E560u), rd(0x29E584u), rd(0x29C708u), rd((rd(0x29C708u) & 0x01FFFFFFu) + 0x10u));
++    }
++    std::fflush(stderr);
++    gowDumpBranchRing(why);
++    gowDumpRam(rdram, why);
++    std::fflush(stderr);
++}
++// GOW_POOL_CHECK=1: checks the game's 0x24-byte node pool (*0x29C708; alloc 0x13DA10, free 0x13DB18; free list at
++// pool+0x10, link at block+0). At every alloc/free the first 256 free entries must be blocks of the pool and a freed
++// block must be a block that is not free already; every 50 ms (checked at guest calls) the whole free list is walked
++// (blocks of the pool, no cycle). The first faults are logged with the branch ring (and RAM dumps with
++// GOW_CRASH_DUMP); every 5 s [gow-pool] gives the free count. GOW_POOL_LOG=1 also logs every alloc/free.
++static void gowPoolCheck(uint8_t *rdram, R5900Context *ctx, uint32_t targetPc)
++{
++    const bool op = targetPc == 0x13DA10u || targetPc == 0x13DB18u;
++    static double nextWalk = 0;
++    static uint32_t calls = 0;
++    if (!op && ((++calls & 0x3FFu) != 0u || gowDiagSeconds() < nextWalk))
++        return;
++    auto rd = [rdram](uint32_t a) { uint32_t v = 0; a &= 0x01FFFFFCu; std::memcpy(&v, rdram + a, 4); return v; };
++    const uint32_t pool = rd(0x29C708u) & 0x01FFFFFFu;
++    if (pool < 0x100000u || (op && pool != ((uint32_t)_mm_cvtsi128_si32(ctx->r[4]) & 0x01FFFFFFu)))
++        return;
++    uint16_t align = 0, grow = 0;
++    std::memcpy(&align, rdram + pool + 0xC, 2);
++    std::memcpy(&grow, rdram + pool + 0xE, 2);
++    const uint32_t size = rd(pool + 8u);
++    if (align == 0u || size == 0u || grow != 0u)
++        return;
++    const uint32_t first = pool + 0x18u + (align - (pool + 0x18u) % align) % align;
++    const uint32_t limit = first + size * 8192u;
++    auto valid = [&](uint32_t p) { return p >= first && p < limit && p < 0x02000000u && (p - first) % size == 0u; };
++    static int faults = 0;
++    static double nextCount = 0;
++    static const bool opLog = [] { const char *v = std::getenv("GOW_POOL_LOG"); return v && v[0] == '1'; }();
++    const double now = gowDiagSeconds();
++    const uint32_t block = (uint32_t)_mm_cvtsi128_si32(ctx->r[5]);
++    const char *fault = nullptr;
++    uint32_t bad = 0, index = 0, from = 0;
++    if (op)
++    {
++        if (opLog)
++            std::fprintf(stderr, "[gow-pool-op] %s block=%x head=%x ra=%x t=%.3f state=%u\n", targetPc == 0x13DA10u ? "alloc" : "free",
++                         targetPc == 0x13DA10u ? rd(pool + 0x10u) : block, rd(pool + 0x10u),
++                         (uint32_t)_mm_cvtsi128_si32(ctx->r[31]), now, rd(0x29E560u));
++        if (targetPc == 0x13DB18u && !valid(block))
++            fault = "free of a non-block", bad = block;
++        uint32_t p = rd(pool + 0x10u), prev = pool + 0x10u;
++        for (uint32_t i = 0; !fault && p != 0u && i < 256u; ++i, prev = p, p = rd(p))
++        {
++            if (!valid(p))
++                fault = "bad free-list entry", bad = p, index = i, from = prev;
++            else if (targetPc == 0x13DB18u && p == block)
++                fault = "double free", bad = p, index = i, from = prev;
++        }
++    }
++    else
++    {
++        nextWalk = now + 0.05;
++        uint32_t p = rd(pool + 0x10u), prev = pool + 0x10u, i = 0;
++        for (; p != 0u && i < 8192u; ++i, prev = p, p = rd(p))
++            if (!valid(p))
++            {
++                fault = "bad free-list entry (walk)", bad = p, index = i, from = prev;
++                break;
++            }
++        if (!fault && i >= 8192u)
++            fault = "free-list cycle (walk)", bad = p, index = i;
++    }
++    if (now >= nextCount)
++    {
++        nextCount = now + 5.0;
++        uint32_t n = 0;
++        for (uint32_t q = rd(pool + 0x10u); q != 0u && valid(q) && n < 9000u; q = rd(q))
++            ++n;
++        std::fprintf(stderr, "[gow-pool] t=%.1f pool=%x first=%x size=%x free=%u state=%u levelReady=%u\n", now, pool, first,
++                     size, n, rd(0x29E560u), rd(0x29E584u));
++    }
++    if (fault && faults < 4)
++    {
++        ++faults;
++        std::fprintf(stderr, "[gow-pool] FAULT %s: %s block=%x bad=%x index=%u link-at=%x head=%x fn=%x ra=%x t=%.2f state=%u\n",
++                     op ? (targetPc == 0x13DA10u ? "alloc" : "free") : "walk", fault, op ? block : 0u, bad, index, from,
++                     rd(pool + 0x10u), targetPc, (uint32_t)_mm_cvtsi128_si32(ctx->r[31]), now, rd(0x29E560u));
++        if (faults == 1)
++            gowCrashExtra(rdram, ctx, "pool");
++    }
++}
++static const bool g_gowPoolCheck = [] { const char *v = std::getenv("GOW_POOL_CHECK"); return v && v[0] == '1'; }();
+ // GOW-Port: GOW_EE_SAMPLE=<hz>: guest-function sampling profile of the EE thread (exclusive: the innermost guest function
+ // entered through dispatchGuestBranch, plus the thread's perf bucket). Printed every 5 s as [ee-prof].
+ std::atomic<uint32_t> g_gowCurFn{0};
+@@ -1770,6 +1918,11 @@
+     // Guest code runs on the EE executor thread only: a relaxed load/store pair instead of a locked fetch_add.
+     { const uint32_t pos = g_gowRingPos.load(std::memory_order_relaxed); g_gowRingPos.store(pos + 1u, std::memory_order_relaxed);
+       g_gowRing[pos & 255u] = {sourcePc, targetPc, ctx ? (uint32_t)_mm_cvtsi128_si32(ctx->r[31]) : 0u, (uint32_t)kind}; }
++    if (g_gowPoolCheck && rdram && ctx)
++    {
++        g_gowDiagRuntime = this;
++        gowPoolCheck(rdram, ctx, targetPc);
++    }
+ 
+     ctx->pc = targetPc;
+     const bool isCall = (kind == GuestBranchKind::DirectCall || kind == GuestBranchKind::IndirectCall);
+--- a/ps2xIOP/src/emulator/imports/iop_cdvd.cpp	2026-11-02 03:37:16.909435782 +0100
++++ b/ps2xIOP/src/emulator/imports/iop_cdvd.cpp	2026-11-02 03:04:10.181948946 +0100
+@@ -8,6 +8,9 @@
+ #include "ps2x/iop/ps2_path.h"
+ 
+ #include <algorithm>
++#include <chrono>
++#include <cstdlib>
++#include <thread>
+ #include <array>
+ #include <cctype>
+ #include <cstring>
+@@ -234,6 +237,16 @@
+             case 6: // sceCdRead
+             {
+                 const bool ok = readSectors(a0, a1, a2);
++                // GOW_CD_READ_DELAY_MS=<ms>[:<from s>] (debug): host sleep per sceCdRead after <from> seconds, to
++                // stretch level loads in wall time (load-timing races, docs/diagnostics.md).
++                static const char *delayEnv = std::getenv("GOW_CD_READ_DELAY_MS");
++                if (delayEnv)
++                {
++                    static const auto start = std::chrono::steady_clock::now();
++                    static const double from = std::strchr(delayEnv, ':') ? std::atof(std::strchr(delayEnv, ':') + 1) : 0.0;
++                    if (std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count() >= from)
++                        std::this_thread::sleep_for(std::chrono::milliseconds(std::atoi(delayEnv)));
++                }
+                 // GOW_CD_TRACE=1 (debug): every sceCdRead (lsn, sectors, IOP destination, result)
+                 static const bool trace = std::getenv("GOW_CD_TRACE") != nullptr;
+                 if (trace)

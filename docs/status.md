@@ -1096,6 +1096,12 @@ Run: `python -I tools/zones.py --slots 1,2,3,4` (scale: `PS2X_GS_HW_SCALE`); sav
   Log: port/switch/sweep/ab2_dips5/20261031_1208/ATHN02A/log.txt. Not reproduced in 12 later title boots (dips4,
   dips6, dips7); the GS texture hash changes cannot feed data back to the EE, so it looks like a timing-dependent EE
   race. If it appears again in any run: stop and investigate.
+  2026-11-02 (sw-crash2): seen again on the default dips32 (port/switch/sweep/ab_dips32b/20261102_0155/ATHN03D,
+  t=56 s), byte-identical registers and call trace. Analysis in docs/game-internals.md "Node pool and the
+  0x1D6D44 crash": the player controller's object pointer was overwritten by a pool node placed at a bogus address
+  (the 0x24-byte node pool's free list was corrupted before the load's node creation). Only these 2 of 212 sweep
+  new-game boots had levelReady=0 at 50 s. Diagnostic package update_crash2b (port/switch/crash2_diag.patch,
+  GOW_POOL_CHECK / GOW_CRASH_DUMP / GOW_CD_READ_DELAY_MS, docs/diagnostics.md) waits for console runs.
 - 2026-10-31 (sw-dips2): **update_dips7** = update_dips4 sources + port/switch/dips7.patch changes (per-256-byte-block
   hash cache for the texture revalidation, vertex path: per-run constants, reserved vectors, no range insert, kick
   prefetch). A/B vs dips4 same session (port/switch/sweep/ab3_*): GS thread 4-10 % less time per vertex; mean fps

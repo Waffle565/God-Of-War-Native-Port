@@ -162,6 +162,47 @@ every case: 11 frees, 11 reports. The game kept running (port/shipcrash/selftest
 - Status: contained by the guard; root cause (the early delete site) still open, waiting for a user log with
   `[gow-heapguard]` lines from a fight that shows the enemy meter.
 
+## Node pool and the 0x1D6D44 crash (sw-crash2, 2026-11-02; open)
+
+### The crash
+- Console only, twice in ~210 sweep new-game boots (port/switch/sweep/ab2_dips5/20261031_1208/ATHN02A,
+  ab_dips32b/20261102_0155/ATHN03D). Both logs show `JALR source=0x1d6d44 target=0` with byte-identical registers and
+  call traces.
+- 0x1D6CD0 is the player controller's per-frame update. The caller 0x21FDA0 runs it every frame in state 4
+  (loading), 0xB-0xE and 0x12, on `*0x29CD58`.
+- The controller is P+0x10 of a 0x230-byte object (ctor 0x244F18, controller ctor 0x1D5DA0 / dtor 0x1D5DF0). Its +0
+  is the player object, vtable at +4. 0x1D6CD0 calls the virtual at vtable+0x68/+0x6C.
+- In the crash, controller+0 was 0x30dc0051. Those are the bytes of two pool-node pointers (0x0051xxxx, 0x005130dc)
+  shifted by 2: a node had been built at controller-2.
+- A second node of the same kind sat at EE 0xC8 (low RAM: next 0x5161cc, parent 0x5130dc, type 9).
+
+### The pool
+- 0x24-byte blocks, header `*0x29C708` (PC: 0x5044A0, magic 0x31415927, block 0x24, align 0x10, no growth, blocks
+  from 0x5044C0).
+- Allocation is 0x13DA10 (head = pool+0x10, link at block+0); free is 0x13DB18. The size-class getter is 0x17E9B8,
+  and each class's operator new caches the pool (0x1D40B0 for 0x20 bytes, 0x228528 / 0x1A1448 for 0x1C bytes).
+- Nodes have: +0 next sibling, +4 parent, +8 type, +0xC vtable (base 0x2C0458, ctor 0x180A80).
+- When a load ends, the loaded data is read back into a tree. The parent comes from 0x1D40B0 (PC: block 0x5130DC). The
+  children (type 9) come from 0x228B18 through 0x228528, about 23 of them.
+- On the console, two of those allocations returned bogus blocks (0xC8 and controller-2). So the free list was
+  already corrupted before the load ended.
+- On the PC the list stays valid (1047 free blocks in state 4, full walks clean).
+
+### Facts and what was ruled out
+- In both crashing runs the load was slow: levelReady=0 at 50 and 55 s, and the IOP did only ~330 ms of work in the
+  45-50 s window against ~520 normally. The other ~210 boots all had levelReady=1 at 50 s.
+- The node creation, and the crash in the same frame, came at the scripted X press at 57 s.
+- PC slow loads (GOW_CD_READ_DELAY_MS 40-300 ms per read), X presses during the load, the Italian overlay, a failed
+  CD read during the load (GOW_CD_FAIL: the driver retries) and x#2 timing 43.0-43.9 s: no fault.
+- EE threads during the load: main (priority 2) and libdbc (priority 1), so the equal-priority time slice cannot
+  apply.
+- The Switch-only overrides differ from the PC only in the frame clock (0x17D778).
+
+### Next
+Run console boots with the diagnostic package (port/switch/crash2_diag.patch, update_crash2b): GOW_POOL_CHECK=1
+plus GOW_CRASH_DUMP. A pool fault then names the corrupted link (`link-at`) and gives the branch ring and the EE and
+IOP RAM.
+
 ## Zones and the debug level warp
 - A level is a chain of zones, one WAD each (GODOFWAR.TOC: the zone WAD followed by its resource WADs `R_*`;
   108 zone WADs: ATHN01-08, SEWR, DEST, PAND, ARENA, OLYMP, ATRET, HDES). Two zones are loaded at a time (slot table
