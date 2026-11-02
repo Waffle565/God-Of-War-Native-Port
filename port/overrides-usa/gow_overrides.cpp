@@ -722,6 +722,49 @@ namespace
                 ++capture;
             }
         }
+        // GOW-Port: GOW_PAD_LIVE=<file> (test only, packages update_boss*, not the default): remote steering for
+        // tools/switch_live.py exploration (usb-botbase's setStick does not reach the game's left stick); applied after
+        // GOW_PAD_TEST's script, so the trace / god mode / menu script of a test run can be combined with it. Every 0.25 s
+        // the file is read; a line "<seq> <x> <y> <s> [<buttons hex>]" with a new seq holds the left stick at x,y (-1..1,
+        // y up) and the PS2 buttons (active-high mask of state bytes 2/3: 0x4000 cross, 0x8000 square, 0x1000
+        // triangle, 0x2000 circle, 0x0200 R2 ...) for <s> seconds. Logs `[gow-live] seq x y s buttons`.
+        if (static const char *livePath = std::getenv("GOW_PAD_LIVE"); livePath)
+        {
+            static auto lastRead = std::chrono::steady_clock::now();
+            static auto holdUntil = lastRead;
+            static long lastSeq = -1;
+            static float liveX = 0, liveY = 0;
+            static unsigned liveButtons = 0;
+            const auto nowLive = std::chrono::steady_clock::now();
+            if (nowLive - lastRead >= std::chrono::milliseconds(250))
+            {
+                lastRead = nowLive;
+                if (std::FILE *file = std::fopen(livePath, "rb"))
+                {
+                    long seq = -1;
+                    float x = 0, y = 0, s = 0;
+                    unsigned buttons = 0;
+                    const int n = std::fscanf(file, "%ld %f %f %f %x", &seq, &x, &y, &s, &buttons);
+                    std::fclose(file);
+                    if (n >= 4 && seq != lastSeq)
+                    {
+                        lastSeq = seq;
+                        liveX = std::clamp(x, -1.0f, 1.0f);
+                        liveY = std::clamp(y, -1.0f, 1.0f);
+                        liveButtons = n >= 5 ? buttons : 0u;
+                        holdUntil = nowLive + std::chrono::milliseconds(static_cast<long>(s * 1000.0f));
+                        std::fprintf(stderr, "[gow-live] seq %ld x %.2f y %.2f s %.2f buttons %x\n", seq, liveX, liveY, s, liveButtons);
+                    }
+                }
+            }
+            if (nowLive < holdUntil)
+            {
+                state[6] = static_cast<uint8_t>(std::lround(128.0f + liveX * 127.0f));
+                state[7] = static_cast<uint8_t>(std::lround(128.0f - liveY * 127.0f));
+                state[2] &= static_cast<uint8_t>(~(liveButtons & 0xFFu));
+                state[3] &= static_cast<uint8_t>(~((liveButtons >> 8) & 0xFFu));
+            }
+        }
         const auto packet = gow_pad2::makePacket(state);
         // GOW-Port: GOW_PAD_LOG=1 prints the libpad2 packet every 120 reads (buttons are active-low).
         static const bool padLog = std::getenv("GOW_PAD_LOG") != nullptr;
