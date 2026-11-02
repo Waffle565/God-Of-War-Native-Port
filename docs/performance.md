@@ -1554,5 +1554,46 @@ Mean < 50 and min < 40: ATHN06C, ATHN01D, PAND02B, fight_ATHN01D. Game speed 0.9
   SoundMix boost 0 leaves Hydra 1 where boost 1 had it (49.2 / 52.5); windLoop's gain in the clones is inside the
   run-to-run spread (VU1 ms per frame 15.2 vs 16.4 on average). Both fights stay at minimum ~48-49: not yet >= 50.
 - Package **update_dips39** (exefs md5 a91f63fa, ELF /root/elf_dips39.elf) = dips38 + windLoop FastOps + SoundMix
-  boost 0 (port/switch/dips39.patch, diff from dips38; originals /root/dips39-orig); boss test package update_boss17
+  boost 0 (sources in port/switch/dips40.patch, which also holds dips40's copier default; originals /root/dips39-orig); boss test package update_boss17
   (dips38 boss sources + windLoop, SoundMix boost still 1: test it with `GOW_PRIO_SoundMix=0`).
+- dips39 default checks: SEMO01 30.0 pictures/s (sweep/mov_dips39); 4 clean title boots (sweep/boot_dips39, title menu
+  in Italian, no error lines; port/switch/tools_dips16/boot4.sh); boss runs above. Levels A/B vs the default, interleaved,
+  2 runs each (sweep/ab16l_dips37c / ab16l_dips39, min / mean):
+  | zone | dips37c | dips39 |
+  |---|---|---|
+  | ATHN01D | 36.4 / 40.2, 38.2 / 41.4 | 38.8 / 41.1, 38.8 / 39.5 |
+  | ATHN06C (corridor windows only) | 39.3, 39.6 (23.9 ms GL per frame) | 37.1, 37.4 (24.4) |
+  | ATRET01B | 56.0 / 58.4, 56.8 / 59.3 | 52.2 / 57.3, 56.6 / 58.5 |
+  | PAND02B | 48.6 / 53.3, 49.0 / 53.8 | 48.2 / 52.8, 48.6 / 52.7 |
+  dips39 (like dips38) costs **3-5 % more VU1 time per program run in every zone** (ATHN01D 9.11 -> 9.44 us, ATHN06C
+  6.97 -> 7.46, ATRET01B 8.53 -> 8.88, PAND02B 15.1 -> 15.7), and ATHN06C's GL-bound corridor stays ~2 fps below dips37c
+  even with SoundMix at boost 0. Suspect: the chain copier (core 3, above GSStage; the VU1 thread reads data another
+  core just wrote; GSStage feeding the deko3d thread waits behind it): copier on / off test below. So dips39 is better in
+  the fights and slightly worse in level gameplay: **not installed** (default unchanged: dips37c).
+- VU1-thread memcpy callers (prof_b17lr_hydra1, `GOW_PC_SAMPLE_LR` = memcpy's range): nrun::kick (the GIF packet
+  copy of XGKICK) 1.8 % of the thread's samples (from runLit and path1120), runLit 0.6 %, tryRun 0.4 %.
+- **Chain copier on / off** (dips39, `GOW_CHAIN_COPIER=0`, interleaved, 2 runs each, sweep/cp16_off / cp16_on): off
+  gives the VU1 thread back its per-run time (ATHN01D 9.08 vs 9.55 us, ATHN06C 7.0 vs 7.5, PAND02B 15.2 vs 15.95) and
+  the fps (ATHN01D mean 40.4 / 40.6 vs 38.9 / 39.3, PAND02B 53.6 / 54.2 vs 52.6, ATHN06C corridor 38.2 / 38.9 vs 37.1:
+  = dips37c). Boss runs boss17 + `GOW_PRIO_SoundMix=0,GOW_CHAIN_COPIER=0` (sweep/b16c0_boss17): **Hydra 1 49.2 / 53.8,
+  49.8 / 53.8** (VU1 9.04-9.16 us/run, 16.1-16.4 ms per frame; copier on: 48.2-48.8 / 50.4-52.5, 9.63-9.66, 17.2-18.1),
+  **clones 51.2 / 54.0 (35 s), 49.8 / 55.4 (60 s)** (12.52-12.95 us/run). Now that the fights wait on the VU1 thread the
+  copier is a loss everywhere (why the VU1 thread slows down with it is open: it reads chain data core 3 just wrote,
+  and the copier's 16 KB memcpy traffic runs during the VU1 jobs). **dips40** = dips39 with the copier off by default
+  (`GOW_CHAIN_COPIER=1` turns it on; ps2_memory.cpp): package update_dips40 (exefs md5 be819616, ELF /root/elf_dips40.elf),
+  port/switch/dips40.patch = full diff from dips38 (windLoop, SoundMix boost 0, copier default; originals
+  /root/dips39-orig). Not tested as a package yet; not installed.
+- **Handoff (sw-dips16)**: console default unchanged (update_dips37c + FAILGT, c9248241). Next: dips40's default checks
+  (levels A/B vs dips37c `--levels --only ATHN01D,PAND02B,ATHN06C,ATRET01B`, 2 interleaved runs each; SEMO01; 4 title
+  boots with port/switch/tools_dips16/boot4.sh; boss runs hydra1 + clones, 2 each with ab_boss.sh: dips40's sources =
+  boss17's + boost 0 + copier off, so the b16c0_boss17 runs above are its fight numbers), then report for the install.
+  Fight minimums are ~49-51: the VU1 thread is the limit (busy ~4.4 s per 5 s). Levers by the profiles: kCullClip (11 %
+  clones / 5 % Hydra 1; its fast-path tests are the hot spots: umaxv -> fmov -> branch after B2 and after path A / B,
+  port/switch/tools_dips16/annot.py prints per-instruction samples of a function), runLit's own time (9 % Hydra 1),
+  skinLoopT (8.6 % Hydra 1), unlitAbLoop / posAbLoop still in the per-operation form (2 % Hydra 1: the FastOps form as
+  windLoop's), the XGKICK packet copy in nrun::kick (memcpy 1.8 %), the VIF side (processVIF1Data + unpackFast ~10 %).
+  ATHN06C's corridor is bound by the GS GL thread (~24 ms per frame): any core-0 thread above GSThread costs fps there.
+  Tools (port/switch/tools_dips16): glb.py (GL-bound windows per run), fightvu.py (fight windows with VU1 us/run and ms
+  per frame), ab_boss.sh / ab_boss_c0.sh (interleaved boss runs; item names hydra1 / clones, not boss_*), hbuild.sh /
+  hexact.sh (harness from the scratch misc.inl: natcheck x86 / a64 vs n1, forced decline, forced exact), etime.sh
+  (per-entry us/run of two harnesses), prof.sh (boss PC profile with extra env), boot4.sh.

@@ -1,0 +1,1 @@
+grep -n "GOW_CHAIN_COPIER\"" /root/src-mlang/ps2xRuntime/src/lib/ps2_memory.cpp; L=$(grep -n "GOW_CHAIN_COPIER\"" /root/src-mlang/ps2xRuntime/src/lib/ps2_memory.cpp | head -1 | cut -d: -f1); sed -n "$((L-4)),$((L+4))p" /root/src-mlang/ps2xRuntime/src/lib/ps2_memory.cpp

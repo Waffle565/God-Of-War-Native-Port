@@ -121,3 +121,17 @@
          if (const char *value = std::getenv("GOW_CORE_SoundMix"); value && value[0] >= '0' && value[0] <= '3' && value[1] == '\0')
              core = value[0] - '0';
          if (const char *value = std::getenv("GOW_PRIO_SoundMix"); value && value[0] >= '0' && value[0] <= '9' && value[1] == '\0')
+--- a/ps2xRuntime/src/lib/ps2_memory.cpp
++++ b/ps2xRuntime/src/lib/ps2_memory.cpp
+@@ -1943,8 +1943,10 @@
+         static uint32_t minBytes()
+         {
+             static const uint32_t v = [] {
++                // sw-dips16: off unless GOW_CHAIN_COPIER=1: with the copier the VU1 thread spent 4-5 % more per program
++                // run in every zone (levels -1..1.5 fps, the fights' VU1-bound minimum lower too)
+                 const char *e = std::getenv("GOW_CHAIN_COPIER");
+-                if (e && e[0] == '0')
++                if (!e || e[0] != '1')
+                     return 0u;
+                 const char *m = std::getenv("GOW_CHAIN_COPIER_MIN");
+                 const uint32_t b = m ? static_cast<uint32_t>(std::strtoul(m, nullptr, 10)) : 2048u;
