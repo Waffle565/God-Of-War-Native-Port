@@ -54,14 +54,19 @@ FIGHTS = [('ATHN01D', 'Hydra 1, ship deck (R_AHA/R_AH2)'), ('ATHN01EE', 'Hydra 2
 BOSSES = [('ares', 'ATHN08C', 'Ares (boss bar from the warp point on)', ''),
           ('clones', 'ATHN08B', 'Ares: family defence vs Kratos clones (engaged at the warp point)', ''),
           ('challenge', 'ARENA27', 'Challenge of the Gods 10/10 (cross dismisses the trial card)', ''),
-          ('cerberus', 'PAND02I', 'Cerberus pair (R_CEP/R_CEA), engaged at the warp point', '')]
+          ('cerberus', 'PAND02I', 'Cerberus pair (R_CEP/R_CEA), engaged at the warp point', ''),
+          # sw-boss3 (update_boss7+: teleport without warp, positions from tools/gow_wadobjs.py and live sessions)
+          ('hydra1', '', 'Hydra 1: first Hydra head in the ATHN01B cargo hold (hydraEnt3b, R_AHH), new game + teleport',
+           '3:1555,-100,630'),
+          ('hydra2', 'ATHN01E', 'Hydra 2: the boss deck (A01MP01 boss intro volume), the two lesser heads + King',
+           '5:-2433,850,-14'),
+          ('guardian', 'PAND03G', "Pandora's Guardian (R_AMI MinoBoss), breaks through the door when Kratos nears it",
+           '4:363,-90,1918')]
 # boss fights from a save (story-triggered fights: no warp): (key, card under port/switch/boss_cards, slot, pad steps
 # from gameplay start to the trigger, g second the fight pattern starts, note). The card is pushed as
 # sdmc:/switch/gow/boss.mcd and used through GOW_MC0 (the player's play.mcd stays untouched); last field: GOW_TELEPORT
 # value or '' (without GOW_WARP its seconds count from gameplay start, package update_boss7+).
 SAVE_BOSSES = []
-# still open (docs/switch-sweep.md "Boss fights"): Hydra 1 (ATHN01D) and Hydra 2 (ATHN01E / 01EE) need the arena
-# position or story trigger, Pandora's Guardian (R_MI4: PAND03E / PAND04EE) was not found at its zones' warp points
 # the 43 movies with speech (European disc: five language tracks), dubbed from the lang pack (docs/settings.md
 # "Movies in other languages"): each must log `[disc] dub read: .../voice_<SWEEP_LANG>/<MOVIE>.DUB` (the intro
 # SEMO01: `overlay read: .../SEMO01.PSW`, its re-encoded card)
@@ -389,7 +394,8 @@ def run_item(item, outdir, args, sizes):
             extra += ['GOW_MC0=sdmc:/switch/gow/boss.mcd'] + ([f"GOW_TELEPORT={item['teleport']}"] if item.get('teleport') else [])
             budget = 75 + 40 + ff + item['stay']
         else:
-            extra += ['GOW_WARP=' + item['zone'], f"GOW_WARP_STAY={item['stay']}"] + \
+            # zone '' (new-game boss items): no warp, the teleport counts from gameplay start (update_boss7+)
+            extra += (['GOW_WARP=' + item['zone'], f"GOW_WARP_STAY={item['stay']}"] if item['zone'] else []) + \
                 ([f"GOW_TELEPORT={item['teleport']}"] if item.get('teleport') else [])
             budget = 75 + item['stay'] + 25
     os.makedirs(os.path.join(d, 'envdir'), exist_ok=True)

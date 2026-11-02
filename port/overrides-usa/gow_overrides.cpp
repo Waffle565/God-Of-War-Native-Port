@@ -44,6 +44,19 @@ void gowDumpBranchRing(const char *why);
 #include <string>
 #include <vector>
 
+// sw-dips14: the RGB bytes of an RGBA frame (the alpha byte of each pixel dropped, the last pixel only when a 4th byte
+// follows it, as the former per-pixel loop did) in one stream write
+template <class Stream>
+static void gowWritePpmRgb(Stream &file, const std::vector<uint8_t> &pixels)
+{
+    std::vector<char> rgb;
+    rgb.reserve(pixels.size() / 4u * 3u);
+    for (size_t i = 0; i + 3 < pixels.size(); i += 4)
+        rgb.insert(rgb.end(), reinterpret_cast<const char *>(pixels.data() + i), reinterpret_cast<const char *>(pixels.data() + i + 3));
+    file.write(rgb.data(), static_cast<std::streamsize>(rgb.size()));
+}
+
+
 extern std::atomic<uint64_t> g_gowWaitNs[8], g_gowWaitCnt[8]; // EeScheduler.cpp: EE idle waits by wake-up cause
 extern std::atomic<uint64_t> g_gowWallLagDroppedNs; // EeScheduler.cpp (sw-bugs): lag dropped by catchUpToWall
 
@@ -270,8 +283,7 @@ namespace
                     const std::string name = "gow_warp_" + std::to_string(next) + "_" + zones[next - 1] + "_" + std::to_string(k) + ".ppm";
                     std::ofstream file(name, std::ios::binary);
                     file << "P6\n" << width << ' ' << height << "\n255\n";
-                    for (size_t i = 0; i + 3 < pixels.size(); i += 4)
-                        file.write(reinterpret_cast<const char *>(pixels.data() + i), 3);
+                    gowWritePpmRgb(file, pixels); // sw-dips14: one write (3-byte writes cost ~3 s per capture on the SD)
                     std::fprintf(stderr, "[gow-warp] capture %s at %.1f s\n", name.c_str(), now);
                 }
             }
@@ -654,8 +666,7 @@ namespace
                     const std::string name = "gow_pad_test_" + std::to_string(capture) + ".ppm";
                     std::ofstream file(name, std::ios::binary);
                     file << "P6\n" << width << ' ' << height << "\n255\n";
-                    for (size_t i = 0; i + 3 < pixels.size(); i += 4)
-                        file.write(reinterpret_cast<const char *>(pixels.data() + i), 3);
+                    gowWritePpmRgb(file, pixels); // sw-dips14: one write (3-byte writes cost ~3 s per capture on the SD)
                     std::fprintf(stderr, "[gow-pad2:test] frame=%s seconds=%.2f\n", name.c_str(), seconds);
                     uint32_t gameState = 0, pending = 0;
                     std::memcpy(&gameState, rdram + 0x0029E560u, sizeof(gameState));
@@ -2231,8 +2242,7 @@ namespace
                 const std::string name = "bench_shot_" + std::to_string(g_benchFrames) + ".ppm";
                 std::ofstream file(name, std::ios::binary);
                 file << "P6\n" << width << ' ' << height << "\n255\n";
-                for (size_t i = 0; i + 3 < pixels.size(); i += 4)
-                    file.write(reinterpret_cast<const char *>(pixels.data() + i), 3);
+                gowWritePpmRgb(file, pixels); // sw-dips14: one write (3-byte writes cost ~3 s per capture on the SD)
                 std::fprintf(stderr, "[bench] shot %s %ux%u\n", name.c_str(), width, height);
             }
         }
