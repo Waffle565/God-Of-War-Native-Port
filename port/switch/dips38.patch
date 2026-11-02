@@ -1,0 +1,613 @@
+--- a/ps2xIOP/src/emulator/core/sound_engine.cpp
++++ b/ps2xIOP/src/emulator/core/sound_engine.cpp
+@@ -45,6 +45,13 @@
+         uint32_t idOf(uint32_t entry) noexcept { return (entry >> 8u) & 0xFFu; }
+         uint32_t coreOf(uint32_t entry) noexcept { return entry & 1u; }
+         uint32_t voiceOf(uint32_t entry) noexcept { return (entry >> 1u) & 0x1Fu; }
++
++        // sw-dips15 diagnostic, GOW_SND_SYNC_DIAG=1: sync() calls and the samples they mix on the caller's thread, by the
++        // function (and libsd register id) that called it, as [snd-sync] every 5 s (counts only; the sound is the same)
++        const bool g_syncDiag = std::getenv("GOW_SND_SYNC_DIAG") != nullptr;
++        uint32_t g_syncKind = 0;
++        uint64_t g_syncCalls[32 * 64], g_syncSamples[32 * 64];
++        inline void syncFrom(uint32_t kind, uint32_t entry) { g_syncKind = kind * 64u + ((entry >> 8u) & 63u); }
+     }
+ 
+     SoundEngine::SoundEngine() : m_ram(RamHalfwords)
+@@ -98,7 +105,34 @@
+         // the samples the worker has not mixed (a remainder smaller than a batch, or a batch taken back): mixed here,
+         // as inline mixing would have (mixTo returns at once when the worker already got there)
+         m_handedTarget = m_callerTarget;
+-        const_cast<SoundEngine *>(this)->mixTo(m_callerTarget);
++        const uint64_t mixed = const_cast<SoundEngine *>(this)->mixTo(m_callerTarget);
++        if (g_syncDiag)
++        {
++            ++g_syncCalls[g_syncKind];
++            g_syncSamples[g_syncKind] += mixed;
++            g_syncKind = 0;
++            static auto last = std::chrono::steady_clock::now();
++            static uint64_t workerBefore = 0;
++            const auto now = std::chrono::steady_clock::now();
++            if (now - last >= std::chrono::seconds(5))
++            {
++                last = now;
++                const uint64_t w = m_workerSamples.load(std::memory_order_relaxed);
++                uint64_t calls = 0, samples = 0;
++                for (uint32_t i = 0; i < 32u * 64u; ++i)
++                    calls += g_syncCalls[i], samples += g_syncSamples[i];
++                std::fprintf(stderr, "[snd-sync] calls=%llu inline_samples=%llu worker_samples=%llu |", (unsigned long long)calls,
++                             (unsigned long long)samples, (unsigned long long)(w - workerBefore));
++                workerBefore = w;
++                for (uint32_t i = 0; i < 32u * 64u; ++i)
++                    if (g_syncCalls[i])
++                        std::fprintf(stderr, " %u.%02x=%llu/%llu", i / 64u, i % 64u, (unsigned long long)g_syncCalls[i],
++                                     (unsigned long long)g_syncSamples[i]);
++                std::fputc(10, stderr);
++                std::memset(g_syncCalls, 0, sizeof g_syncCalls);
++                std::memset(g_syncSamples, 0, sizeof g_syncSamples);
++            }
++        }
+     }
+ 
+     double SoundEngine::takeMixerSeconds() noexcept
+@@ -119,10 +153,17 @@
+ #if defined(__SWITCH__)
+         // the application core with room (default 0: with deko3d the GPU backend there got light, while core 1 carries
+         // the EE, the IOP and the GS frontend); GOW_CORE_SoundMix=<0-2> moves it
+-        int core = 0;
+-        if (const char *value = std::getenv("GOW_CORE_SoundMix"); value && value[0] >= '0' && value[0] <= '2' && value[1] == '\0')
++        // sw-dips15: GOW_CORE_SoundMix=3 (core 3, next to GSStage) and GOW_PRIO_SoundMix=<0-9> (priority steps above
++        // the default): at the default priority on core 0 the mixer waits behind the deko3d thread (GSThread, which never
++        // yields to an equal priority), sync() takes its pending batches back and the EE mixed ~2/3 of all samples in the
++        // fights ([snd-sync], GOW_SND_SYNC_DIAG). Default: core 0 one step above GSThread (Hydra 1: the EE mixed 140 k of
++        // 240 k samples per 5 s at boost 0, 40 k at boost 1; on core 3 it starved behind GSStage / ChainCopy)
++        int core = 0, boost = 1;
++        if (const char *value = std::getenv("GOW_CORE_SoundMix"); value && value[0] >= '0' && value[0] <= '3' && value[1] == '\0')
+             core = value[0] - '0';
+-        ps2xSwitchPinCurrentThread(core, 0);
++        if (const char *value = std::getenv("GOW_PRIO_SoundMix"); value && value[0] >= '0' && value[0] <= '9' && value[1] == '\0')
++            boost = value[0] - '0';
++        ps2xSwitchPinCurrentThread(core, boost);
+ #endif
+         for (;;)
+         {
+@@ -158,6 +199,7 @@
+ 
+     void SoundEngine::reset()
+     {
++        if (g_syncDiag) syncFrom(16, 0u);
+         sync();
+         std::fill(m_ram.begin(), m_ram.end(), uint16_t{0});
+         m_cores = {};
+@@ -174,6 +216,7 @@
+ 
+     void SoundEngine::initCore(uint32_t core)
+     {
++        if (g_syncDiag) syncFrom(15, 0u);
+         sync();
+         Core &c = m_cores[core & 1u];
+         const std::array<Voice, VoicesPerCore> voices{};
+@@ -186,6 +229,7 @@
+ 
+     void SoundEngine::setParam(uint32_t entry, uint16_t value)
+     {
++        if (g_syncDiag) syncFrom(1, entry);
+         sync();
+         Core &c = m_cores[coreOf(entry)];
+         const uint32_t voice = voiceOf(entry);
+@@ -224,6 +268,7 @@
+ 
+     uint16_t SoundEngine::getParam(uint32_t entry) const
+     {
++        if (g_syncDiag) syncFrom(2, entry);
+         sync();
+         const Core &c = m_cores[coreOf(entry)];
+         const uint32_t voice = std::min(voiceOf(entry), VoicesPerCore - 1u);
+@@ -257,6 +302,7 @@
+ 
+     void SoundEngine::setSwitch(uint32_t entry, uint32_t mask)
+     {
++        if (g_syncDiag) syncFrom(3, entry);
+         sync();
+         Core &c = m_cores[coreOf(entry)];
+         mask &= 0xFFFFFFu;
+@@ -280,6 +326,7 @@
+ 
+     uint32_t SoundEngine::getSwitch(uint32_t entry) const
+     {
++        if (g_syncDiag) syncFrom(4, entry);
+         sync();
+         const Core &c = m_cores[coreOf(entry)];
+         switch (idOf(entry))
+@@ -299,6 +346,7 @@
+ 
+     void SoundEngine::setAddr(uint32_t entry, uint32_t byteAddress)
+     {
++        if (g_syncDiag) syncFrom(5, entry);
+         sync();
+         Core &c = m_cores[coreOf(entry)];
+         const uint32_t halfwords = (byteAddress >> 1u) & (RamHalfwords - 1u) & ~7u;
+@@ -335,6 +383,7 @@
+ 
+     uint32_t SoundEngine::getAddr(uint32_t entry) const
+     {
++        if (g_syncDiag) syncFrom(6, entry);
+         sync();
+         const Core &c = m_cores[coreOf(entry)];
+         const Voice &v = c.voices[std::min(voiceOf(entry), VoicesPerCore - 1u)];
+@@ -367,6 +416,7 @@
+     // sceSdSetCoreAttr ids (entry & ~1): 2 effect enable, 4 IRQ enable, 6 mute, 8 noise clock, 0xA SPDIF mode
+     void SoundEngine::setCoreAttr(uint32_t entry, uint32_t value)
+     {
++        if (g_syncDiag) syncFrom(7, entry);
+         sync();
+         Core &c = m_cores[coreOf(entry)];
+         switch (entry & ~1u)
+@@ -381,6 +431,7 @@
+ 
+     uint32_t SoundEngine::getCoreAttr(uint32_t entry) const
+     {
++        if (g_syncDiag) syncFrom(8, entry);
+         sync();
+         const Core &c = m_cores[coreOf(entry)];
+         switch (entry & ~1u)
+@@ -397,6 +448,7 @@
+ 
+     void SoundEngine::writeSampleRam(uint32_t byteAddress, const uint8_t *source, size_t bytes)
+     {
++        if (g_syncDiag) syncFrom(9, 0u);
+         sync();
+         uint32_t halfword = byteAddress >> 1u;
+         for (size_t i = 0; i + 1u < bytes; i += 2u)
+@@ -405,6 +457,7 @@
+ 
+     void SoundEngine::readSampleRam(uint32_t byteAddress, uint8_t *destination, size_t bytes) const
+     {
++        if (g_syncDiag) syncFrom(10, 0u);
+         sync();
+         uint32_t halfword = byteAddress >> 1u;
+         for (size_t i = 0; i + 1u < bytes; i += 2u)
+@@ -417,6 +470,7 @@
+ 
+     void SoundEngine::clearSampleRam(uint32_t byteAddress, size_t bytes)
+     {
++        if (g_syncDiag) syncFrom(11, 0u);
+         sync();
+         uint32_t halfword = byteAddress >> 1u;
+         for (size_t i = 0; i + 1u < bytes; i += 2u)
+@@ -427,6 +481,7 @@
+ 
+     void SoundEngine::startStream(uint32_t core, const uint8_t *ring, uint32_t size, bool loop)
+     {
++        if (g_syncDiag) syncFrom(12, 0u);
+         sync();
+         StreamRing &s = m_stream[core & 1u];
+         s.loop = loop;
+@@ -439,12 +494,14 @@
+ 
+     void SoundEngine::stopStream(uint32_t core)
+     {
++        if (g_syncDiag) syncFrom(13, 0u);
+         sync();
+         m_stream[core & 1u].active = false;
+     }
+ 
+     bool SoundEngine::takeStreamHalf(uint32_t core) noexcept
+     {
++        if (g_syncDiag) syncFrom(14, 0u);
+         sync();
+         const bool half = m_streamHalf[core & 1u];
+         m_streamHalf[core & 1u] = false;
+@@ -763,6 +820,7 @@
+     {
+         if (!m_async || m_stream[0].active || m_stream[1].active)
+         {
++            if (g_syncDiag) syncFrom(17, 0u);
+             sync();
+             m_callerTarget = m_handedTarget = std::max(m_callerTarget, iopCycle);
+             mixTo(iopCycle);
+--- a/ps2xRuntime/include/ThreadNaming.h
++++ b/ps2xRuntime/include/ThreadNaming.h
+@@ -76,6 +76,10 @@
+             core = 3, boost = 1;
+         else if (name == "GSWorker" || name == "VU1Run") // VU1Run: PS2X_VU1_ASYNC=1 (move GSWorker with GOW_CORE_GSWorker)
+             core = 2;
++        // sw-dips15: the DMA chain copier (ps2_memory.cpp ChainCopier) on core 3, above GSStage: the EE waits for it at
++        // every chain's end, so it must not queue behind the stage
++        else if (name == "ChainCopy")
++            core = 3, boost = 2;
+         // VU1Split (GOW_VU1_SPLIT helper): core 0 at the default priority, which is already the lowest an application
+         // thread gets (59: one step below fails); its wait loop yields to the deko3d thread (ps2_vu1_split.inl)
+         else if (name == "IopRun")
+--- a/ps2xRuntime/include/ps2_runtime_macros.h
++++ b/ps2xRuntime/include/ps2_runtime_macros.h
+@@ -236,12 +236,55 @@
+ // ~0x6000) did. The operands and the result pass through the asm statements so the compiler cannot move the fdiv /
+ // fsqrt across the mode switch.
+ #if defined(__aarch64__) && !defined(PS2X_FPU_CSR_SSE2NEON)
++// sw-dips15: in round-toward-zero (the EE thread's mode) the nearest result is found without the two FPCR writes (each
++// serialises the A57's FP pipeline; ~4 % of core 1 in the Hydra fight sat on them): the quotient (square root) truncated
++// is q, the nearest is q or the next float away from zero, and the exact value is never halfway between two floats
++// (a quotient or square root of floats cannot be a midpoint), so it is the next one iff the exact value exceeds the
++// midpoint m = |q| + ulp/2. Division: d = |a / b| in double, truncated to 53 bits, is >= m iff the exact one is (m is a
++// double). Square root: sqrt(x) > m iff x > m * m (exact in double: m has 25 bits). Only for normal operands and
++// results away from the ends of the range (no flush to zero, no overflow); everything else takes the FPCR switch.
++inline float ps2FpuBitsToFloat(uint32_t bits)
++{
++    float f;
++    std::memcpy(&f, &bits, sizeof(f));
++    return f;
++}
++
++inline double ps2FpuHalfUlp(uint32_t floatExponent) // ulp / 2 of a normal float with this biased exponent, as a double
++{
++    const uint64_t e = static_cast<uint64_t>(floatExponent) - 127u - 24u + 1023u;
++    double h;
++    const uint64_t bits = e << 52;
++    std::memcpy(&h, &bits, sizeof(h));
++    return h;
++}
++
+ inline float ps2FpuDivideNearest(float dividend, float divisor)
+ {
+     uint64_t fpcr;
+     __asm__ volatile("mrs %0, fpcr" : "=r"(fpcr));
+     if ((fpcr & (3ull << 22)) == 0)
+         return dividend / divisor;
++    if ((fpcr & (3ull << 22)) == (3ull << 22))
++    {
++        uint32_t ua, ub;
++        std::memcpy(&ua, &dividend, 4);
++        std::memcpy(&ub, &divisor, 4);
++        const uint32_t ea = (ua >> 23) & 0xFFu, eb = (ub >> 23) & 0xFFu;
++        if (ea - 1u < 253u && eb - 1u < 253u)
++        {
++            const double d = static_cast<double>(dividend) / static_cast<double>(divisor); // truncated
++            const float q = static_cast<float>(d);                                           // truncated again = RZ(a / b)
++            uint32_t uq;
++            std::memcpy(&uq, &q, 4);
++            const uint32_t eq = (uq >> 23) & 0xFFu;
++            if (eq - 2u < 251u)
++            {
++                const double m = std::fabs(static_cast<double>(q)) + ps2FpuHalfUlp(eq);
++                return std::fabs(d) >= m ? ps2FpuBitsToFloat(uq + 1u) : q;
++            }
++        }
++    }
+     __asm__ volatile("msr fpcr, %2" : "+w"(dividend), "+w"(divisor) : "r"(fpcr & ~(3ull << 22)));
+     float result;
+     __asm__ volatile("fdiv %s0, %s1, %s2" : "=w"(result) : "w"(dividend), "w"(divisor));
+@@ -259,6 +302,16 @@
+         __asm__ volatile("fsqrt %s0, %s1" : "=w"(result) : "w"(value));
+         return result;
+     }
++    uint32_t ux;
++    std::memcpy(&ux, &value, 4);
++    if ((fpcr & (3ull << 22)) == (3ull << 22) && ((ux >> 23) & 0xFFu) - 1u < 254u && (ux >> 31) == 0u)
++    {
++        __asm__ volatile("fsqrt %s0, %s1" : "=w"(result) : "w"(value)); // truncated (a normal float)
++        uint32_t us;
++        std::memcpy(&us, &result, 4);
++        const double m = static_cast<double>(result) + ps2FpuHalfUlp((us >> 23) & 0xFFu);
++        return static_cast<double>(value) > m * m ? ps2FpuBitsToFloat(us + 1u) : result;
++    }
+     __asm__ volatile("msr fpcr, %1" : "+w"(value) : "r"(fpcr & ~(3ull << 22)));
+     __asm__ volatile("fsqrt %s0, %s1" : "=w"(result) : "w"(value));
+     __asm__ volatile("msr fpcr, %1" : "+w"(result) : "r"(fpcr));
+--- a/ps2xRuntime/include/runtime/ps2_perf.h
++++ b/ps2xRuntime/include/runtime/ps2_perf.h
+@@ -186,6 +186,10 @@
+             chainSegN[b].store(chainSegN[b].load(std::memory_order_relaxed) + 1u, std::memory_order_relaxed);
+             chainSegBytes[b].store(chainSegBytes[b].load(std::memory_order_relaxed) + bytes, std::memory_order_relaxed);
+         }
++        // sw-dips15: the chain copier (ps2_memory.cpp ChainCopier): bytes the ChainCopy thread copied, bytes of posted
++        // pieces the EE copied itself (claimed back), the EE's wait for the copier at a chain's end, printed as
++        // [gsw-copier]
++        inline PaddedCounter copierBytes{0}, copierEeBytes{0}, copierWaitNs{0}, copierJobs{0};
+         // worker idle between jobs (GOW-Port 2026-10-24): waits, total, and by length (< 0.1 ms, < 1 ms, < 4 ms, more),
+         // printed as [gsw-idle]; a wait is from the moment the worker finds no job to the next job's start
+         inline PaddedCounter idleNs{0}, idleWaits{0}, idleBucket[4] = {{0}, {0}, {0}, {0}}, idleBucketNs[4] = {{0}, {0}, {0}, {0}};
+@@ -231,6 +235,15 @@
+                              (unsigned long long)sg[0], (unsigned long long)(sg[3] >> 10), (unsigned long long)sg[1],
+                              (unsigned long long)(sg[4] >> 10), (unsigned long long)sg[2], (unsigned long long)(sg[5] >> 10));
+             }
++            {
++                static uint64_t cpBefore[4] = {};
++                const uint64_t cpCur[4] = {copierBytes.load(), copierEeBytes.load(), copierWaitNs.load(), copierJobs.load()};
++                uint64_t cp[4];
++                for (int i = 0; i < 4; ++i) { cp[i] = cpCur[i] - cpBefore[i]; cpBefore[i] = cpCur[i]; }
++                if (cp[3])
++                    std::fprintf(stderr, "[gsw-copier] jobs=%llu copier_kb=%llu ee_kb=%llu ee_wait_ms=%.1f\n", (unsigned long long)cp[3],
++                                 (unsigned long long)(cp[0] >> 10), (unsigned long long)(cp[1] >> 10), cp[2] * 1e-6);
++            }
+             static uint64_t idleBefore[10] = {};
+             const uint64_t idleCur[10] = {idleNs.load(), idleWaits.load(), idleBucket[0].load(), idleBucket[1].load(),
+                                           idleBucket[2].load(), idleBucket[3].load(), idleBucketNs[0].load(),
+--- a/ps2xRuntime/src/lib/ps2_memory.cpp
++++ b/ps2xRuntime/src/lib/ps2_memory.cpp
+@@ -19,6 +19,8 @@
+ #include <string>
+ #include <vector>
+ #include <mutex>
++#include <condition_variable>
++#include <thread>
+ static const auto g_gowProcStart = std::chrono::steady_clock::now(); // GOW-Port: process start for diagnostics
+ 
+ // GOW-Port: DMA transfer buffers are reused. A frame's VIF1 chain is ~3 MB: gathered into a fresh vector it reallocated
+@@ -1908,6 +1910,186 @@
+         }();
+         return kb * 1024u;
+     }
++
++    // GOW-Port (sw-dips15): a second copier for the DMA chains (thread "ChainCopy", core 3 above GSStage). The EE copies
++    // every chain before sendDmaChain returns (the transfer completes at once, so the game may overwrite its sources
++    // right after): ~9 % of core 1 in the fights (0.4 s per 5 s, ~650 MB). Pieces of >= GOW_CHAIN_COPIER_MIN bytes
++    // (default 2048) of RAM data are posted as jobs of <= 16 KB: the EE makes room for them in the buffer and walks on,
++    // the copier copies them; when the copier is behind (more than GOW_CHAIN_COPIER_BACKLOG KB posted and not taken,
++    // default 64) the EE copies the piece itself, and at the chain's end it copies every job not taken yet and waits for
++    // the rest. Same bytes at the same places, all copied before sendDmaChain returns; a streamed chain publishes only up
++    // to the first job not done. GOW_CHAIN_COPIER=0: off (the EE copies everything, as before).
++    struct ChainCopier
++    {
++        static constexpr uint32_t kRing = 1024u, kMask = kRing - 1u, kPiece = 16384u;
++        struct Job
++        {
++            const uint8_t *src;
++            uint32_t dst; // offset in the buffer
++            uint32_t n;
++        };
++        Job jobs[kRing];
++        std::atomic<uint32_t> done[kRing];      // seq + 1 once copied
++        std::atomic<uint8_t *> base{nullptr};   // the buffer; changes only while no job is open
++        std::atomic<uint32_t> posted{0};        // jobs [0, posted) exist (EE writes)
++        alignas(64) std::atomic<uint32_t> claimed{0}; // jobs [0, claimed) are taken (copier or EE)
++        alignas(64) std::atomic<uint32_t> sleeping{0};
++        std::atomic<uint32_t> active{0};        // a chain with jobs is being walked: the copier spins instead of sleeping
++        uint32_t firstOpen = 0u;                // EE: the oldest job not known to be done
++        std::mutex mutex;
++        std::condition_variable cv;
++        std::thread thread;
++
++        static uint32_t minBytes()
++        {
++            static const uint32_t v = [] {
++                const char *e = std::getenv("GOW_CHAIN_COPIER");
++                if (e && e[0] == '0')
++                    return 0u;
++                const char *m = std::getenv("GOW_CHAIN_COPIER_MIN");
++                const uint32_t b = m ? static_cast<uint32_t>(std::strtoul(m, nullptr, 10)) : 2048u;
++                return std::max(b, 64u);
++            }();
++            return v;
++        }
++        static uint32_t backlogBytes()
++        {
++            static const uint32_t v = [] {
++                const char *e = std::getenv("GOW_CHAIN_COPIER_BACKLOG");
++                return (e ? static_cast<uint32_t>(std::strtoul(e, nullptr, 10)) : 64u) * 1024u;
++            }();
++            return v;
++        }
++        static ChainCopier &get()
++        {
++            static ChainCopier *c = [] {
++                auto *p = new ChainCopier();
++                for (auto &d : p->done)
++                    d.store(0u, std::memory_order_relaxed);
++                p->thread = std::thread([p] { p->loop(); }); // kept, never joined (libnx has no pthread_detach)
++                return p;
++            }();
++            return *c;
++        }
++        bool claim(uint32_t &seq)
++        {
++            uint32_t c = claimed.load(std::memory_order_relaxed);
++            for (;;)
++            {
++                if (c == posted.load(std::memory_order_acquire))
++                    return false;
++                if (claimed.compare_exchange_weak(c, c + 1u, std::memory_order_acq_rel, std::memory_order_relaxed))
++                {
++                    seq = c;
++                    return true;
++                }
++            }
++        }
++        uint32_t run(uint32_t seq)
++        {
++            const Job &j = jobs[seq & kMask];
++            const uint32_t n = j.n;
++            std::memcpy(base.load(std::memory_order_relaxed) + j.dst, j.src, n);
++            done[seq & kMask].store(seq + 1u, std::memory_order_release);
++            return n;
++        }
++        void loop()
++        {
++            ThreadNaming::SetCurrentThreadName("ChainCopy");
++            uint64_t mine = 0u;
++            for (;;)
++            {
++                uint32_t seq;
++                if (claim(seq))
++                {
++                    mine += run(seq);
++                    continue;
++                }
++                if (mine)
++                {
++                    ps2_perf::gsw::copierBytes.addOwned(mine);
++                    mine = 0u;
++                }
++                // during a chain the next job is a few microseconds away: spin (bounded), else sleep
++                const auto until = std::chrono::steady_clock::now() + std::chrono::microseconds(200);
++                bool got = false;
++                for (uint32_t i = 1; active.load(std::memory_order_acquire); ++i)
++                {
++                    if (claimed.load(std::memory_order_relaxed) != posted.load(std::memory_order_acquire))
++                    {
++                        got = true;
++                        break;
++                    }
++#if defined(__aarch64__)
++                    __asm__ volatile("yield");
++#endif
++                    if ((i & 63u) == 0u && std::chrono::steady_clock::now() >= until)
++                        break;
++                }
++                if (got)
++                    continue;
++                sleeping.store(1u, std::memory_order_seq_cst);
++                {
++                    std::unique_lock<std::mutex> lock(mutex);
++                    while (claimed.load(std::memory_order_seq_cst) == posted.load(std::memory_order_seq_cst))
++                        cv.wait(lock);
++                }
++                sleeping.store(0u, std::memory_order_relaxed);
++            }
++        }
++        // EE side
++        void post(const uint8_t *src, uint32_t dst, uint32_t n)
++        {
++            const uint32_t p = posted.load(std::memory_order_relaxed);
++            Job &j = jobs[p & kMask];
++            j.src = src, j.dst = dst, j.n = n;
++            posted.store(p + 1u, std::memory_order_seq_cst);
++            ps2_perf::gsw::copierJobs.addOwned(1u);
++            if (sleeping.load(std::memory_order_seq_cst))
++            {
++                std::lock_guard<std::mutex> lock(mutex);
++                cv.notify_one();
++            }
++        }
++        // EE: move firstOpen past the jobs done; the buffer offset below which every posted byte is copied (or ~0u)
++        uint32_t openFrom()
++        {
++            const uint32_t p = posted.load(std::memory_order_relaxed);
++            while (firstOpen != p && done[firstOpen & kMask].load(std::memory_order_acquire) == firstOpen + 1u)
++                ++firstOpen;
++            return firstOpen == p ? ~0u : jobs[firstOpen & kMask].dst;
++        }
++        bool behind() const
++        {
++            const uint32_t untaken = posted.load(std::memory_order_relaxed) - claimed.load(std::memory_order_relaxed);
++            return untaken * static_cast<uint64_t>(kPiece) > backlogBytes();
++        }
++        // EE: copy every job not taken yet, then wait for the copier's
++        void drain()
++        {
++            uint32_t seq;
++            uint64_t own = 0u;
++            while (claim(seq))
++                own += run(seq);
++            if (own)
++                ps2_perf::gsw::copierEeBytes.addOwned(own);
++            const uint32_t p = posted.load(std::memory_order_relaxed);
++            if (openFrom() == ~0u)
++                return;
++            const uint64_t t0 = ps2_perf::enabled() ? ps2_perf::nowNanos() : 0u;
++            while (firstOpen != p)
++            {
++                if (done[firstOpen & kMask].load(std::memory_order_acquire) == firstOpen + 1u)
++                    ++firstOpen;
++#if defined(__aarch64__)
++                else
++                    __asm__ volatile("yield");
++#endif
++            }
++            if (t0)
++                ps2_perf::gsw::copierWaitNs.addOwned(ps2_perf::nowNanos() - t0);
++        }
++    };
+ }
+ 
+ void PS2Memory::sendDmaChain(DmaPath path, uint32_t tagAddress)
+@@ -1929,8 +2111,15 @@
+     if (streamBytes && bytes.capacity() < (8u << 20))
+         bytes.reserve(8u << 20);
+     // before an append that would reallocate: wait until the worker has parsed every published byte
++    // sw-dips15: the chain copier (VIF1 only: one producer, the EE thread)
++    ChainCopier *const copier = (path == DmaPath::Vif1 && ChainCopier::minBytes()) ? &ChainCopier::get() : nullptr;
++    bool copierUsed = false;
+     auto reserveFor = [&](size_t more) {
+-        if (!stream || bytes.size() + more <= bytes.capacity())
++        if (bytes.size() + more <= bytes.capacity())
++            return;
++        if (copierUsed)
++            copier->drain(); // the jobs write into the current buffer
++        if (!stream)
+             return;
+         while (stream->consumed.load(std::memory_order_acquire) != stream->published.load(std::memory_order_relaxed))
+             std::this_thread::yield();
+@@ -2023,7 +2212,48 @@
+         {
+             if (chainT0)
+                 ps2_perf::gsw::addChainSeg(qwc * 16u);
+-            appendGuestBytes(data, qwc * 16u, bytes);
++            const uint32_t n = qwc * 16u;
++            uint32_t src = ~0u;
++            if (copier && n >= ChainCopier::minBytes() && !isScratchpad(data) && !copier->behind())
++            {
++                try
++                {
++                    src = translateAddress(data);
++                }
++                catch (const std::exception &)
++                {
++                    src = ~0u;
++                }
++                if (src != ~0u && static_cast<uint64_t>(src) + n > PS2_RAM_SIZE)
++                    src = ~0u; // wraps: copied below
++            }
++            if (src == ~0u)
++                appendGuestBytes(data, n, bytes);
++            else
++            {
++                if (bytes.size() + n > bytes.capacity()) // no stream: reserveFor left it to the insert (no job open now)
++                    bytes.reserve(std::max(bytes.capacity() * 2u, bytes.size() + n));
++                if (!copierUsed)
++                {
++                    copierUsed = true;
++                    copier->active.store(1u, std::memory_order_relaxed);
++                }
++                copier->base.store(bytes.data(), std::memory_order_relaxed);
++                for (uint32_t at = 0u; at < n;)
++                {
++                    const uint32_t piece = std::min(n - at, ChainCopier::kPiece);
++                    if (copier->posted.load(std::memory_order_relaxed) - copier->firstOpen >= ChainCopier::kRing)
++                    {
++                        copier->openFrom();
++                        if (copier->posted.load(std::memory_order_relaxed) - copier->firstOpen >= ChainCopier::kRing)
++                            copier->drain();
++                    }
++                    const uint32_t dst = static_cast<uint32_t>(bytes.size());
++                    bytes.resize(dst + piece); // capacity reserved: no reallocation; the copier overwrites the zeros
++                    copier->post(m_rdram + src + at, dst, piece);
++                    at += piece;
++                }
++            }
+         }
+         if (end || irq)
+             break;
+@@ -2031,7 +2261,9 @@
+         {
+             static const uint32_t lag = chainStreamLag();
+             const uint64_t copied = bytes.size();
+-            const uint64_t scanPos = copied > lag ? copied - lag : 0u;
++            uint64_t scanPos = copied > lag ? copied - lag : 0u;
++            if (copierUsed)
++                scanPos = std::min<uint64_t>(scanPos, copier->openFrom()); // not past a job still being copied
+             const uint32_t published = stream ? stream->published.load(std::memory_order_relaxed) : 0u;
+             if (scanPos >= published + streamBytes)
+             {
+@@ -2062,6 +2294,11 @@
+     if (tags >= kMaxTags)
+         std::fprintf(stderr, "[dma] chain on path %u stopped after %d tags at 0x%08x\n", static_cast<unsigned>(path), tags,
+                      tagAddress);
++    if (copierUsed)
++    {
++        copier->drain(); // every byte copied before the transfer completes
++        copier->active.store(0u, std::memory_order_relaxed);
++    }
+     if (chainT0)
+     {
+         const uint64_t ns = ps2_perf::nowNanos() - chainT0;

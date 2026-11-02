@@ -1458,3 +1458,69 @@ Mean < 50 and min < 40: ATHN06C, ATHN01D, PAND02B, fight_ATHN01D. Game speed 0.9
   register reads that do not depend on mixing progress (not ENDX / NAX / ENVX / stream halves) need no sync; (3) the rest of
   dispatchGuestBranch (2-4 %: the 3.4 MB function table's entry load misses, a smaller 32-bit table would halve it); (4)
   callers of `std::_Rb_tree_increment` (0.4-0.6 %) and malloc / free (0.8 %): a `GOW_PC_SAMPLE_LR` run on them.
+
+## Boss fights: what limits clones and Hydra 1; DMA chain copier, mixer priority, FPCR-free divide (sw-dips15, 2026-11-02, from dips37c)
+- Profile (update_boss10 = dips37c + test options, `GOW_PC_SAMPLE=1000,GOW_PC_SAMPLE_THREADS=GameThread,GSWorker`, logs
+  port/switch/logs/prof_b10_{clones,hydra1}, 5 s windows tabulated by `[gow-perf]` / `[gsw-split]` / `[gsw-idle]` / `[gs-gl]`):
+  - **Hydra 1** (ATHN01B cargo hold) was **core-1 bound**: EE 4.2 s + IOP 0.8-1.0 s per 5 s, guest_wait ~0, VU1 job 4.2 s
+    (idle 0.7). GameThread: `sub_00219CE8` 10.6 % (EE FPU code: the divide / square-root FPCR switches and the clamp after
+    them are ~45 % of it), chain copy ~8.7 % (memcpy 5.7, appendGuestBytes 2.1, sendDmaChain 0.9), **SoundEngine::step 4.6 %**,
+    dispatchGuestBranch 4.5, free / malloc 1.7.
+  - **Clones** (ATHN08B) is **VU1-thread bound** (job 4.4-4.6 s, idle 0.4; the EE waits 0.4-0.9 s): GSWorker kCullClip
+    11.4 %, litLoopT 10.3, runLit 8.7, windLoop 7.6 (both forms), skinLoopT 5.9, npart 5.4, memcpy 4.2, colDivLoop 3.5,
+    idle 15. Its fps varies a lot between identical runs (min 44.8-51.8): the mission fails after 30-65 s.
+- **SPU mixing on the EE** (`GOW_SND_SYNC_DIAG=1`: `[snd-sync]` sync() calls and the samples they mix on the caller, by
+  function and libsd register id): in Hydra 1 the EE mixed 140-190 k of the 240 k samples per 5 s, ~95 % of them for
+  `getParam(ENVX)` (the driver reads every voice's envelope 20-40 k times per 5 s). The SoundMix worker (core 0, default
+  priority) waited behind the deko3d thread (GSThread never yields to an equal priority), so sync() took its pending
+  batches back. **SoundMix now runs one priority step above** (`GOW_PRIO_SoundMix`, default 1; `GOW_CORE_SoundMix=3`
+  allowed but worse: behind GSStage / ChainCopy the EE mixed 191 k): EE-mixed samples 140 k -> 40 k, IOP ms 0.85-1.0 ->
+  0.6-0.75 s per 5 s. Same samples either way (the worker and sync() run the same mixTo).
+- **Chain copier** (ps2_memory.cpp `ChainCopier`, thread `ChainCopy` on core 3 one step above GSStage): VIF1 chain pieces
+  >= 2 KB (`GOW_CHAIN_COPIER_MIN`) of RAM data become <= 16 KB jobs; the EE resizes the buffer (zeros) and walks on, the
+  copier copies; when more than 64 KB (`GOW_CHAIN_COPIER_BACKLOG`) wait untaken the EE copies the piece itself; at the
+  chain's end the EE copies the untaken jobs and waits for the rest (every byte in place before sendDmaChain returns, as
+  before); a streamed chain publishes only up to the first job not done. `[gsw-copier]` per 5 s: jobs ~55 k, copier
+  390 MB, EE-taken 2-3 MB, EE wait 6-18 ms. Hydra 1 chain_ms 410-450 -> 330-370 per 5 s. `GOW_CHAIN_COPIER=0`: off.
+  libnx has no pthread_detach: the thread object is kept (a `detach()` ended the first test build at the first chain with
+  `[terminate]`). A tag / data prefetch in the chain walk (ref tags 2 ahead) changed chain_ms by nothing and was dropped.
+- **EE divide / square root without FPCR switches** (ps2_runtime_macros.h, AArch64): the EE thread runs in round-toward-
+  zero; ps2FpuDivideNearest / SqrtNearest switched FPCR to nearest and back around each fdiv / fsqrt (two serialising
+  writes). Now, for normal operands with a result exponent in 2..252 (else the old switch): the truncated result q, then
+  the next float away from zero iff the exact value exceeds q + ulp/2 (division: the double quotient, truncated to 53 bits,
+  is >= that midpoint; square root: x > m * m, exact in double). A quotient or square root of floats is never a midpoint, so
+  this is the nearest result. Test: port/switch/tools_dips15/fpu_nearest_test.cpp (aarch64, qemu, FPCR RZ + FZ): 40 M
+  random pairs (exponents biased to collide, exact quotients) and the squares 1..5e6 with neighbours: 0 differences vs the
+  FPCR-switch reference.
+- Console (boss runs, fight windows of `port/switch/sweep/bossx3/fightfps.py`, min / mean fps; one run each unless noted):
+  | build | Hydra 1 | clones |
+  |---|---|---|
+  | dips37c (boss10, sw-boss3) | 47.0 / 51.1 | 44.8 / 51.5 |
+  | boss11/13, copier off | 47.0 / 51.0 | 51.8 / 55.3 (40 s) |
+  | boss13 copier, SoundMix boost 0 | 48.0 / 52.1 | - |
+  | boss13/14 copier + SoundMix boost 1 (3 runs) | 49.0 / 50.8, 49.0 / 51.0, 49.2 / 51.3 | 48.4 / 52.9 (40 s) |
+  | boss15 + FPCR-free divide (2 runs) | 49.0 / 52.4, 48.6 / 51.3 | 47.0 / 53.2 (65 s) |
+  | **boss16 = dips38 + test options** | **49.2 / 52.5** | **50.4 / 52.5** (30 s) |
+  Hydra 1's minimum rose ~2 fps; its mean stays ~51 because it is now **VU1-thread bound** (job 4.6 s per 5 s, idle 0.3-0.4,
+  the EE waits 0.1-0.2 s). Both fights now wait on the VU1 thread.
+  With the divide change the EE waits more on the VU1 thread (guest_wait 0.1-0.2 -> 0.2-0.3 s per 5 s in Hydra 1).
+- Package **update_dips38** (exefs md5 b484db01, ELF /root/elf_dips38.elf; port/switch/dips38.patch = full diff from dips37c:
+  copier, SoundMix priority, FPCR-free divide / square root, `[snd-sync]` / `[gsw-copier]`; originals /root/dips38-orig) and
+  the boss test package update_boss16 (md5 be1f536b = dips38 sources + GOW_TELEPORT / pad / god-mode options, tree
+  /root/src-boss). Default checks: levels A/B (`--levels --only ATHN01D,PAND02B,ATHN06C,ATRET01B`, sweep/ab_dips38 vs
+  ab_dips37c): ATHN01D 45.0 / 48.9 (42.2 / 49.4), PAND02B 49.0 / 57.8 (48.6 / 57.3), ATRET01B 56.4 / 59.2 (57.2 / 59.7),
+  ATHN06C 35.6 / 39.1 (53.0 / 56.6: a different view after the walk, GS GL thread 25 ms per frame instead of 9; earlier A/B
+  runs of ATHN06C gave 38.7-53.6 on the same build); SEMO01 30.0 pictures/s (sweep/mov_dips38); 4 clean title boots
+  (sweep/boot_dips38: title menu in Italian, no error lines); boss runs above (sweep/boss_dips38). Not installed yet.
+- **Handoff (sw-dips15)**: console default unchanged (update_dips37c + FAILGT, c9248241); update_dips38 passed the default
+  checks and waits for the user's go. Sources /root/src-mlang = dips37c + dips38 (build: `port/switch/tools_dips14/build.sh
+  <tag>`; boss package: copy the touched files to /root/src-boss and `bash port/switch/boss_sb.sh <tag>`; note `wsl ... bash
+  -c '...'` expands `$vars` in the outer shell: put multi-line commands in a script file). Both fights now wait on the
+  **VU1 thread** (job 4.4-4.7 s per 5 s): next levers there, by the profiles above: kCullClip (11 % in clones, 6 % in
+  Hydra 1; flag-exact, branchy, a fast path for strips that need no clip flags?), windLoop / colDivLoop in an exact FastOps
+  form (dips33's form was inexact), skinLoopT / runLit (Hydra 1, 23 %), the GSWorker's memcpy (4 %: callers via
+  `GOW_PC_SAMPLE_LR`). Core 1 next: the ENVX reads still make the EE mix ~40 k samples per 5 s (an ENVX that does not need
+  the whole mix, e.g. per-voice envelope stepping, would end it), dispatchGuestBranch 4.5 %, sub_00219CE8's remaining
+  clamps. Tools: port/switch/tools_dips15 (tab.py <log> [t0 t1]: per-5-s thread loads; ab_boss.sh / prof_boss.sh: boss
+  items with env / PC sampling; bossb.sh: boss package from the dips38 files). Clones' minimum swings 44.8-51.8 between identical runs (fight length 30-65 s): judge it on several runs.
+
