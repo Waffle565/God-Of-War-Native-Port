@@ -104,6 +104,27 @@ steps, square / triangle combos, circle mashing (QTEs) and a cross every 10 s (d
     and PAND04EE only. PAND03E = the lava rooms with blade traps (Challenge of Hades traps, `StatueCrank` in its
     strings): falling off the beams is a death. PAND04EE warp = a cave with a closed wooden gate (a chest beside it)
     and a round room with a patterned floor up the tunnel: the likely arena (the Guardian breaks through a gate).
+- **Handoff (sw-boss2, 2026-11-02 05:00)**: BOSSES still ares, clones, challenge, cerberus; Hydra 1, Hydra 2 and
+  Pandora's Guardian not found yet (most of the session went to console slots for sw-dips11/12 and sw-crash2).
+  Ready: save items (`--boss-save`, `SAVE_BOSSES`), `GOW_PAD_LIVE` + `tools/switch_live.py`, the boss tree rebuilt on
+  the dips35 sources (update_boss6 = default dips35 + GOW_TELEPORT + GOW_PAD_LIVE; `rsync -a --delete /root/src-mlang/
+  /root/src-boss/` then `boss_sb.sh <tag>` whenever the default changes). Interactive session recipe: env.txt =
+  default + `GOW_SKIP_FMV=1 GOW_GOD_MODE=1 GOW_PLAYER_TRACE=1 GOW_PAD_TEST=1 GOW_PAD_TEST_NO_CAPTURE=1
+  GOW_PAD_GUION=30:start,39:x,45:x,51:x,57:x GOW_WARP=<zone> GOW_WARP_STAY=1500 GOW_PAD_LIVE=sdmc:/switch/gow/live.txt`
+  (or the load keys of `load_keys()` + `GOW_MC0=sdmc:/switch/gow/boss.mcd` for a save), push, `sw_ready` +
+  `sw_launch`, then `LIVE_HALF=1 python tools/switch_live.py <shot.jpg> x,y,s[,buttons] ...` (plain python: PIL for
+  the half-size copy) and read the half-size shot; with `GOW_PAD_TEST` bot clicks are ignored, so menus (death screen:
+  stick up + cross) go through live buttons too. Close: `sw_home_close`, default env.txt back, pull log.txt (its
+  `[gow-player]` lines give the positions for `GOW_TELEPORT` / the pad steps), delete live.txt.
+  Recipe verified on update_boss6 (md5 fd47027c, port/switch/sweep/bossx2/i_pand04ee2). PAND04EE floor y 880, the
+  room spans about x 435..810, z -4510..-4195: a round floor pattern with a sparkling pick-up on it, a chest, a
+  free-standing stone block (pushable?) and the closed wooden gate with a chest beside it.
+  Next steps: (1) Guardian: PAND04EE, explore the round room up the tunnel and the gate (R1 at the gate did nothing);
+  if nothing, PAND03E past the blade traps to the StatueCrank. (2) Hydra 1: load console_athn01d.mcd, walk up to the
+  crates (-1040,-63,-1430), climb the net (cross + up) to the archers' walkway and on to the bow. (3) Hydra 2: from
+  the 01E enclosure find the exit (boards may break with attacks; the deck lies toward -z). Record each working path
+  as `SAVE_BOSSES` / `--boss-item` pad steps (or GOW_TELEPORT positions from the trace), then run all 7 with
+  `--boss --package update_boss6`.
 - Test package: `bash port/switch/boss_sb.sh <tag>` in WSL builds /root/src-boss (a copy of /root/src-mlang at the
   default's sources + port/overrides-usa/gow_overrides.cpp) in /root/gow-switch-boss, inside a private mount namespace
   where both appear at the mlang paths (incremental build, the mlang tree untouched). update_boss3 = dips32 +
