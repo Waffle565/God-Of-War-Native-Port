@@ -1524,3 +1524,35 @@ Mean < 50 and min < 40: ATHN06C, ATHN01D, PAND02B, fight_ATHN01D. Game speed 0.9
   clamps. Tools: port/switch/tools_dips15 (tab.py <log> [t0 t1]: per-5-s thread loads; ab_boss.sh / prof_boss.sh: boss
   items with env / PC sampling; bossb.sh: boss package from the dips38 files). Clones' minimum swings 44.8-51.8 between identical runs (fight length 30-65 s): judge it on several runs.
 
+## dips38's ATHN06C loss is the SoundMix boost on core 0; windLoop in the fast form (sw-dips16, 2026-11-02, from dips38)
+- **ATHN06C A/B, interleaved** (3 runs each, `--levels --only ATHN06C`, sweep/ab16_dips37c, ab16_dips38; per-window
+  table: port/switch/tools_dips16/glb.py): the walk ends in two views at random (terrace: GS GL ~2.5 s per 5 s, ~52 fps;
+  corridor: GL ~4.6 s per 5 s, the **GS GL thread bounds the frame**). In the corridor windows dips37c ran 38.4 / 39.2 /
+  38.5 fps (GL 24.0-24.3 ms per frame), dips38 35.3 / 35.9 / 35.7 (25.6-26.1 ms): dips38 is ~3.5 fps worse there (all
+  three dips38 runs got the corridor, which is why its earlier single run looked like a different view only). Cause:
+  dips38's **SoundMix one priority step above GSThread on core 0** takes the core from the deko3d thread: dips38 with
+  `GOW_PRIO_SoundMix=0` (sweep/ab16_dips38p0) ran the corridor at 38.8 / 37.1 fps (23.2-24.4 ms per frame), as dips37c.
+  dips38 was not installed (default stays dips37c). sound_engine.cpp's default boost is 0 again (dips39); the fights
+  are VU1-thread bound now, the boost's gain there was ~1 fps of minimum in single runs (sw-dips15's table).
+- **windLoop in the FastOps form** (ps2_vu1_nat_misc.inl, both windings; it was the last per-operation loop of the
+  clip path in the clones' profile, 7.6 % of the VU1 thread): one overflow test per pass with an exact redo, as
+  colDivLoop; the integer part (FMEQ, ADC word), p1's load and p5 / p7's stores outside the pass in the original order
+  (load before the stores; vf4 stored before p9 rewrites it). The FMACs keep all lanes (maddc's path depends on the
+  discarded ones); MUL / ADD / SUB run on their written lanes only (no wide path, lane-independent), so the raw zw of
+  vf27 / vf28 / vf5 / vf11 never fail the test; SUB as ADD of the negated operand. vf27 / vf28 are normalised whole at
+  entry (p11's MSUB reads b whole) and get their raw zw back at exit. The MAC flags of p11 / p12 come from the pass's
+  result (the exact pass takes maddc's raw for p11). Natcheck (harness p1 = n1 + this file): x86 and a64 identical to
+  n1 on all recordings (windLoop runs: 1dcc471c / 2611f8a2, 194 each, and the clip-path entries e4f3b5c3 / ea6b4a01),
+  forced decline identical, forced exact (p1x, `FastOps::ok()` false) identical. x86 time per run 1dcc471c 5.07 -> 4.18
+  us, 2611f8a2 4.63 -> 4.22.
+- Boss runs, interleaved, both with `GOW_PRIO_SoundMix=0` (sweep/b16_boss16 = dips38, b16_boss17 = dips38 + windLoop;
+  fight windows, VU1 thread per window: port/switch/tools_dips16/fightvu.py):
+  | build | Hydra 1 min / mean, VU1 ms per frame | clones min / mean, VU1 us/run, ms per frame |
+  |---|---|---|
+  | boss16 | 49.0 / 52.2, 17.4; 48.2 / 52.2, 17.3 | 46.8 / 53.6, 13.66, 17.1 (35 s); 48.4 / 54.5, 13.05, 15.7 (110 s) |
+  | boss17 | 48.8 / 52.5, 17.2; 48.2 / 50.4, 18.1 | 47.6 / 53.9, 12.62, 15.6 (120 s); 48.2 / 56.2, 13.06, 14.7 (110 s) |
+  SoundMix boost 0 leaves Hydra 1 where boost 1 had it (49.2 / 52.5); windLoop's gain in the clones is inside the
+  run-to-run spread (VU1 ms per frame 15.2 vs 16.4 on average). Both fights stay at minimum ~48-49: not yet >= 50.
+- Package **update_dips39** (exefs md5 a91f63fa, ELF /root/elf_dips39.elf) = dips38 + windLoop FastOps + SoundMix
+  boost 0 (port/switch/dips39.patch, diff from dips38; originals /root/dips39-orig); boss test package update_boss17
+  (dips38 boss sources + windLoop, SoundMix boost still 1: test it with `GOW_PRIO_SoundMix=0`).

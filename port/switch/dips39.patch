@@ -1,0 +1,123 @@
+--- a/ps2xRuntime/src/lib/vu/ps2_vu1_nat_misc.inl
++++ b/ps2xRuntime/src/lib/vu/ps2_vu1_nat_misc.inl
+@@ -278,45 +278,78 @@
+                 mac = vu1n::macVal<4>(r);
+                 f7 = bl<4>(f7, vu1n::clampv(r));
+             }
+-            do
+-            {
+-                acc = add(m23, z);                                  // p0 addax.xyzw ACC, vf23, vf0x | iadd vi2, vi2, vi4
+-                vi2 = sx(vi2 + vi4);
+-                acc = madd(acc, m20, bc<0>(f2));                    // p1 maddax.xyzw ACC, vf20, vf2x | lq.xyzw vf1, 0(vi2)
+-                f1 = ldq(d, vi2);
+-                f5 = bl<7>(f5, mul(f3, qv(q)));                     // p2 mulq.xyz vf5, vf3, Q | fmeq vi8, vi8
+-                vi8 = (macRead & 0xFFFFu) == (static_cast<uint32_t>(vi8) & 0xFFFFu) ? 1 : 0;
+-                acc = madd(acc, m21, bc<1>(f2));                    // p3 madday.xyzw ACC, vf21, vf2y | isubiu vi8, vi8, 1
+-                vi8 = sx(vi8 - 1);
+-                f3 = madd(acc, m22, bc<2>(f2));                     // p4 maddz.xyzw vf3, vf22, vf2z | iadd vi3, vi3, vi4
+-                vi3 = sx(vi3 + vi4);
+-                f28 = bl<3>(f28, add(f27, z));                      // p5 addx.xy vf28, vf27, vf0x | isw.w vi8, 0(vi3)
+-                vu1n::stWordsm(d, vu1hle::qa(vi3), vi8, 1);
+-                f5 = bl<4>(f5, sub(f7, f5));                        // p6 sub.z vf5, vf7, vf5 | isubiu vi5, vi5, 1
+-                vi5 = sx(vi5 - 1);
+-                stq<7>(d, vi3, f4);                                 // p7 sub.xy vf27, vf5, vf11 | sq.xyz vf4, 0(vi3)
+-                f27 = bl<3>(f27, sub(f5, f11));
++            // sw-dips16: the loops' fast form (as colDivLoop): one overflow test per pass, exact redo, the integer part, the
++            // load and the stores outside the pass (the pass reads no VU memory; p1's load precedes p5 / p7's stores, as
++            // here). Normalised once: the rows, vf23 + 0 (loop-invariant: p0's ACC, the only addend besides the pass's
++            // own tracked results; the entry ACC is never read), and at entry vf2 xyz (p1-p4 read it before p8 rewrites
++            // it), vf3 (p2, before p4 rewrites it whole), vf27 / vf28 (all lanes: p11's MSUB reads b whole, so its
++            // discarded lanes keep maddc's path for x; their zw are never written and go back raw at exit) and vf11 xy
++            // (p7, before p12). The per-lane operations (MUL, ADD, SUB: no wide path) run on their written lanes only
++            // (the others zero, so raw w / zw lanes cannot fail the test); SUB as ADD of the negated operand (the same
++            // IEEE operation). The FMACs keep all lanes. MAC flags from the result: on the fast path it is the raw one;
++            // the exact pass takes maddc's raw for p11, and p12's ADD of normalised operands has raw = result in
++            // round-toward-zero (the flags count FLT_MAX as overflow, so they would match even for Inf).
++            const __m128 n20 = N(m20), n21 = N(m21), n22 = N(m22);
++            const __m128 a23 = add(m23, z);
++            const __m128 e27 = f27, e28 = f28;
++            const __m128 sgn = _mm_castsi128_ps(_mm_set1_epi32(static_cast<int>(0x80000000u)));
++            const auto neg = [&](__m128 v) { return _mm_xor_ps(v, sgn); };
++            f2 = bl<7>(f2, N(f2)), f3 = N(f3), f27 = N(f27), f28 = N(f28), f11 = bl<3>(f11, N(f11));
++            float qn = q;
++            auto pass = [&](auto &o, __m128 Q, __m128 l1) {
++                acc = o.madd(a23, n20, bc<0>(f2));                  // p0 addax.xyzw ACC, vf23, vf0x; p1 maddax.xyzw ACC, vf20, vf2x
++                f1 = l1;                                            //    | lq.xyzw vf1, 0(vi2)
++                f5 = bl<7>(f5, o.mul(bl<7>(z, f3), Q));             // p2 mulq.xyz vf5, vf3, Q | fmeq vi8, vi8
++                acc = o.madd(acc, n21, bc<1>(f2));                  // p3 madday.xyzw ACC, vf21, vf2y | isubiu vi8, vi8, 1
++                f3 = o.madd(acc, n22, bc<2>(f2));                   // p4 maddz.xyzw vf3, vf22, vf2z | iadd vi3, vi3, vi4
++                f28 = bl<3>(f28, o.add(bl<3>(z, f27), z));          // p5 addx.xy vf28, vf27, vf0x | isw.w vi8, 0(vi3)
++                f5 = bl<4>(f5, o.add(bl<4>(z, f7), neg(bl<4>(z, f5)))); // p6 sub.z vf5, vf7, vf5 | isubiu vi5, vi5, 1
++                f27 = bl<3>(f27, o.add(bl<3>(z, f5), neg(bl<3>(z, f11)))); // p7 sub.xy vf27, vf5, vf11 | sq.xyz vf4, 0(vi3)
+                 f2 = bl<7>(f2, vu1n::itofv<4>(f1));                 // p8 itof4.xyz vf2, vf1 | div Q, vf0w, vf3w
+-                const float qn = rcpw(f3);
+-                f4 = bl<7>(f4, ftoi4(f5));                          // p9 ftoi4.xyz vf4, vf5 | iand vi8, vi7, vi6
+-                vi8 = vi7 & vi6;
++                qn = rcpw(f3);
++                f4 = bl<7>(f4, vu1n::ftoiv<4>(f5));                 // p9 ftoi4.xyz vf4, vf5 (xyz normalised; w discarded)
+                 // p10 mulay.x ACC, a, by | iaddiu vi7, vi1, 127; p11 msuby.x vf0, b, ay (flags only) | ibne
+                 const __m128 a = Swap ? f28 : f27, b = Swap ? f27 : f28;
+-                acc = bl<1>(acc, mul(a, bc<1>(b)));
+-                vi7 = sx(vi1 + 127);
++                acc = bl<1>(acc, o.mul(bl<1>(z, a), bc<1>(b)));
++                if constexpr (std::is_same_v<std::decay_t<decltype(o)>, ExactOps>)
+                 {
+                     __m128 raw;
+-                    (void)vu1n::maddc<true>(acc, N(b), N(bc<1>(a)), raw);
++                    (void)vu1n::maddc<true>(acc, b, bc<1>(a), raw);
+                     macRead = vu1n::macVal<1>(raw);
+                 }
++                else
++                    macRead = vu1n::macVal<1>(o.msub(acc, b, bc<1>(a)));
++                const __m128 r = o.add(bl<3>(z, f5), z);            // p12 (delay) addx.xy vf11, vf5, vf0x | mtir vi1, vf1w
++                mac = vu1n::macVal<3>(r);
++                f11 = bl<3>(f11, r);
++            };
++            const __m128i h0 = mag(a23);
++            do
++            {
++                vi2 = sx(vi2 + vi4);                                // p0
++                const __m128 l1 = ldq(d, vi2), Q = N(qv(q));        // p1
++                vi8 = (macRead & 0xFFFFu) == (static_cast<uint32_t>(vi8) & 0xFFFFu) ? 1 : 0; // p2 (the previous pass's p11)
++                vi8 = sx(vi8 - 1);                                  // p3
++                vi3 = sx(vi3 + vi4);                                // p4
++                vu1n::stWordsm(d, vu1hle::qa(vi3), vi8, 1);         // p5
++                vi5 = sx(vi5 - 1);                                  // p6
++                stq<7>(d, vi3, f4);                                 // p7 (vf4 before p9)
++                const __m128 c2 = f2, c3 = f3, c5 = f5, c11 = f11, c27 = f27, c28 = f28;
++                const uint32_t cr = macRead, cm = mac;
++                FastOps fo(h0);
++                pass(fo, Q, l1);
++                if (!fo.ok()) [[unlikely]]
+                 {
+-                    const __m128 r = _mm_add_ps(N(f5), N(z));       // p12 (delay) addx.xy vf11, vf5, vf0x | mtir vi1, vf1w
+-                    mac = vu1n::macVal<3>(r);
+-                    f11 = bl<3>(f11, vu1n::clampv(r));
++                    f2 = c2, f3 = c3, f5 = c5, f11 = c11, f27 = c27, f28 = c28, macRead = cr, mac = cm;
++                    ExactOps eo;
++                    pass(eo, Q, l1);
+                 }
+-                vi1 = vu1n::laneBits16<3>(f1);
++                vi8 = vi7 & vi6;                                    // p9
++                vi7 = sx(vi1 + 127);                                // p10
++                vi1 = vu1n::laneBits16<3>(f1);                      // p12
+                 q = qn;
+             } while (vi5 != 0);
++            f27 = bl<3>(e27, f27), f28 = bl<3>(e28, f28);
+             stv(s, 1, f1); stv(s, 2, f2); stv(s, 3, f3); stv(s, 4, f4); stv(s, 5, f5); stv(s, 7, f7); stv(s, 11, f11);
+             stv(s, 27, f27); stv(s, 28, f28);
+             _mm_storeu_ps(s.acc, acc);
+--- a/ps2xIOP/src/emulator/core/sound_engine.cpp
++++ b/ps2xIOP/src/emulator/core/sound_engine.cpp
+@@ -158,7 +158,10 @@
+         // yields to an equal priority), sync() takes its pending batches back and the EE mixed ~2/3 of all samples in the
+         // fights ([snd-sync], GOW_SND_SYNC_DIAG). Default: core 0 one step above GSThread (Hydra 1: the EE mixed 140 k of
+         // 240 k samples per 5 s at boost 0, 40 k at boost 1; on core 3 it starved behind GSStage / ChainCopy)
+-        int core = 0, boost = 1;
++        // sw-dips16: default boost 0 again: above GSThread the mixer takes core 0 from the deko3d thread, and where that
++        // thread bounds the frame (ATHN06C's corridor: GS GL busy ~4.6 s per 5 s) fps fell 38.5 -> 35.6 (GL 24 -> 26 ms
++        // per frame); the fights, VU1-thread bound, gained ~1 fps of minimum from it (single runs)
++        int core = 0, boost = 0;
+         if (const char *value = std::getenv("GOW_CORE_SoundMix"); value && value[0] >= '0' && value[0] <= '3' && value[1] == '\0')
+             core = value[0] - '0';
+         if (const char *value = std::getenv("GOW_PRIO_SoundMix"); value && value[0] >= '0' && value[0] <= '9' && value[1] == '\0')

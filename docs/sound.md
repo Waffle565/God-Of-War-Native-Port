@@ -478,9 +478,11 @@ Per frame the game sends one batch (cmd 0x4D) of: 4c SMPD fn 1a (x2), 42, 4c SMP
   mixing (the output is the same sample for sample) and the thread mixes in parallel with the EE between the driver's
   calls. While a core input stream (a movie) plays, the IOP fills its ring outside these calls, so `advanceTo` mixes
   inline then. `GOW_SOUND_THREAD=0` mixes inline always. On the Switch the thread runs on core 0
-  (`GOW_CORE_SoundMix=<0-3>` moves it) one priority step above the deko3d thread (`GOW_PRIO_SoundMix=<0-9>`, default 1
-  since sw-dips15: at the default priority it waited behind GSThread and the EE mixed ~2/3 of the samples itself, mostly
-  for the driver's ENVX reads; `GOW_SND_SYNC_DIAG=1` prints `[snd-sync]`, docs/performance.md sw-dips15).
+  (`GOW_CORE_SoundMix=<0-3>` moves it) at the default priority (`GOW_PRIO_SoundMix=<0-9>` steps above it). At the
+  default priority it waits behind the deko3d thread (GSThread) and the EE mixes much of the samples itself, mostly for
+  the driver's ENVX reads (`GOW_SND_SYNC_DIAG=1` prints `[snd-sync]`); one step above (dips38's default) it took core 0
+  from the deko3d thread and cost ~3.5 fps where that thread bounds the frame, so dips39 went back to 0
+  (docs/performance.md sw-dips15 / sw-dips16).
   - Why batches and take-back: handing every `advanceTo` to the thread cost more than the mixing (a lock and a wake
     per call: `sound=` 94 ms per 5 s); waiting for a woken but not yet scheduled thread cost ~1 ms per wait on a busy
     PC (92 ms per 5 s in one zone). With both, waits are 0-2 ms per 5 s.
