@@ -508,17 +508,17 @@ namespace
             }();
             // GOW-Port: GOW_PLAYER_TRACE=1 logs once per second Kratos's position (0x2C7790; player
             // object *0x29E5CC), the game state and the movie state, to steer scripted runs.
-            // GOW_GOD_MODE=1 (test runs only): Kratos's health (creature *0x29D2B4, +0x198 current, +0x19C maximum,
+            // GOW_GOD_MODE=1 (test runs only): Kratos's health (creature *0x29D2B4, +0x190 current, +0x194 maximum,
             // floats) is refilled every poll so long scripted runs are not ended by deaths.
             static const bool godMode = std::getenv("GOW_GOD_MODE") != nullptr;
             if (godMode)
                 if (const uint32_t creature = readGuest32(rdram, 0x29D2B4u) & 0x01FFFFFFu; creature >= 0x100000u)
                 {
-                    const uint32_t maximum = readGuest32(rdram, creature + 0x19Cu);
+                    const uint32_t maximum = readGuest32(rdram, creature + 0x194u);
                     float value = 0;
                     std::memcpy(&value, &maximum, 4);
                     if (value > 0.0f && value <= 10000.0f)
-                        writeGuest32(rdram, creature + 0x198u, maximum);
+                        writeGuest32(rdram, creature + 0x190u, maximum);
                 }
             static const bool playerTrace = std::getenv("GOW_PLAYER_TRACE") != nullptr;
             static double nextPlayerReport = 0;
@@ -532,7 +532,7 @@ namespace
                 const uint32_t creature = readGuest32(rdram, 0x29D2B4u) & 0x01FFFFFFu;
                 float health = 0;
                 if (creature >= 0x100000u)
-                    std::memcpy(&health, rdram + creature + 0x198u, 4);
+                    std::memcpy(&health, rdram + creature + 0x190u, 4);
                 // xf = translation of the transform the warp-point jump writes (player object *(*0x29CD58) +0x80), the
                 // coordinates GOW_TELEPORT takes
                 float xf[3]{};
