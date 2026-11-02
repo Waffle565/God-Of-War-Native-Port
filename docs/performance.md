@@ -1304,7 +1304,7 @@ Mean < 50 and min < 40: ATHN06C, ATHN01D, PAND02B, fight_ATHN01D. Game speed 0.9
   /root/src-mlang = dips32 + dips34 (originals: /root/dips34-full-orig holds the four touched files as in dips32; patch
   helper /root/dt/mkp.sh, call it from a script file: `wsl ... bash -c '...$VAR...'` loses `$` variables through
   wsl.exe). Harnesses /root/vu1h/g6 / g6a (= dips34 VU code; nca_g6*.txt), forced-exact g6x / g6xa. Scratch tools
-  (session scratchpad d11/, re-creatable): lim.py (per-zone thread busy from sweep logs), fam2.py (VU1 family ms in
+  (port/switch/tools_dips11/): lim.py (per-zone thread busy from sweep logs), fam2.py (VU1 family ms in
   VU1-bound windows), funcs.py (function profile from a pcs file, window range in s, `~name` for samples outside sized
   symbols), fdis.sh + loops.py (static loop length of a function), exact.sh (harness with FastOps::ok() forced false),
   gentest.sh, cmp.sh, wrtest.cpp (WriteRun vs per-pixel Write). Next levers by profile: GS GL thread in ATHN06C
