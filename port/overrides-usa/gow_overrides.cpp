@@ -509,16 +509,28 @@ namespace
             // GOW-Port: GOW_PLAYER_TRACE=1 logs once per second Kratos's position (0x2C7790; player
             // object *0x29E5CC), the game state and the movie state, to steer scripted runs.
             // GOW_GOD_MODE=1 (test runs only): Kratos's health (creature *0x29D2B4, +0x190 current, +0x194 maximum,
-            // floats) is refilled every poll so long scripted runs are not ended by deaths.
+            // floats): damage is undone every poll (a drop below the last seen value is written back) so long scripted
+            // runs are not ended by deaths. Not a refill to the maximum: the Ares fight (ATHN08C) starts with Kratos's
+            // health rising 370 -> 3000 in a scripted power-up, and a forced maximum left it on a white screen.
             static const bool godMode = std::getenv("GOW_GOD_MODE") != nullptr;
             if (godMode)
                 if (const uint32_t creature = readGuest32(rdram, 0x29D2B4u) & 0x01FFFFFFu; creature >= 0x100000u)
                 {
-                    const uint32_t maximum = readGuest32(rdram, creature + 0x194u);
-                    float value = 0;
-                    std::memcpy(&value, &maximum, 4);
-                    if (value > 0.0f && value <= 10000.0f)
-                        writeGuest32(rdram, creature + 0x190u, maximum);
+                    static uint32_t lastCreature = 0;
+                    static float last = 0.0f;
+                    float value = 0, maximum = 0;
+                    const uint32_t bits = readGuest32(rdram, creature + 0x190u), maxBits = readGuest32(rdram, creature + 0x194u);
+                    std::memcpy(&value, &bits, 4);
+                    std::memcpy(&maximum, &maxBits, 4);
+                    if (creature == lastCreature && value < last && last > 0.0f && last <= maximum && maximum <= 10000.0f)
+                    {
+                        uint32_t lastBits = 0;
+                        std::memcpy(&lastBits, &last, 4);
+                        writeGuest32(rdram, creature + 0x190u, lastBits);
+                    }
+                    else if (value > 0.0f && value <= 10000.0f)
+                        last = value;
+                    lastCreature = creature;
                 }
             static const bool playerTrace = std::getenv("GOW_PLAYER_TRACE") != nullptr;
             static double nextPlayerReport = 0;
