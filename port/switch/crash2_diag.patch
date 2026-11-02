@@ -1,5 +1,5 @@
---- a/ps2xRuntime/src/lib/ps2_runtime.cpp	2026-11-02 03:42:35.702261567 +0100
-+++ b/ps2xRuntime/src/lib/ps2_runtime.cpp	2026-11-02 03:40:30.800961700 +0100
+--- a/ps2xRuntime/src/lib/ps2_runtime.cpp	2026-11-02 03:46:38.242539633 +0100
++++ b/ps2xRuntime/src/lib/ps2_runtime.cpp	2026-11-02 03:43:29.990486691 +0100
 @@ -1535,6 +1535,8 @@
      m_missingFunctionReported.store(false, std::memory_order_release);
  }
@@ -17,7 +17,7 @@
      }
  
      if (firstReport && policy == MissingFunctionPolicy::BreakOnce)
-@@ -1706,6 +1709,164 @@
+@@ -1706,6 +1709,174 @@
          std::fprintf(stderr, "  src=%08x dst=%08x ra=%08x kind=%u\n", r.src, r.dst, r.ra, r.kind);
      }
  }
@@ -30,6 +30,10 @@
 +    return std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
 +}
 +static PS2Runtime *g_gowDiagRuntime = nullptr; // for the IOP RAM dump
++// With GOW_POOL_CHECK: the last 65536 guest branches {src, dst, ra} (EE thread only), dumped with the RAM to
++// <prefix>_<why>_ring.bin (u32 position, then 65536 records of 3 u32, oldest at position & 0xFFFF).
++static uint32_t g_gowBigRing[65536][3];
++static uint32_t g_gowBigRingPos = 0;
 +static void gowDumpRam(uint8_t *rdram, const char *why)
 +{
 +    static const char *prefix = std::getenv("GOW_CRASH_DUMP");
@@ -37,6 +41,12 @@
 +    if (!prefix || !rdram || dumps >= 3)
 +        return;
 +    ++dumps;
++    if (std::FILE *file = std::fopen((std::string(prefix) + "_" + why + "_ring.bin").c_str(), "wb"))
++    {
++        std::fwrite(&g_gowBigRingPos, 4, 1, file);
++        std::fwrite(g_gowBigRing, 1, sizeof(g_gowBigRing), file);
++        std::fclose(file);
++    }
 +    const std::string path = std::string(prefix) + "_" + why + ".bin";
 +    if (std::FILE *file = std::fopen(path.c_str(), "wb"))
 +    {
@@ -86,7 +96,7 @@
 +}
 +// GOW_POOL_CHECK=1: checks the game's 0x24-byte node pool (*0x29C708; alloc 0x13DA10, free 0x13DB18; free list at
 +// pool+0x10, link at block+0). At every alloc/free the first 256 free entries must be blocks of the pool and a freed
-+// block must be a block that is not free already; every 50 ms (checked at guest calls) the whole free list is walked
++// block must be a block that is not free already; every 2 ms (checked at guest calls) the whole free list is walked
 +// (blocks of the pool, no cycle). The first faults are logged with the branch ring (and RAM dumps with
 +// GOW_CRASH_DUMP); every 5 s [gow-pool] gives the free count. GOW_POOL_LOG=1 also logs every alloc/free.
 +static void gowPoolCheck(uint8_t *rdram, R5900Context *ctx, uint32_t targetPc)
@@ -94,7 +104,7 @@
 +    const bool op = targetPc == 0x13DA10u || targetPc == 0x13DB18u;
 +    static double nextWalk = 0;
 +    static uint32_t calls = 0;
-+    if (!op && ((++calls & 0x3FFu) != 0u || gowDiagSeconds() < nextWalk))
++    if (!op && ((++calls & 0xFFu) != 0u || gowDiagSeconds() < nextWalk))
 +        return;
 +    auto rd = [rdram](uint32_t a) { uint32_t v = 0; a &= 0x01FFFFFCu; std::memcpy(&v, rdram + a, 4); return v; };
 +    const uint32_t pool = rd(0x29C708u) & 0x01FFFFFFu;
@@ -135,7 +145,7 @@
 +    }
 +    else
 +    {
-+        nextWalk = now + 0.05;
++        nextWalk = now + 0.002;
 +        uint32_t p = rd(pool + 0x10u), prev = pool + 0x10u, i = 0;
 +        for (; p != 0u && i < 8192u; ++i, prev = p, p = rd(p))
 +            if (!valid(p))
@@ -147,7 +157,7 @@
 +            fault = "free-list cycle (walk)", bad = p, index = i;
 +    }
 +    // state 4 (loading screen): words of 0x21E410 (stage 0x29E580, levelReady 0x29E584, load handle 0x29E550/54),
-+    // zone loaded 0x29CAB4, pad words 0x29E574 / 0x29E5A0, printed when one changes (at most every 50 ms)
++    // zone loaded 0x29CAB4, pad words 0x29E574 / 0x29E5A0, printed when one changes
 +    if (!op && rd(0x29E560u) == 4u)
 +    {
 +        static uint32_t last[7] = {~0u};
@@ -182,19 +192,21 @@
  // GOW-Port: GOW_EE_SAMPLE=<hz>: guest-function sampling profile of the EE thread (exclusive: the innermost guest function
  // entered through dispatchGuestBranch, plus the thread's perf bucket). Printed every 5 s as [ee-prof].
  std::atomic<uint32_t> g_gowCurFn{0};
-@@ -1770,6 +1931,11 @@
+@@ -1770,6 +1941,13 @@
      // Guest code runs on the EE executor thread only: a relaxed load/store pair instead of a locked fetch_add.
      { const uint32_t pos = g_gowRingPos.load(std::memory_order_relaxed); g_gowRingPos.store(pos + 1u, std::memory_order_relaxed);
        g_gowRing[pos & 255u] = {sourcePc, targetPc, ctx ? (uint32_t)_mm_cvtsi128_si32(ctx->r[31]) : 0u, (uint32_t)kind}; }
 +    if (g_gowPoolCheck && rdram && ctx)
 +    {
 +        g_gowDiagRuntime = this;
++        uint32_t *rec = g_gowBigRing[g_gowBigRingPos++ & 0xFFFFu];
++        rec[0] = sourcePc, rec[1] = targetPc, rec[2] = (uint32_t)_mm_cvtsi128_si32(ctx->r[31]);
 +        gowPoolCheck(rdram, ctx, targetPc);
 +    }
  
      ctx->pc = targetPc;
      const bool isCall = (kind == GuestBranchKind::DirectCall || kind == GuestBranchKind::IndirectCall);
---- a/ps2xIOP/src/emulator/imports/iop_cdvd.cpp	2026-11-02 03:42:35.711549702 +0100
+--- a/ps2xIOP/src/emulator/imports/iop_cdvd.cpp	2026-11-02 03:46:38.248220408 +0100
 +++ b/ps2xIOP/src/emulator/imports/iop_cdvd.cpp	2026-11-02 03:04:10.181948946 +0100
 @@ -8,6 +8,9 @@
  #include "ps2x/iop/ps2_path.h"
