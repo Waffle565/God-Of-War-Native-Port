@@ -1100,7 +1100,7 @@ Run: `python -I tools/zones.py --slots 1,2,3,4` (scale: `PS2X_GS_HW_SCALE`); sav
   t=56 s), byte-identical registers and call trace. Analysis in docs/game-internals.md "Node pool and the
   0x1D6D44 crash": the player controller's object pointer was overwritten by a pool node placed at a bogus address
   (the 0x24-byte node pool's free list was corrupted before the load's node creation). Only these 2 of 212 sweep
-  new-game boots had levelReady=0 at 50 s. Diagnostic package update_crash2b (port/switch/crash2_diag.patch,
+  new-game boots had levelReady=0 at 50 s. Diagnostic package update_crash2c (port/switch/crash2_diag.patch,
   GOW_POOL_CHECK / GOW_CRASH_DUMP / GOW_CD_READ_DELAY_MS, docs/diagnostics.md) waits for console runs.
 - 2026-10-31 (sw-dips2): **update_dips7** = update_dips4 sources + port/switch/dips7.patch changes (per-256-byte-block
   hash cache for the texture revalidation, vertex path: per-run constants, reserved vectors, no range insert, kick

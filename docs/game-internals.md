@@ -199,7 +199,7 @@ every case: 11 frees, 11 reports. The game kept running (port/shipcrash/selftest
 - The Switch-only overrides differ from the PC only in the frame clock (0x17D778).
 
 ### Next
-Run console boots with the diagnostic package (port/switch/crash2_diag.patch, update_crash2b): GOW_POOL_CHECK=1
+Run console boots with the diagnostic package (port/switch/crash2_diag.patch, update_crash2c): GOW_POOL_CHECK=1
 plus GOW_CRASH_DUMP. A pool fault then names the corrupted link (`link-at`) and gives the branch ring and the EE and
 IOP RAM.
 

@@ -1,5 +1,5 @@
---- a/ps2xRuntime/src/lib/ps2_runtime.cpp	2026-11-02 03:37:16.903762300 +0100
-+++ b/ps2xRuntime/src/lib/ps2_runtime.cpp	2026-11-02 03:34:35.376906500 +0100
+--- a/ps2xRuntime/src/lib/ps2_runtime.cpp	2026-11-02 03:42:35.702261567 +0100
++++ b/ps2xRuntime/src/lib/ps2_runtime.cpp	2026-11-02 03:40:30.800961700 +0100
 @@ -1535,6 +1535,8 @@
      m_missingFunctionReported.store(false, std::memory_order_release);
  }
@@ -17,7 +17,7 @@
      }
  
      if (firstReport && policy == MissingFunctionPolicy::BreakOnce)
-@@ -1706,6 +1709,151 @@
+@@ -1706,6 +1709,164 @@
          std::fprintf(stderr, "  src=%08x dst=%08x ra=%08x kind=%u\n", r.src, r.dst, r.ra, r.kind);
      }
  }
@@ -146,6 +146,19 @@
 +        if (!fault && i >= 8192u)
 +            fault = "free-list cycle (walk)", bad = p, index = i;
 +    }
++    // state 4 (loading screen): words of 0x21E410 (stage 0x29E580, levelReady 0x29E584, load handle 0x29E550/54),
++    // zone loaded 0x29CAB4, pad words 0x29E574 / 0x29E5A0, printed when one changes (at most every 50 ms)
++    if (!op && rd(0x29E560u) == 4u)
++    {
++        static uint32_t last[7] = {~0u};
++        const uint32_t words[7] = {rd(0x29E580u), rd(0x29E584u), rd(0x29E550u), rd(0x29E554u), rd(0x29CAB4u), rd(0x29E574u), rd(0x29E5A0u)};
++        if (std::memcmp(words, last, sizeof(words)) != 0)
++        {
++            std::memcpy(last, words, sizeof(words));
++            std::fprintf(stderr, "[gow-load] t=%.2f stage=%x levelReady=%x handle=%x/%x zoneLoaded=%x pending=%x 5a0=%x\n", now,
++                         words[0], words[1], words[2], words[3], words[4], words[5], words[6]);
++        }
++    }
 +    if (now >= nextCount)
 +    {
 +        nextCount = now + 5.0;
@@ -169,7 +182,7 @@
  // GOW-Port: GOW_EE_SAMPLE=<hz>: guest-function sampling profile of the EE thread (exclusive: the innermost guest function
  // entered through dispatchGuestBranch, plus the thread's perf bucket). Printed every 5 s as [ee-prof].
  std::atomic<uint32_t> g_gowCurFn{0};
-@@ -1770,6 +1918,11 @@
+@@ -1770,6 +1931,11 @@
      // Guest code runs on the EE executor thread only: a relaxed load/store pair instead of a locked fetch_add.
      { const uint32_t pos = g_gowRingPos.load(std::memory_order_relaxed); g_gowRingPos.store(pos + 1u, std::memory_order_relaxed);
        g_gowRing[pos & 255u] = {sourcePc, targetPc, ctx ? (uint32_t)_mm_cvtsi128_si32(ctx->r[31]) : 0u, (uint32_t)kind}; }
@@ -181,7 +194,7 @@
  
      ctx->pc = targetPc;
      const bool isCall = (kind == GuestBranchKind::DirectCall || kind == GuestBranchKind::IndirectCall);
---- a/ps2xIOP/src/emulator/imports/iop_cdvd.cpp	2026-11-02 03:37:16.909435782 +0100
+--- a/ps2xIOP/src/emulator/imports/iop_cdvd.cpp	2026-11-02 03:42:35.711549702 +0100
 +++ b/ps2xIOP/src/emulator/imports/iop_cdvd.cpp	2026-11-02 03:04:10.181948946 +0100
 @@ -8,6 +8,9 @@
  #include "ps2x/iop/ps2_path.h"
