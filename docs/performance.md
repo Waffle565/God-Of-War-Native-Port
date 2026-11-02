@@ -1437,3 +1437,24 @@ Mean < 50 and min < 40: ATHN06C, ATHN01D, PAND02B, fight_ATHN01D. Game speed 0.9
   function -> 1 (cold). Plus `GOW_PC_SAMPLE_SKIP` (docs/diagnostics.md) and `[gsw-chain-seg]` (dips37b: the chain's data
   pieces by size, < 1 KB / < 16 KB / larger, count and KB per 5 s). dips37c: + the PPM capture writer, SoundEngine
   stepVoice / stepEnvelope inlined into step() (same code).
+- Where core 1 limits: in the profile run PAND02B (84-111 s: EE 2.7-3.0 s + IOP 0.5 s, guest_wait 1.5-1.8 s per 5 s) and
+  ATHN01D after its walk (guest_wait 2.3 s) wait for the VU1 thread; only ATHN01D's walk windows (and ab_dips35b's ATHN01D,
+  EE 4.0 s + IOP 0.9 s) are core-1 bound. PAND02B's EE thread has the same shape (game code 37.6 %, IOP 8.8, chain copy 7.7,
+  dispatch 3.0).
+- Package **update_dips37c** (exefs md5 c9248241, ELF /root/elf_dips37c.elf; dips37b = c08a66fd, dips37 = 04cc7b38, all
+  without install). Console A/B requested (same session): sweep `--levels --only ATHN01D,PAND02B,ATHN06C,ATRET01B`
+  `--package update_dips37c` (port/switch/sweep/ab_dips37c) and the default (ab_dips35c). Compare per zone the EE + IOP busy
+  ms per frame (`[gow-perf] ee_ms + iop_ms` / guest_flip_hz) in windows without a capture, VU1 ms per frame, and read the
+  chain pieces from `[gsw-chain-seg]`; then SEMO01 (30 pictures/s) and the title boot if it is faster.
+- **Handoff (sw-dips14)**: console default unchanged (update_dips35 + FAILGT, md5 80608ad3). Sources /root/src-mlang =
+  dips35 + dips37 (dips36 removed again: the dips36 npart file is kept in /root/dt14/dips36-src; originals of every file
+  dips37 touches: /root/dips37-orig; patch: `bash port/switch/tools_dips14/mkp37.sh`). Harness n1 / n1a = dips35 VU code +
+  the ERLENG fix. WSL builds: `port/switch/tools_dips14/build.sh <tag>` (waits for other builds, then /root/dt/dips_sb.sh).
+  Next levers on core 1, by size: (1) the VIF1 chain copy (~9 % of the EE thread while walking): the EE copies every chain
+  (~1.3 MB, refs to model data included) because the DMA completes at once; exact options are a second copier on core 3
+  (GSStage is ~50 % idle) splitting large pieces while the EE waits for both halves (needs a byte buffer that grows without
+  zero-filling, or ZVA-zeroed lines plus resize), decided by the `[gsw-chain-seg]` sizes; (2) mixing moved off the EE: sync()
+  mixes on the EE thread every remainder below a 32-sample batch at each SPU register access (SoundEngine 3.2 % of the EE);
+  register reads that do not depend on mixing progress (not ENDX / NAX / ENVX / stream halves) need no sync; (3) the rest of
+  dispatchGuestBranch (2-4 %: the 3.4 MB function table's entry load misses, a smaller 32-bit table would halve it); (4)
+  callers of `std::_Rb_tree_increment` (0.4-0.6 %) and malloc / free (0.8 %): a `GOW_PC_SAMPLE_LR` run on them.
