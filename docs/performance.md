@@ -1238,7 +1238,7 @@ Mean < 50 and min < 40: ATHN06C, ATHN01D, PAND02B, fight_ATHN01D. Game speed 0.9
 - VU1 native time per family in the VU1-bound windows (job > 4 s), ms per 5 s (us per run):
   | zone | top families |
   |---|---|
-  | PAND02B | nmisc kind21 = entry fbde7722 1630 (29.1), 39f38df4 576, 6df5c750 361 |
+  | PAND02B | nmisc kind21 (all entries of kind >= 21, here f38d6d26: loopF38d) 1630 (29.1), 39f38df4 576, 6df5c750 361 |
   | OLYMP02 | 3d0d1206 936, 39f38df4 690, kind21 682 (6.1), kind7 = b66a3e7a 364, part 300 |
   | ATHN01D | 93febeec 793, part 767, 7ab32108 626, 3d0d1206 372, 39f38df4 349 |
   | ATHN06B | 93febeec 991, 39f38df4 697, kind12 = 9ffe612e 445, kind10 = c79fec55 414 (43.5) |
@@ -1246,12 +1246,12 @@ Mean < 50 and min < 40: ATHN06C, ATHN01D, PAND02B, fight_ATHN01D. Game speed 0.9
   | ATRET01B | 39f38df4 1524, 7ab32108 450, 3d0d1206 357, 93febeec 335 |
   | ATHN04C | 7ab32108 1404, 39f38df4 782, kind12 317 |
   | ATHN06C | 3d0d1206 1156, 7ab32108 362, 39f38df4 350 |
-  (`kind<k>` = nrun CodeInfo kind = 7 + index in nmisc::kEntries.) The lit / skin loops (93febeec, 39f38df4, 6df5c750)
+  (`kind<k>` = nrun CodeInfo kind = 7 + index in nmisc::kEntries; the log clamps it: `kind21` is every kind >= 21, i.e. kEntries[14..]: fbde7722, 2565a5fa, 85b9642a, 7137d413, f38d6d26, 0d759bbc, 8449e8a0, 0f4641dd, df8474b4, 67347f0d, fb1e98cc, 66bfcb8d.) The lit / skin loops (93febeec, 39f38df4, 6df5c750)
   already run in the FastOps form, the unlit kernels (3d0d1206, 7ab32108) without overflow tests; the nwind / nmisc
   loops still used the exact per-operation form (operand normalisation BIC / UMIN / BSL per operand, an overflow test
   UMAXV -> FMOV -> CMP -> B.CS per FMAC: loopFbde was ~155 A57 instructions per vertex).
 - dips33 (port/switch/dips33.patch, ps2_vu1_nat_wind.inl + ps2_vu1_nat_misc.inl): `nwind::loopFbde` (fbde7722's loop,
-  kind21), `nmisc::texDivLoop` (b66a3e7a's module) and `nmisc::colDivLoop` (9ffe612e / b45e3bab) in the FastOps form of
+  one of the kind21 bucket), `nmisc::texDivLoop` (b66a3e7a's module) and `nmisc::colDivLoop` (9ffe612e / b45e3bab) in the FastOps form of
   litLoopT: loads first, plain MUL / ADD with every result tracked, one overflow test per pass, a failing pass redone
   with the exact operations, the pass's stores after it (same order and addresses; they store values of the pass
   before or of this pass, never read by this pass's loads). Operands normalised once (the rows, the ADDA of a row with
@@ -1260,3 +1260,38 @@ Mean < 50 and min < 40: ATHN06C, ATHN01D, PAND02B, fight_ATHN01D. Game speed 0.9
   decline, a64 identical to f1 on all 40 recordings; GENTEST identical to plain; and with FastOps::ok() forced false
   (every pass through the exact redo, harness g2x / g2xa) identical as well. The recordings run fbde7722 104 times,
   b66a3e7a / 9ffe612e / b45e3bab ~50 times.
+- **Lesson (dips33 was not exact):** zeroing the unused lanes of an FMAC's operands or addend (the lanes a `.xy` /
+  `.xyz` destination discards) is not exact: `vu1n::maddc` (and the oracle) take the double-precision path for *all*
+  lanes when any lane's product or sum reaches FLT_MAX, and that path rounds once instead of twice, so a discarded lane
+  that overflows changes the kept lanes by an ulp. The first version of dips34 zeroed ACC w in unlit11Loop and failed
+  natcheck on the menu recording (13 runs, z of the screen position off by one); dips33 had zeroed the zw lanes of
+  vf16-18 in loopFbde / texDivLoop (natcheck passed, but only because no recording overflows there). Lane-wise operations
+  (MUL, ADD, MIN, conversions) may still take zeroed lanes. FastOps stays exact with full lanes: every lane's result is
+  tracked, and every addend of a tracked lane must be bounded too (a loop-invariant ACC w that is the addend of a
+  discarded lane goes into the tracking start of every pass, not only the first). dips33 was measured (below) but must
+  not be installed; dips34 replaces it.
+- Profiles on dips32 (`GOW_PC_SAMPLE=1000`, port/switch/logs/prof_d32_*; scratch funcs.py: per function, windows by
+  sampler time, samples outside a symbol with size go to the nearest one below as `~name`), VU1-busy windows:
+  - PAND02B (90-110 s): runLit 25.1 %, unlit11Loop 9.6, **loopF38d 8.4** (the f38d6d26 entries: the kind21 bucket of
+    this zone), skinLoopT 6.1, memcpy 5.1, windLoop 5.4 (both), kCullClip 3.8, idle ~12.
+  - OLYMP02: runLit 15.0, **texDivLoop 7.4**, skin / skin28 10.4, kUnlitSt 4.7, VIF 4.2, memcpy 4.1, nrun::kick 3.3,
+    npart 3.2, unlit11Loop 3.0.
+  - ATRET01B: runLit 15.8, skinLoopT 8.4, skin28 5.5, kCullClip 4.3, memcpy 3.3, unlit11Loop 3.2, windLoop 3.3.
+  - GS GL thread, ATHN06C: submitKicks 22.0, addVertexC 15.0, memcpy 12.4 (draw's copy into the vertex stream), draw
+    10.4, waiting 10.5, WriteRun 2.6. ARENA14: **GSMem::WriteRun 26.3** (image uploads into the GS memory image:
+    `[gs-gl] upload` 1.38 s / 733 per 5 s, 1.9 ms each), submitKicks 16.6, memcpy 11.5, addVertexC 10.8, draw 9.5.
+- dips33 on the console (sweep run port/switch/sweep/ab_dips33, zones alone, no same-session baseline: the dips32 half
+  was cancelled), fps min/mean: ATHN01D 37.8/40.7, ATHN06B 45.2/49.2, ATHN03D 48.0/49.8, OLYMP02 59.2/59.8, PAND02B
+  39.8/44.3 (dips32 sweep: 38.0/43.4, 45.6/48.9, 47.2/49.0, 42.2/42.7, 38.6/46.5). OLYMP02's jump fits texDivLoop
+  (7.4 % of its VU1 thread) but the zone's fps moves with where the walk goes; needs the same-session A/B.
+- dips34 (port/switch/dips34.patch, full diff from dips32; supersedes dips33.patch): the FastOps form, all FMAC lanes
+  kept, for loopFbde, texDivLoop, colDivLoop (dips33 corrected), ownLoopC79f, ownLoopB66a, loopF38d (both variants),
+  unlit11Loop (with an exact `ExactOps::msub`); C79f / B66a / unlit11 keep the memory order of loads that follow a store
+  (the load after the store, outside the pass). Natcheck harness g6 / g6a: x86 plain, x86 forced decline, a64 identical
+  to f1 on all 40 recordings; with every pass forced through the exact redo identical; GENTEST identical to plain.
+  Plus `GSMem::WriteRun` (ps2_gs_memory.cpp): a row run is cut at page-column boundaries and each piece takes the page
+  and the table row once (PageId and `table[block % 32][y % page height]` are the same for the whole piece), then per
+  pixel only the table entry, the address and the store; same arithmetic and store order as
+  `PixelStorageTraits<psm>::Write`. Exhaustive check (scratch wrtest.cpp: all 13 formats, 20 000 random runs each, bp,
+  bw 1-32, x / y 0-2047, runs up to 2048 pixels across page columns, random 4 MB memory, against the per-pixel Write):
+  82 M pixels, memory identical.

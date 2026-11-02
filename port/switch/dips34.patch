@@ -1,0 +1,707 @@
+--- a/ps2xRuntime/src/lib/gs/ps2_gs_memory.cpp
++++ b/ps2xRuntime/src/lib/gs/ps2_gs_memory.cpp
+@@ -1,3 +1,4 @@
++#include <algorithm>
+ #include <array>
+ #include <mutex>
+ 
+@@ -363,12 +364,51 @@
+ 
+     namespace
+     {
++        // GOW-Port (sw-dips11): a row run is cut where it crosses into the next page column; within one piece the page
++        // (PageId: base, bw, x / page width, y / page height) and the table row (block % blocks per page, y % page height)
++        // are the same for every pixel, so they are taken once and each pixel costs its table entry, the address and the
++        // store. Same pixel address, the same bit / byte arithmetic and the same stores in the same order as
++        // PixelStorageTraits<psm>::Write per pixel (exhaustive check against it: scratch wrtest.cpp, sw-dips11).
+         template<PixelStorageMode psm, typename Table, typename Fetch>
+         void writeRunT(const Table& table, u8* data, u32 bp, u32 bw, u32 x, u32 y, u32 count, Fetch fetch)
+         {
+-            using Packed = typename PixelStorageTraits<psm>::PackedT;
+-            for (u32 i = 0; i < count; ++i)
+-                PixelStorageTraits<psm>::Write(table, data, bp, bw, x + i, y, static_cast<Packed>(fetch(i)));
++            using T = PixelStorageTraits<psm>;
++            using Packed = typename T::PackedT;
++            constexpr auto pe = T::PageExtent();
++            const u32 blk = bp % T::BlocksPerPage(), py = y % pe.y;
++            u32 i = 0;
++            while (i < count)
++            {
++                const u32 xi = x + i;
++                const u32 px = xi % pe.x;
++                const u32 seg = std::min<u32>(count - i, static_cast<u32>(pe.x) - px);
++                const u32 page = static_cast<u32>(T::PageId(bp, bw, xi, y));
++                for (u32 k = 0; k < seg; ++k)
++                {
++                    const u32 pixel_addr = static_cast<u32>((page * T::PixelsPerPage()) + table[blk][py][px + k]);
++                    const u32 bits = static_cast<u32>(pixel_addr * UnpackedBitWidth(psm) + T::BitOffset());
++                    const u32 byte_addr = static_cast<u32>((bits / 8) & (MEMORY_SIZE - sizeof(Packed)));
++                    const u32 shift = bits % 8;
++                    u8* ptr = &data[byte_addr];
++                    Packed value = static_cast<Packed>(fetch(i + k));
++                    if constexpr (psm == C24 || psm == Z24)
++                    {
++                        Packed old;
++                        std::memcpy(&old, ptr, sizeof(Packed));
++                        value = (old & 0xFF000000) | (value & 0x00FFFFFF);
++                    }
++                    else if constexpr (psm == P4 || psm == P4HL || psm == P4HH)
++                    {
++                        Packed old;
++                        std::memcpy(&old, ptr, sizeof(Packed));
++                        value = (old & ~(0x0F << shift)) | ((value & 0x0F) << shift);
++                    }
++                    else
++                        (void)shift;
++                    std::memcpy(ptr, &value, sizeof(Packed));
++                }
++                i += seg;
++            }
+         }
+     }
+ 
+--- a/ps2xRuntime/src/lib/vu/ps2_vu1_nat_lit.inl
++++ b/ps2xRuntime/src/lib/vu/ps2_vu1_nat_lit.inl
+@@ -116,6 +116,11 @@
+                 __m128 madd(__m128 acc, __m128 a, __m128 b) { return maddN(acc, a, b); }
+                 __m128 mul(__m128 a, __m128 b) { return mulN(a, b); }
+                 __m128 add(__m128 a, __m128 b) { return addN(a, b); }
++                __m128 msub(__m128 acc, __m128 a, __m128 b) // sw-dips11: unlit11Loop's MSUB (operands normalised)
++                {
++                    __m128 raw;
++                    return vu1n::maddc<true>(acc, a, b, raw);
++                }
+             };
+             // nat-vu1l: only results are tracked, against T = 2^126 instead of FLT_MAX: in round-toward-zero a product
+             // that overflows saturates to +-FLT_MAX (it never becomes Inf), so a FMAC whose addend is at most T in
+@@ -536,33 +541,64 @@
+             if (vi5 <= 0)
+                 return false;
+             const int32_t vi4 = s.vi[4];
++            // sw-dips11: the loops' fast form (as litLoopT): one overflow test per pass, exact redo; memory in the original
++            // order (p0 / p2 loads, p4's store of the old vf9, p6's load, then p8's store and p10's of the old vf10).
++            // Operands: the rows normalised once (every lane: maddc's wide path couples the lanes); vf1 / vf5 / vf7 are raw
++            // loads, normalised per pass (vf1 once per load: p9 and the next pass's p1 read the same value); vf2 normalised
++            // at entry (its w, never written, put back raw at exit); vf8 (read only by p5's lane-wise MULQ) with w zero and
++            // z (never written) normalised, zw put back at exit; ACC w stays the raw entry value (p9's addend);
++            // vf2 xyz / vf3 xyz normalised at entry (rewritten before the next pass reads them). The two ADDA set-ups of p7 /
++            // p8 are loop-invariant (vf0 and vf22w). Addends: the p1 result, the constant ACC of p9.
++            const __m128 n20 = N(m20), n21 = N(m21), n23 = N(m23);
++            const __m128 az = add(v0, bc<3>(m22));                    // p7 addaw.z ACC, vf0, vf22w
++            const __m128 axy = vu1n::clampv(_mm_sub_ps(v0, v0));      // p8 suba.xy ACC, vf0, vf0
++            const __m128 e2 = f2, e8 = f8;
++            f2 = N(f2), f8 = bl<7>(z, N(f8)), f3 = bl<7>(f3, N(f3));
++            __m128 f1n = N(f1);
++            const __m128 acc9 = bl<4>(bl<3>(acc, axy), az); // ACC at p9 (w: the entry ACC w)
++            auto pass = [&](auto &o, __m128 l7, __m128 n1, __m128 Q) {
++                f8 = bl<3>(f8, o.add(bl<3>(z, N(f7)), z));   // p0 addx.xy vf8, vf7, vf0x | lq.xy vf7, 1(vi2)
++                f7 = bl<3>(f7, l7);
++                acc = bl<7>(acc, o.mul(n21, bc<2>(f1n)));    // p1 mulaz.xyz ACC, vf21, vf1z | iadd vi2, vi2, vi4
++                f2 = bl<7>(f2, o.msub(acc, n20, f2));        // p2 msub.xyz vf2, vf20, vf2 | lq.xyz vf1, 0(vi2)
++                f6 = o.add(N(f5), z);                        // p3 addx vf6, vf5, vf0x | isubiu vi5
++                f4 = bl<7>(f4, vu1n::ftoiv<4>(f3));          // p4 ftoi4.xyz vf4, vf3 | sq.xyz vf9, 1(vi3)
++                f9 = bl<7>(f9, o.mul(f8, Q));                // p5 mulq.xyz vf9, vf8, Q | iadd vi3, vi3, vi4
++                f3 = bl<7>(f3, o.mul(f2, Q));                // p6 mulq.xyz vf3, vf2, Q | lq vf5, -1(vi2)
++                acc = acc9;                                  // p7 / p8 (div Q, vf0w, vf1z: outside)
++                f2 = bl<7>(f2, o.madd(acc, n1, n23));        // p9 madd.xyz vf2, vf1, vf23 | ibne
++                f10 = vu1n::ftoiv<0>(f6);                    // p10 (delay) ftoi0 vf10, vf6 | sq vf10, -1(vi3)
++            };
++            const __m128i h0 = mag(acc9);
++            __m128i hs = _mm_max_epu32(h0, mag(acc));
+             do
+             {
+-                f8 = bl<3>(f8, add(f7, z));                // p0 addx.xy vf8, vf7, vf0x | lq.xy vf7, 1(vi2)
+-                f7 = bl<3>(f7, ldq(d, vi2 + 1));
+-                acc = bl<7>(acc, mul(m21, bc<2>(f1)));     // p1 mulaz.xyz ACC, vf21, vf1z | iadd vi2, vi2, vi4
+-                vi2 = sx(vi2 + vi4);
++                const __m128 l7 = ldq(d, vi2 + 1);  // p0
++                const int32_t v2 = sx(vi2 + vi4);   // p1
++                const __m128 l1 = ldq(d, v2);       // p2
++                stq<7>(d, vi3 + 1, f9);             // p4 (the old vf9)
++                const __m128 l5 = ldq(d, v2 - 1);   // p6
++                const __m128 f10s = f10;            // p10's store value (the old vf10)
++                const __m128 nf1 = bl<7>(f1, l1), n1 = N(nf1), Q = N(qv(q));
++                const __m128 c2 = f2, c3 = f3, c4 = f4, c7 = f7, c8 = f8, c9 = f9, cacc = acc;
++                FastOps fo(hs);
++                hs = h0;
++                pass(fo, l7, n1, Q);
++                if (!fo.ok()) [[unlikely]]
+                 {
+-                    __m128 raw;                            // p2 msub.xyz vf2, vf20, vf2 | lq.xyz vf1, 0(vi2)
+-                    f2 = bl<7>(f2, vu1n::maddc<true>(acc, N(m20), N(f2), raw));
++                    f2 = c2, f3 = c3, f4 = c4, f7 = c7, f8 = c8, f9 = c9, acc = cacc;
++                    ExactOps eo;
++                    pass(eo, l7, n1, Q);
+                 }
+-                f1 = bl<7>(f1, ldq(d, vi2));
+-                f6 = add(f5, z);                           // p3 addx vf6, vf5, vf0x | isubiu vi5
++                f1 = nf1, f1n = n1, f5 = l5;
++                q = vu1n::rcpv(vu1n::lane<2>(f1)); // p7 div Q, vf0w, vf1z (the raw vf1)
++                vi2 = v2;
+                 vi5 = sx(vi5 - 1);
+-                stq<7>(d, vi3 + 1, f9);                    // p4 ftoi4.xyz vf4, vf3 | sq.xyz vf9, 1(vi3)
+-                f4 = bl<7>(f4, ftoi4(f3));
+-                f9 = bl<7>(f9, mul(f8, qv(q)));            // p5 mulq.xyz vf9, vf8, Q | iadd vi3, vi3, vi4
+                 vi3 = sx(vi3 + vi4);
+-                f3 = bl<7>(f3, mul(f2, qv(q)));            // p6 mulq.xyz vf3, vf2, Q | lq vf5, -1(vi2)
+-                f5 = ldq(d, vi2 - 1);
+-                acc = bl<4>(acc, add(v0, bc<3>(m22)));     // p7 addaw.z ACC, vf0, vf22w | div Q, vf0w, vf1z
+-                q = vu1n::rcpv(vu1n::lane<2>(f1));
+-                stq<7>(d, vi3, f4);                        // p8 suba.xy ACC, vf0, vf0 | sq.xyz vf4, 0(vi3)
+-                acc = bl<3>(acc, vu1n::clampv(_mm_sub_ps(v0, v0)));
+-                f2 = bl<7>(f2, madd(acc, f1, m23));        // p9 madd.xyz vf2, vf1, vf23 | ibne
+-                stq<15>(d, vi3 - 1, f10);                  // p10 (delay) ftoi0 vf10, vf6 | sq vf10, -1(vi3)
+-                f10 = vu1n::ftoiv<0>(N(f6));
++                stq<7>(d, vi3, f4);       // p8
++                stq<15>(d, vi3 - 1, f10s); // p10
+             } while (vi5 != 0);
++            f2 = bl<7>(e2, f2), f8 = bl<3>(e8, f8);
+             stv(s, 1, f1); stv(s, 2, f2); stv(s, 3, f3); stv(s, 4, f4); stv(s, 5, f5); stv(s, 6, f6); stv(s, 7, f7);
+             stv(s, 8, f8); stv(s, 9, f9); stv(s, 10, f10);
+             _mm_storeu_ps(s.acc, acc);
+--- a/ps2xRuntime/src/lib/vu/ps2_vu1_nat_misc.inl
++++ b/ps2xRuntime/src/lib/vu/ps2_vu1_nat_misc.inl
+@@ -99,31 +99,60 @@
+             if (vi5 <= 0)
+                 return false;
+             const int32_t vi4 = s.vi[4];
++            // sw-dips11: the loops' fast form (as nwind::loopFbde): one overflow test per pass, exact redo, stores after the
++            // pass. Normalised once: the rows (every lane: an FMAC's discarded lanes still pick maddc's path for the kept
++            // ones), vf19 + 0 / vf23 + 0 (loop-invariant results), and at entry vf1
++            // xyz / vf6 xyz (read by p0 / p3-p7 before p5 / p8 rewrite them) and vf3 (p1's operand; its xyz becomes vf2 by
++            // p9, its w is never written: zero inside the loop, the raw w put back at exit). Later passes read clamped
++            // results there. Addends: ACC (entry, then the p11 result), vf19 + 0 (xy), the p3 / p4 results, vf23 + 0.
++            const __m128 n16 = N(m16), n17 = N(m17), n18 = N(m18), n20 = N(m20), n21 = N(m21), n22 = N(m22);
++            const __m128 a19 = bl<3>(z, add(m19, z)), a23 = add(m23, z);
++            const __m128 e3 = f3;
++            f1 = bl<7>(f1, N(f1)), f3 = bl<7>(z, N(f3)), f6 = bl<7>(f6, N(f6));
++            __m128 f8s; // p5's store value (the old vf8)
++            float qn = q;
++            auto pass = [&](auto &o, __m128 Q, __m128 l1, __m128 l5) {
++                f2 = o.madd(acc, n22, bc<2>(f1));              // p0 maddz.xyzw vf2, vf22, vf1z | iadd vi2, vi2, vi4
++                f4 = bl<7>(f4, o.mul(f3, Q));                  // p1 mulq.xyz vf4, vf3, Q | lq.xyz vf1, 0(vi2)
++                f1 = bl<7>(f1, l1);
++                acc = bl<3>(acc, a19);                          // p2 addax.xy ACC, vf19, vf0x
++                acc = bl<3>(acc, o.madd(acc, n16, bc<0>(f6))); // p3 maddax.xy | lq.xyz vf5, -2(vi2)
++                f5 = bl<7>(f5, l5);
++                acc = bl<3>(acc, o.madd(acc, n17, bc<1>(f6))); // p4 madday.xy | div Q, vf0w, vf2w
++                qn = rcpw(f2);
++                f8s = f8;                                       // p5 itof4.xyz vf1, vf1 | sq.xyz vf8, 1(vi3)
++                f1 = bl<7>(f1, vu1n::itofv<4>(f1));
++                f4 = bl<7>(f4, vu1n::ftoiv<4>(f4));             // p6 ftoi4.xyz vf4, vf4
++                f8 = bl<3>(f8, o.madd(acc, n18, bc<2>(f6)));   // p7 maddz.xy vf8, vf18, vf6z | iadd vi3, vi3, vi4
++                f6 = bl<7>(f6, vu1n::itofv<15>(f5));            // p8 itof15.xyz vf6, vf5 | isubiu vi5, vi5, 1
++                f3 = bl<7>(f3, f2);                             // p9 addax ACC, vf23, vf0x | move.xyz vf3, vf2
++                acc = o.madd(a23, n20, bc<0>(f1));              // p10 maddax.xyzw | ibne
++                acc = o.madd(acc, n21, bc<1>(f1));              // p11 madday.xyzw | sq.xyz vf4, 0(vi3)
++            };
++            const __m128i h0 = _mm_max_epu32(mag(a19), mag(a23));
++            __m128i hs = _mm_max_epu32(h0, mag(acc));
+             do
+             {
+-                f2 = madd(acc, m22, bc<2>(f1));              // p0 maddz.xyzw vf2, vf22, vf1z | iadd vi2, vi2, vi4
+-                vi2 = sx(vi2 + vi4);
+-                f4 = bl<7>(f4, mul(f3, qv(q)));              // p1 mulq.xyz vf4, vf3, Q | lq.xyz vf1, 0(vi2)
+-                f1 = bl<7>(f1, ldq(d, vi2));
+-                acc = bl<3>(acc, add(m19, z));               // p2 addax.xy ACC, vf19, vf0x
+-                acc = bl<3>(acc, madd(acc, m16, bc<0>(f6))); // p3 maddax.xy ACC, vf16, vf6x | lq.xyz vf5, -2(vi2)
+-                f5 = bl<7>(f5, ldq(d, vi2 - 2));
+-                acc = bl<3>(acc, madd(acc, m17, bc<1>(f6))); // p4 madday.xy ACC, vf17, vf6y | div Q, vf0w, vf2w
+-                const float qn = rcpw(f2);
+-                stq<7>(d, vi3 + 1, f8);                      // p5 itof4.xyz vf1, vf1 | sq.xyz vf8, 1(vi3)
+-                f1 = bl<7>(f1, vu1n::itofv<4>(f1));
+-                f4 = bl<7>(f4, ftoi4(f4));                   // p6 ftoi4.xyz vf4, vf4
+-                f8 = bl<3>(f8, madd(acc, m18, bc<2>(f6)));   // p7 maddz.xy vf8, vf18, vf6z | iadd vi3, vi3, vi4
+-                vi3 = sx(vi3 + vi4);
+-                f6 = bl<7>(f6, vu1n::itofv<15>(f5));         // p8 itof15.xyz vf6, vf5 | isubiu vi5, vi5, 1
+-                vi5 = sx(vi5 - 1);
+-                acc = add(m23, z);                           // p9 addax.xyzw ACC, vf23, vf0x | move.xyz vf3, vf2
+-                f3 = bl<7>(f3, f2);
+-                acc = madd(acc, m20, bc<0>(f1));             // p10 maddax.xyzw | ibne
+-                acc = madd(acc, m21, bc<1>(f1));             // p11 madday.xyzw | sq.xyz vf4, 0(vi3)
+-                stq<7>(d, vi3, f4);
++                const int32_t v2 = sx(vi2 + vi4);
++                const __m128 l1 = ldq(d, v2), l5 = ldq(d, v2 - 2), Q = N(qv(q));
++                const __m128 c1 = f1, c2 = f2, c3 = f3, c4 = f4, c5 = f5, c6 = f6, c8 = f8, cacc = acc;
++                FastOps fo(hs);
++                hs = h0;
++                pass(fo, Q, l1, l5);
++                if (!fo.ok()) [[unlikely]]
++                {
++                    f1 = c1, f2 = c2, f3 = c3, f4 = c4, f5 = c5, f6 = c6, f8 = c8, acc = cacc;
++                    ExactOps eo;
++                    pass(eo, Q, l1, l5);
++                }
++                vi2 = v2;
++                stq<7>(d, vi3 + 1, f8s); // p5
++                vi3 = sx(vi3 + vi4);     // p7
++                vi5 = sx(vi5 - 1);       // p8
++                stq<7>(d, vi3, f4);      // p11
+                 q = qn;
+             } while (vi5 != 0);
++            f3 = bl<7>(e3, f3);
+             stv(s, 1, f1); stv(s, 2, f2); stv(s, 3, f3); stv(s, 4, f4); stv(s, 5, f5); stv(s, 6, f6); stv(s, 8, f8);
+             _mm_storeu_ps(s.acc, acc);
+             s.q = q;
+@@ -151,33 +180,60 @@
+             if (vi5 <= 0)
+                 return false;
+             const int32_t vi4 = s.vi[4];
++            // sw-dips11: the loops' fast form (as nwind::loopFbde): one overflow test per pass, exact redo, stores after the
++            // pass. Normalised once: the rows, vf23 + 0 / vf31 + 0, and at entry vf1 xyz / vf3 xyz / vf4 / vf5 (read as
++            // operands in the first pass before the loop rewrites them; vf1 / vf3 w kept raw: never read). vf9 (p1's operand:
++            // xy are vf8's itof12, z / w raw values the loop never writes) is normalised in the pass with its w zeroed (the
++            // lane mulq.xyz discards). Q, I: normalised per pass. Addends: ACC (entry, then the p11 result), vf31 + 0,
++            // vf23 + 0, the p10 result.
++            const __m128 n20 = N(m20), n21 = N(m21), n22 = N(m22), n30 = N(m30);
++            const __m128 a23 = add(m23, z), a31 = add(m31, z);
++            f1 = bl<7>(f1, N(f1)), f3 = bl<7>(f3, N(f3)), f4 = N(f4), f5 = N(f5);
++            __m128 f3s; // p10's store value (vf3 after p5's ftoi4)
++            float qn = q;
++            auto pass = [&](auto &o, __m128 Q, __m128 Iv, __m128 l7, __m128 l1, __m128 l4) {
++                f2 = o.madd(acc, n22, bc<2>(f1));              // p0 maddz.xyzw vf2, vf22, vf1z | lq.xy vf7, 1(vi2)
++                f7 = bl<3>(f7, l7);
++                f10 = bl<7>(f10, o.mul(bl<7>(z, N(f9)), Q));   // p1 mulq.xyz vf10, vf9, Q | iadd vi2, vi2, vi4
++                f6 = _mm_min_ps(f5, Iv);                       // p2 minii.xyzw vf6, vf5, I | lq.xyz vf1, 0(vi2)
++                f1 = bl<7>(f1, l1);
++                f9 = bl<7>(f9, f8);                            // p3 addax ACC, vf31, vf0x | move.xyz vf9, vf8
++                f5 = o.madd(a31, n30, f4);                     // p4 madd.xyzw vf5, vf30, vf4 | lq.xyzw vf4, -1(vi2)
++                f4 = l4;
++                f3 = bl<7>(f3, vu1n::ftoiv<4>(f3));            // p5 ftoi4.xyz vf3, vf3 | div Q, vf0w, vf2w
++                qn = rcpw(f2);
++                f1 = bl<7>(f1, vu1n::itofv<4>(f1));            // p6 itof4.xyz vf1, vf1 | sq.xyz vf10, 1(vi3)
++                f8 = bl<3>(f8, vu1n::itofv<12>(f7));           // p7 itof12.xy vf8, vf7 | iadd vi3, vi3, vi4
++                f4 = vu1n::itofv<0>(f4);                       // p8 itof0.xyzw vf4, vf4 | sq.xyzw vf6, -1(vi3)
++                acc = o.madd(a23, n20, bc<0>(f1));             // p9 addax ACC, vf23, vf0x; p10 maddax.xyzw | sq.xyz vf3
++                acc = o.madd(acc, n21, bc<1>(f1));             // p11 madday.xyzw ACC, vf21, vf1y | ibne
++                f3s = f3;
++                f3 = bl<7>(f3, o.mul(f2, N(qv(qn))));          // p12 (delay) mulq.xyz vf3, vf2, Q (the DIV of p5) | loi
++            };
++            const __m128i h0 = _mm_max_epu32(mag(a23), mag(a31));
++            __m128i hs = _mm_max_epu32(h0, mag(acc));
+             do
+             {
+-                f2 = madd(acc, m22, bc<2>(f1));          // p0 maddz.xyzw vf2, vf22, vf1z | lq.xy vf7, 1(vi2)
+-                f7 = bl<3>(f7, ldq(d, vi2 + 1));
+-                f10 = bl<7>(f10, mul(f9, qv(q)));        // p1 mulq.xyz vf10, vf9, Q | iadd vi2, vi2, vi4
+-                vi2 = sx(vi2 + vi4);
+-                f6 = mn(f5, _mm_set1_ps(iv));            // p2 minii.xyzw vf6, vf5, I | lq.xyz vf1, 0(vi2)
+-                f1 = bl<7>(f1, ldq(d, vi2));
+-                acc = add(m31, z);                       // p3 addax.xyzw ACC, vf31, vf0x | move.xyz vf9, vf8
+-                f9 = bl<7>(f9, f8);
+-                f5 = madd(acc, m30, f4);                 // p4 madd.xyzw vf5, vf30, vf4 | lq.xyzw vf4, -1(vi2)
+-                f4 = ldq(d, vi2 - 1);
+-                f3 = bl<7>(f3, ftoi4(f3));               // p5 ftoi4.xyz vf3, vf3 | div Q, vf0w, vf2w
+-                const float qn = rcpw(f2);
+-                f1 = bl<7>(f1, vu1n::itofv<4>(f1));      // p6 itof4.xyz vf1, vf1 | sq.xyz vf10, 1(vi3)
+-                stq<7>(d, vi3 + 1, f10);
+-                f8 = bl<3>(f8, vu1n::itofv<12>(f7));     // p7 itof12.xy vf8, vf7 | iadd vi3, vi3, vi4
+-                vi3 = sx(vi3 + vi4);
+-                stq<15>(d, vi3 - 1, f6);                 // p8 itof0.xyzw vf4, vf4 | sq.xyzw vf6, -1(vi3)
+-                f4 = vu1n::itofv<0>(f4);
+-                acc = add(m23, z);                       // p9 addax.xyzw ACC, vf23, vf0x | isubiu vi5, vi5, 1
+-                vi5 = sx(vi5 - 1);
+-                acc = madd(acc, m20, bc<0>(f1));         // p10 maddax.xyzw ACC, vf20, vf1x | sq.xyz vf3, 0(vi3)
+-                stq<7>(d, vi3, f3);
+-                acc = madd(acc, m21, bc<1>(f1));         // p11 madday.xyzw ACC, vf21, vf1y | ibne
+-                q = qn;                                  // p12 (delay) mulq.xyz vf3, vf2, Q (the DIV of p5) | loi
+-                f3 = bl<7>(f3, mul(f2, qv(q)));
++                const int32_t v2 = sx(vi2 + vi4);
++                const __m128 l7 = ldq(d, vi2 + 1), l1 = ldq(d, v2), l4 = ldq(d, v2 - 1);
++                const __m128 Q = N(qv(q)), Iv = N(_mm_set1_ps(iv));
++                const __m128 c1 = f1, c3 = f3, c4 = f4, c5 = f5, c7 = f7, c8 = f8, c9 = f9, c10 = f10, cacc = acc;
++                FastOps fo(hs);
++                hs = h0;
++                pass(fo, Q, Iv, l7, l1, l4);
++                if (!fo.ok()) [[unlikely]]
++                {
++                    f1 = c1, f3 = c3, f4 = c4, f5 = c5, f7 = c7, f8 = c8, f9 = c9, f10 = c10, acc = cacc;
++                    ExactOps eo;
++                    pass(eo, Q, Iv, l7, l1, l4);
++                }
++                vi2 = v2;
++                stq<7>(d, vi3 + 1, f10); // p6
++                vi3 = sx(vi3 + vi4);     // p7
++                stq<15>(d, vi3 - 1, f6); // p8
++                vi5 = sx(vi5 - 1);       // p9
++                stq<7>(d, vi3, f3s);     // p10
++                q = qn;                  // p12
+                 iv = iNew;
+             } while (vi5 != 0);
+             stv(s, 1, f1); stv(s, 2, f2); stv(s, 3, f3); stv(s, 4, f4); stv(s, 5, f5); stv(s, 6, f6); stv(s, 7, f7);
+--- a/ps2xRuntime/src/lib/vu/ps2_vu1_nat_wind.inl
++++ b/ps2xRuntime/src/lib/vu/ps2_vu1_nat_wind.inl
+@@ -432,6 +432,16 @@
+         // 255 + 2^23), perspective divide (the DIV of p2 read by the MULQ of p10); the stores of p7 / p10 / p12 write the
+         // values of the pass before (p10: the lower sq.xyz vf3 in the pair where the upper mulq rewrites vf3: the old
+         // value). Exit jalr vi15, vi14; delay isubiu vi15, vi15, 18: vi15 = the loop again.
++        // sw-dips11: in the loops' fast form (nlit::x::FastOps, as litLoopT / skinLoopT): loads first, plain MUL / ADD with
++        // every result tracked and one overflow test per pass, a failing pass redone with the exact operations, then the
++        // pass's three stores (they store values of the pass before: p7 the old vf9, p10 the old vf3, p12 vf10 after the
++        // MINI; same order and addresses as before, after the pass's loads as before). Operands normalised once: the
++        // invariant rows, the three ADDA of a row with vf0 (loop-invariant results, computed once in the same rounding
++        // mode), and at entry vf4 xyz / vf6 / vf10 / vf2 (each read as an operand in the first pass only before the loop
++        // rewrites it: vf4 xyz by p3 / p7 (w kept raw), vf6 by p6 / p14, vf10 by p8 / p13, vf2 by p13; p2's DIV of the first
++        // pass reads the raw entry vf2, so the first Q is taken before). Later passes read only clamped FMAC / ITOF results
++        // there, which N() leaves alone. FastOps' addends: ACC xy = vf19 + 0 (p1), the p1 / p2 results (p2 / p3), a31 (p6),
++        // a23 (p11), the p11 / p12 results; ACC zw at p1 is the entry ACC or the p12 result of the pass before. Same bits.
+         inline bool loopFbde(VU1State &s, uint8_t *d)
+         {
+             using namespace nlit::x;
+@@ -440,7 +450,7 @@
+             const __m128 m16 = ldv(s, 16), m17 = ldv(s, 17), m18 = ldv(s, 18), m19 = ldv(s, 19), m20 = ldv(s, 20), m21 = ldv(s, 21),
+                          m22 = ldv(s, 22), m23 = ldv(s, 23), m30 = ldv(s, 30), m31 = ldv(s, 31);
+             const __m128 z = _mm_setzero_ps();
+-            float q = s.q, iv = s.i;
++            float q = s.q;
+             const uint32_t ibits = 0x4B0000FFu;
+             float iNew;
+             std::memcpy(&iNew, &ibits, 4);
+@@ -448,43 +458,66 @@
+             if (vi5 <= 0)
+                 return false;
+             const int32_t vi4 = s.vi[4];
+-            do
+-            {
+-                acc = bl<3>(acc, add(m19, z));               // p0 addax.xy ACC, vf19, vf0x | iadd vi2, vi2, vi4
+-                vi2 = sx(vi2 + vi4);
+-                acc = bl<3>(acc, madd(acc, m16, bc<0>(f4))); // p1 maddax.xy ACC, vf16, vf4x | lq.xyz vf1, 0(vi2)
+-                f1 = bl<7>(f1, ldq(d, vi2));
+-                acc = bl<3>(acc, madd(acc, m17, bc<1>(f4))); // p2 madday.xy ACC, vf17, vf4y | div Q, vf0w, vf2w
+-                q = rcpw(f2);
+-                f8 = bl<3>(f8, madd(acc, m18, bc<2>(f4)));   // p3 maddz.xy vf8, vf18, vf4z | lq.xyz vf4, -2(vi2)
+-                f4 = bl<7>(f4, ldq(d, vi2 - 2));
+-                acc = add(m31, z);                           // p4 addax.xyzw ACC, vf31, vf0x
+-                f1 = bl<7>(f1, vu1n::itofv<4>(f1));          // p5 itof4.xyz vf1, vf1 | lq.xyzw vf5, -1(vi2)
+-                f5 = ldq(d, vi2 - 1);
+-                f6 = madd(acc, m30, f6);                     // p6 madd.xyzw vf6, vf30, vf6 | loi 0x4b0000ff
+-                iv = iNew;
+-                f4 = bl<7>(f4, vu1n::itofv<15>(f4));         // p7 itof15.xyz vf4, vf4 | sq.xyz vf9, 1(vi3)
+-                stq<7>(d, vi3 + 1, f9);
+-                f10 = mn(f10, _mm_set1_ps(iv));              // p8 minii.xyzw vf10, vf10, I
+-                acc = add(m23, z);                           // p9 addax.xyzw ACC, vf23, vf0x | iadd vi3, vi3, vi4
+-                vi3 = sx(vi3 + vi4);
+-                stq<7>(d, vi3, f3);                          // p10 mulq.xyz vf3, vf2, Q | sq.xyz vf3, 0(vi3) (the old vf3)
+-                f3 = bl<7>(f3, mul(f2, qv(q)));
+-                acc = madd(acc, m20, bc<0>(f1));             // p11 maddax.xyzw ACC, vf20, vf1x | isubiu vi5, vi5, 1
+-                vi5 = sx(vi5 - 1);
+-                acc = madd(acc, m21, bc<1>(f1));             // p12 madday.xyzw ACC, vf21, vf1y | sq.xyzw vf10, -1(vi3)
+-                stq<15>(d, vi3 - 1, f10);
+-                f2 = madd(acc, m22, bc<2>(f1));              // p13 maddz.xyzw vf2, vf22, vf1z | move.xyzw vf10, vf6
++            const __m128 I = _mm_set1_ps(iNew); // p6 loi, read by p8's MINI in the same pass
++            const __m128 n16 = N(m16), n17 = N(m17), n18 = N(m18), n20 = N(m20), n21 = N(m21), n22 = N(m22), n30 = N(m30);
++            const __m128 a19 = bl<3>(z, add(m19, z)), a23 = add(m23, z), a31 = add(m31, z);
++            float qn = rcpw(f2); // p2's DIV of the first pass (raw entry vf2)
++            f2 = N(f2), f4 = bl<7>(f4, N(f4)), f6 = N(f6), f10 = N(f10);
++            __m128 f3s, f9s, f10s; // the pass's store values (p10, p7, p12)
++            auto pass = [&](auto &o, __m128 l1, __m128 l4, __m128 l5) {
++                const __m128 Q = N(qv(qn));
++                acc = bl<3>(acc, a19);                          // p0 addax.xy ACC, vf19, vf0x
++                acc = bl<3>(acc, o.madd(acc, n16, bc<0>(f4))); // p1 maddax.xy | lq.xyz vf1, 0(vi2)
++                f1 = bl<7>(f1, l1);
++                acc = bl<3>(acc, o.madd(acc, n17, bc<1>(f4))); // p2 madday.xy | div Q (qn)
++                f8 = bl<3>(f8, o.madd(acc, n18, bc<2>(f4)));   // p3 maddz.xy vf8 | lq.xyz vf4, -2(vi2)
++                f4 = bl<7>(f4, l4);
++                f1 = bl<7>(f1, vu1n::itofv<4>(f1));             // p5 itof4.xyz vf1 | lq.xyzw vf5, -1(vi2)
++                f5 = l5;
++                f6 = o.madd(a31, n30, f6);                      // p4 addax ACC, vf31, vf0x; p6 madd.xyzw vf6, vf30, vf6
++                f4 = bl<7>(f4, vu1n::itofv<15>(f4));            // p7 itof15.xyz vf4 | sq.xyz vf9, 1(vi3)
++                f9s = f9;
++                f10s = minPosC(f10, I);                         // p8 minii.xyzw vf10, vf10, I
++                f3s = f3;                                       // p10 mulq.xyz vf3, vf2, Q | sq.xyz vf3, 0(vi3) (old vf3)
++                f3 = bl<7>(f3, o.mul(f2, Q));
++                acc = o.madd(a23, n20, bc<0>(f1));              // p9 addax ACC, vf23, vf0x; p11 maddax.xyzw
++                acc = o.madd(acc, n21, bc<1>(f1));              // p12 madday.xyzw | sq.xyzw vf10, -1(vi3)
++                f2 = o.madd(acc, n22, bc<2>(f1));               // p13 maddz.xyzw vf2 | move.xyzw vf10, vf6
+                 f10 = f6;
+-                f6 = vu1n::itofv<0>(f5);                     // p14 itof0.xyzw vf6, vf5 | ibne
+-                f3 = bl<7>(f3, ftoi4(f3));                   // p15 (delay) ftoi4.xyz vf3, vf3 | move.xyz vf9, vf8
++                f6 = vu1n::itofv<0>(f5);                        // p14 itof0.xyzw vf6, vf5
++                f3 = bl<7>(f3, vu1n::ftoiv<4>(f3));             // p15 ftoi4.xyz vf3 | move.xyz vf9, vf8
+                 f9 = bl<7>(f9, f8);
++            };
++            const __m128i h0 = _mm_max_epu32(mag(a19), _mm_max_epu32(mag(a23), mag(a31)));
++            __m128i hs = _mm_max_epu32(h0, mag(acc));
++            do
++            {
++                const int32_t v2 = sx(vi2 + vi4); // p0 iadd vi2, vi2, vi4
++                const __m128 l1 = ldq(d, v2), l4 = ldq(d, v2 - 2), l5 = ldq(d, v2 - 1);
++                const __m128 c1 = f1, c2 = f2, c3 = f3, c4 = f4, c6 = f6, c8 = f8, c9 = f9, c10 = f10, cacc = acc;
++                q = qn;
++                FastOps fo(hs);
++                hs = h0;
++                pass(fo, l1, l4, l5);
++                if (!fo.ok()) [[unlikely]]
++                {
++                    f1 = c1, f2 = c2, f3 = c3, f4 = c4, f6 = c6, f8 = c8, f9 = c9, f10 = c10, acc = cacc;
++                    ExactOps eo;
++                    pass(eo, l1, l4, l5);
++                }
++                vi2 = v2;
++                stq<7>(d, vi3 + 1, f9s);    // p7
++                vi3 = sx(vi3 + vi4);        // p9
++                stq<7>(d, vi3, f3s);        // p10
++                vi5 = sx(vi5 - 1);          // p11
++                stq<15>(d, vi3 - 1, f10s);  // p12
++                qn = rcpw(f2);              // the next pass's p2 DIV
+             } while (vi5 != 0);
+             stv(s, 1, f1); stv(s, 2, f2); stv(s, 3, f3); stv(s, 4, f4); stv(s, 5, f5); stv(s, 6, f6); stv(s, 8, f8);
+             stv(s, 9, f9); stv(s, 10, f10);
+             _mm_storeu_ps(s.acc, acc);
+             s.q = q;
+-            s.i = iv;
++            s.i = iNew;
+             s.vi[2] = vi2;
+             s.vi[3] = vi3;
+             s.vi[5] = vi5;
+@@ -623,9 +656,7 @@
+                    f8 = ldv(s, 8), acc = _mm_loadu_ps(s.acc);
+             const __m128 m12 = ldv(s, 12), m13 = ldv(s, 13), m14 = ldv(s, 14), m15 = ldv(s, 15), m20 = ldv(s, 20), m21 = ldv(s, 21),
+                          m22 = ldv(s, 22), m23 = ldv(s, 23), m30 = ldv(s, 30), m31 = ldv(s, 31);
+-            (void)m30;
+             const __m128 z = _mm_setzero_ps(), v0 = _mm_setr_ps(0.0f, 0.0f, 0.0f, 1.0f);
+-            float iv = s.i;
+             const uint32_t ibits = 0x437F8000u;
+             float iNew;
+             std::memcpy(&iNew, &ibits, 4);
+@@ -633,44 +664,70 @@
+             if (vi5 <= 0)
+                 return false;
+             const int32_t vi4 = s.vi[4];
+-            do
+-            {
+-                acc = madd(acc, m12, bc<0>(f2));             // p0 maddax.xyzw ACC, vf12, vf2x | lq.xy vf7, 1(vi2)
+-                f7 = bl<3>(f7, ldq(d, vi2 + 1));
+-                acc = madd(acc, m13, bc<1>(f2));             // p1 madday.xyzw ACC, vf13, vf2y | iadd vi2, vi2, vi4
+-                vi2 = sx(vi2 + vi4);
+-                f3 = madd(acc, m14, bc<2>(f2));              // p2 maddz.xyzw vf3, vf14, vf2z | ilw.w vi1, 0(vi2)
+-                vi1 = sx(vu1n::ldWordm(d, vu1hle::qa(vi2), 3));
+-                acc = add(m23, z);                           // p3 addax.xyzw ACC, vf23, vf0x | lq.xyz vf1, 0(vi2)
+-                f1 = bl<7>(f1, ldq(d, vi2));
+-                acc = madd(acc, m20, bc<0>(f2));             // p4 maddax.xyzw ACC, vf20, vf2x
+-                acc = madd(acc, m21, bc<1>(f2));             // p5 madday.xyzw ACC, vf21, vf2y | lq.xyzw vf4, -1(vi2)
+-                f4 = ldq(d, vi2 - 1);
+-                acc = madd(acc, m22, bc<2>(f2));             // p6 maddaz.xyzw ACC, vf22, vf2z | iadd vi1, vi1, vi1
+-                vi1 = sx(vi1 + vi1);
+-                f3 = madd(acc, f3, bc<3>(f2));               // p7 maddw.xyzw vf3, vf3, vf2w | mfir.w vf1, vi1
+-                f1 = bl<8>(f1, _mm_castsi128_ps(_mm_set1_epi32(static_cast<int16_t>(vi1))));
+-                stq<7>(d, vi3 + 1, f8);                      // p8 itof12.xy vf8, vf7 | sq.xyz vf8, 1(vi3) (the old vf8)
++            // sw-dips11: the loops' fast form (as loopFbde): loads first (p0 / p2 / p3 / p5: all before the stores of p8 /
++            // p12 / p14, as before), one overflow test per pass, exact redo, then the stores. Normalised once: the rows,
++            // the ADDA of vf15 / vf23 / vf31 with vf0 (loop-invariant results), and at entry vf2 / vf5 (read as operands in
++            // the first pass before p11 / p13 rewrite them). Later passes read only clamped / ITOF results there. Addends:
++            // ACC (entry, then vf15 + 0), the p0 / p1 results, vf23 + 0, the p4-p6 results, vf31 + 0 (Vf30).
++            const __m128 n12 = N(m12), n13 = N(m13), n14 = N(m14), n20 = N(m20), n21 = N(m21), n22 = N(m22), n30 = N(m30);
++            const __m128 a15 = add(m15, z), a23 = add(m23, z), a31 = add(m31, z);
++            const __m128 I = _mm_set1_ps(iNew);
++            f2 = N(f2), f5 = N(f5);
++            __m128 f8s; // p8's store value (the old vf8)
++            auto pass = [&](auto &o, __m128 l7, __m128 l1, __m128 l4, __m128 mfir) {
++                acc = o.madd(acc, n12, bc<0>(f2));    // p0 maddax.xyzw ACC, vf12, vf2x | lq.xy vf7, 1(vi2)
++                f7 = bl<3>(f7, l7);
++                acc = o.madd(acc, n13, bc<1>(f2));    // p1 madday.xyzw ACC, vf13, vf2y | iadd vi2, vi2, vi4
++                f3 = o.madd(acc, n14, bc<2>(f2));     // p2 maddz.xyzw vf3, vf14, vf2z | ilw.w vi1, 0(vi2)
++                f1 = bl<7>(f1, l1);                   // p3 addax.xyzw ACC, vf23, vf0x | lq.xyz vf1, 0(vi2)
++                acc = o.madd(a23, n20, bc<0>(f2));    // p4 maddax.xyzw ACC, vf20, vf2x
++                acc = o.madd(acc, n21, bc<1>(f2));    // p5 madday.xyzw ACC, vf21, vf2y | lq.xyzw vf4, -1(vi2)
++                f4 = l4;
++                acc = o.madd(acc, n22, bc<2>(f2));    // p6 maddaz.xyzw ACC, vf22, vf2z | iadd vi1, vi1, vi1
++                f3 = o.madd(acc, f3, bc<3>(f2));      // p7 maddw.xyzw vf3, vf3, vf2w | mfir.w vf1, vi1
++                f1 = bl<8>(f1, mfir);
++                f8s = f8;                             // p8 itof12.xy vf8, vf7 | sq.xyz vf8, 1(vi3) (the old vf8)
+                 f8 = bl<3>(f8, vu1n::itofv<12>(f7));
+-                f4 = vu1n::itofv<0>(f4);                     // p9 itof0.xyzw vf4, vf4 | loi 0x437f8000
+-                iv = iNew;
+-                f6 = mn(f5, _mm_set1_ps(iv));                // p10 minii.xyzw vf6, vf5, I | isubiu vi5, vi5, 1
+-                vi5 = sx(vi5 - 1);
+-                f2 = vu1n::itofv<4>(f1);                     // p11 itof4.xyzw vf2, vf1 | iadd vi3, vi3, vi4
+-                vi3 = sx(vi3 + vi4);
+-                acc = add(m31, z);                           // p12 addax.xyzw ACC, vf31, vf0x | sq.xyz vf3, 0(vi3)
+-                stq<7>(d, vi3, f3);
+-                if (Vf30)
+-                    f5 = madd(acc, m30, f4);                 // p13 madd.xyzw vf5, vf30, vf4 | ibne (0d759bbc)
++                f4 = vu1n::itofv<0>(f4);              // p9 itof0.xyzw vf4, vf4 | loi 0x437f8000
++                f6 = _mm_min_ps(f5, I);               // p10 minii.xyzw vf6, vf5, I | isubiu vi5, vi5, 1
++                f2 = vu1n::itofv<4>(f1);              // p11 itof4.xyzw vf2, vf1 | iadd vi3, vi3, vi4
++                if (Vf30)                             // p12 addax.xyzw ACC, vf31, vf0x | sq.xyz vf3, 0(vi3)
++                    f5 = o.madd(a31, n30, f4);        // p13 madd.xyzw vf5, vf30, vf4 | ibne (0d759bbc)
+                 else
+-                    f5 = add(v0, f4);                        // p13 add.xyzw vf5, vf0, vf4 | ibne
+-                acc = add(m15, z);                           // p14 (delay) addax.xyzw ACC, vf15, vf0x | sq.xyzw vf6, -1(vi3)
+-                stq<15>(d, vi3 - 1, f6);
++                    f5 = o.add(v0, f4);               // p13 add.xyzw vf5, vf0, vf4 | ibne
++                acc = a15;                            // p14 (delay) addax.xyzw ACC, vf15, vf0x | sq.xyzw vf6, -1(vi3)
++            };
++            const __m128i h0 = Vf30 ? _mm_max_epu32(mag(a15), _mm_max_epu32(mag(a23), mag(a31))) : _mm_max_epu32(mag(a15), mag(a23));
++            __m128i hs = _mm_max_epu32(h0, mag(acc));
++            do
++            {
++                const __m128 l7 = ldq(d, vi2 + 1);                // p0
++                const int32_t v2 = sx(vi2 + vi4);                 // p1
++                vi1 = sx(vu1n::ldWordm(d, vu1hle::qa(v2), 3));    // p2
++                const __m128 l1 = ldq(d, v2), l4 = ldq(d, v2 - 1); // p3, p5
++                vi1 = sx(vi1 + vi1);                              // p6
++                const __m128 mfir = _mm_castsi128_ps(_mm_set1_epi32(static_cast<int16_t>(vi1)));
++                const __m128 c1 = f1, c2 = f2, c3 = f3, c5 = f5, c7 = f7, c8 = f8, cacc = acc;
++                FastOps fo(hs);
++                hs = h0;
++                pass(fo, l7, l1, l4, mfir);
++                if (!fo.ok()) [[unlikely]]
++                {
++                    f1 = c1, f2 = c2, f3 = c3, f5 = c5, f7 = c7, f8 = c8, acc = cacc;
++                    ExactOps eo;
++                    pass(eo, l7, l1, l4, mfir);
++                }
++                vi2 = v2;
++                stq<7>(d, vi3 + 1, f8s); // p8
++                vi5 = sx(vi5 - 1);       // p10
++                vi3 = sx(vi3 + vi4);     // p11
++                stq<7>(d, vi3, f3);      // p12
++                stq<15>(d, vi3 - 1, f6); // p14
+             } while (vi5 != 0);
+             stv(s, 1, f1); stv(s, 2, f2); stv(s, 3, f3); stv(s, 4, f4); stv(s, 5, f5); stv(s, 6, f6); stv(s, 7, f7);
+             stv(s, 8, f8);
+             _mm_storeu_ps(s.acc, acc);
+-            s.i = iv;
++            s.i = iNew;
+             s.vi[1] = 1049;
+             s.vi[2] = vi2;
+             s.vi[3] = vi3;
+@@ -695,22 +752,48 @@
+             if (vi5 <= 0)
+                 return false;
+             const int32_t vi4 = s.vi[4];
+-            do
+-            {
+-                acc = bl<7>(acc, add(m23, z));               // p0 addax.xyz ACC, vf23, vf0x | isubiu vi5, vi5, 1
++            // sw-dips11: the loops' fast form (as loopFbde): one overflow test per pass, exact redo. Rows normalised once,
++            // vf23 + 0 loop-invariant, vf2 xyz / vf7 xy normalised at entry (rewritten by p5 / p6 before the next pass
++            // reads them); p4's addx (lane-wise, no FMAC) reads vf7 with zw zeroed. FMAC operands keep every lane (maddc's
++            // wide path is taken for all lanes when any lane overflows). Memory in the original order: p1's load, p3's
++            // store (the old vf8), p5's load, then p7's store.
++            const __m128 n20 = N(m20), n21 = N(m21), n22 = N(m22);
++            const __m128 a23 = add(m23, z);
++            f2 = bl<7>(f2, N(f2)), f7 = bl<3>(f7, N(f7));
++            auto pass = [&](auto &o, __m128 l6) {
++                acc = bl<7>(acc, a23);                          // p0 addax.xyz ACC, vf23, vf0x | isubiu vi5, vi5, 1
++                acc = bl<7>(acc, o.madd(acc, n20, bc<0>(f2))); // p1 maddax.xyz ACC, vf20, vf2x | lq.xy vf6, 1(vi2)
++                f6 = bl<3>(f6, l6);
++                acc = bl<7>(acc, o.madd(acc, n21, bc<1>(f2))); // p2 madday.xyz ACC, vf21, vf2y | iadd vi2, vi2, vi4
++                f3 = bl<7>(f3, o.madd(acc, n22, bc<2>(f2)));   // p3 maddz.xyz vf3, vf22, vf2z | sq.xyz vf8, 1(vi3)
++                f8 = bl<3>(f8, o.add(bl<3>(z, f7), z));        // p4 addx.xy vf8, vf7, vf0x | iadd vi3, vi3, vi4
++                f2 = bl<7>(f2, vu1n::itofv<4>(f1));             // p5 itof4.xyz vf2, vf1 | lq.xyz vf1, 0(vi2) (the old vf1)
++                f7 = bl<3>(f7, vu1n::itofv<12>(f6));            // p6 itof12.xy vf7, vf6 | ibne
++            };
++            // ACC w: never written, the addend of the w lanes in every pass (FastOps' bound on addends)
++            const __m128i h0 = _mm_max_epu32(mag(a23), mag(bl<8>(z, acc)));
++            __m128i hs = _mm_max_epu32(h0, mag(acc));
++            do
++            {
++                const __m128 l6 = ldq(d, vi2 + 1); // p1
++                stq<7>(d, vi3 + 1, f8);            // p3 (the old vf8)
++                const int32_t v2 = sx(vi2 + vi4);  // p2
++                const __m128 l1 = ldq(d, v2);      // p5
++                const __m128 c2 = f2, c3 = f3, c6 = f6, c7 = f7, c8 = f8, cacc = acc;
++                FastOps fo(hs);
++                hs = h0;
++                pass(fo, l6);
++                if (!fo.ok()) [[unlikely]]
++                {
++                    f2 = c2, f3 = c3, f6 = c6, f7 = c7, f8 = c8, acc = cacc;
++                    ExactOps eo;
++                    pass(eo, l6);
++                }
++                f1 = bl<7>(f1, l1);
++                vi2 = v2;
+                 vi5 = sx(vi5 - 1);
+-                acc = bl<7>(acc, madd(acc, m20, bc<0>(f2))); // p1 maddax.xyz ACC, vf20, vf2x | lq.xy vf6, 1(vi2)
+-                f6 = bl<3>(f6, ldq(d, vi2 + 1));
+-                acc = bl<7>(acc, madd(acc, m21, bc<1>(f2))); // p2 madday.xyz ACC, vf21, vf2y | iadd vi2, vi2, vi4
+-                vi2 = sx(vi2 + vi4);
+-                stq<7>(d, vi3 + 1, f8);                      // p3 maddz.xyz vf3, vf22, vf2z | sq.xyz vf8, 1(vi3)
+-                f3 = bl<7>(f3, madd(acc, m22, bc<2>(f2)));
+-                f8 = bl<3>(f8, add(f7, z));                  // p4 addx.xy vf8, vf7, vf0x | iadd vi3, vi3, vi4
+                 vi3 = sx(vi3 + vi4);
+-                f2 = bl<7>(f2, vu1n::itofv<4>(f1));          // p5 itof4.xyz vf2, vf1 | lq.xyz vf1, 0(vi2) (the old vf1)
+-                f1 = bl<7>(f1, ldq(d, vi2));
+-                f7 = bl<3>(f7, vu1n::itofv<12>(f6));         // p6 itof12.xy vf7, vf6 | ibne
+-                stq<7>(d, vi3, f3);                          // p7 (delay) sq.xyz vf3, 0(vi3)
++                stq<7>(d, vi3, f3); // p7 (delay) sq.xyz vf3, 0(vi3)
+             } while (vi5 != 0);
+             stv(s, 1, f1); stv(s, 2, f2); stv(s, 3, f3); stv(s, 6, f6); stv(s, 7, f7); stv(s, 8, f8);
+             _mm_storeu_ps(s.acc, acc);
+@@ -1087,28 +1170,52 @@
+             if (vi5 <= 0)
+                 return false;
+             const int32_t vi4 = s.vi[4];
+-            do
+-            {
+-                f8 = bl<3>(f8, madd(acc, m18, bc<2>(f4)));   // p0 maddz.xy vf8, vf18, vf4z | iadd vi2, vi2, vi4
+-                vi2 = sx(vi2 + vi4);
+-                acc = bl<7>(acc, add(m23, z));               // p1 addax.xyz ACC, vf23, vf0x | lq.xyz vf4, -2(vi2)
+-                f4 = bl<7>(f4, ldq(d, vi2 - 2));
+-                acc = bl<7>(acc, madd(acc, m20, bc<0>(f2))); // p2 maddax.xyz ACC, vf20, vf2x | isubiu vi5, vi5, 1
+-                vi5 = sx(vi5 - 1);
+-                acc = bl<7>(acc, madd(acc, m21, bc<1>(f2))); // p3 madday.xyz ACC, vf21, vf2y | lq.xyz vf1, 0(vi2)
+-                f1 = bl<7>(f1, ldq(d, vi2));
+-                f3 = bl<7>(f3, madd(acc, m22, bc<2>(f2)));   // p4 maddz.xyz vf3, vf22, vf2z
+-                f4 = bl<7>(f4, vu1n::itofv<15>(f4));         // p5 itof15.xyz vf4, vf4 | sq.xyz vf8, 1(vi3)
+-                stq<7>(d, vi3 + 1, f8);
+-                f7 = vu1n::itofv<0>(f6);                     // p6 itof0.xyzw vf7, vf6 | lq.xyzw vf6, -1(vi2) (old vf6)
+-                f6 = ldq(d, vi2 - 1);
+-                f2 = bl<7>(f2, vu1n::itofv<4>(f1));          // p7 itof4.xyz vf2, vf1 | iadd vi3, vi3, vi4
+-                vi3 = sx(vi3 + vi4);
+-                acc = bl<3>(acc, add(m19, z));               // p8 addax.xy ACC, vf19, vf0x | sq.xyz vf3, 0(vi3)
+-                stq<7>(d, vi3, f3);
+-                acc = bl<3>(acc, madd(acc, m16, bc<0>(f4))); // p9 maddax.xy ACC, vf16, vf4x | ibne
+-                acc = bl<3>(acc, madd(acc, m17, bc<1>(f4))); // p10 (delay) madday.xy ACC, vf17, vf4y | sq.xyzw vf7, -1(vi3)
+-                stq<15>(d, vi3 - 1, f7);
++            // sw-dips11: the loops' fast form (as loopFbde): one overflow test per pass, exact redo. Rows normalised once,
++            // the ADDA of vf19 / vf23 with vf0 loop-invariant (blended in their lanes only), vf2 xyz / vf4 xyz normalised
++            // at entry (rewritten by p7 / p1 + p5 before the next pass reads them). FMAC operands keep every lane. Memory
++            // in the original order: p1 / p3 loads, p5's store, p6's load (after that store, as before), p8 / p10 stores.
++            const __m128 n16 = N(m16), n17 = N(m17), n18 = N(m18), n20 = N(m20), n21 = N(m21), n22 = N(m22);
++            const __m128 a19 = bl<3>(z, add(m19, z)), a23 = bl<7>(z, add(m23, z));
++            f2 = bl<7>(f2, N(f2)), f4 = bl<7>(f4, N(f4));
++            auto pass = [&](auto &o, __m128 l4, __m128 l1) {
++                f8 = bl<3>(f8, o.madd(acc, n18, bc<2>(f4)));   // p0 maddz.xy vf8, vf18, vf4z | iadd vi2, vi2, vi4
++                acc = bl<7>(acc, a23);                          // p1 addax.xyz ACC, vf23, vf0x | lq.xyz vf4, -2(vi2)
++                f4 = bl<7>(f4, l4);
++                acc = bl<7>(acc, o.madd(acc, n20, bc<0>(f2))); // p2 maddax.xyz ACC, vf20, vf2x | isubiu vi5, vi5, 1
++                acc = bl<7>(acc, o.madd(acc, n21, bc<1>(f2))); // p3 madday.xyz ACC, vf21, vf2y | lq.xyz vf1, 0(vi2)
++                f1 = bl<7>(f1, l1);
++                f3 = bl<7>(f3, o.madd(acc, n22, bc<2>(f2)));   // p4 maddz.xyz vf3, vf22, vf2z
++                f4 = bl<7>(f4, vu1n::itofv<15>(f4));            // p5 itof15.xyz vf4, vf4 | sq.xyz vf8, 1(vi3)
++                f7 = vu1n::itofv<0>(f6);                        // p6 itof0.xyzw vf7, vf6 | lq.xyzw vf6, -1(vi2) (old vf6)
++                f2 = bl<7>(f2, vu1n::itofv<4>(f1));             // p7 itof4.xyz vf2, vf1 | iadd vi3, vi3, vi4
++                acc = bl<3>(acc, a19);                          // p8 addax.xy ACC, vf19, vf0x | sq.xyz vf3, 0(vi3)
++                acc = bl<3>(acc, o.madd(acc, n16, bc<0>(f4))); // p9 maddax.xy ACC, vf16, vf4x | ibne
++                acc = bl<3>(acc, o.madd(acc, n17, bc<1>(f4))); // p10 (delay) madday.xy ACC, vf17, vf4y | sq.xyzw vf7, -1(vi3)
++            };
++            // ACC w: never written, the addend of the w lanes in every pass (FastOps' bound on addends)
++            const __m128i h0 = _mm_max_epu32(_mm_max_epu32(mag(a19), mag(a23)), mag(bl<8>(z, acc)));
++            __m128i hs = _mm_max_epu32(h0, mag(acc));
++            do
++            {
++                const int32_t v2 = sx(vi2 + vi4);                    // p0
++                const __m128 l4 = ldq(d, v2 - 2), l1 = ldq(d, v2); // p1, p3
++                const __m128 c1 = f1, c2 = f2, c3 = f3, c4 = f4, c8 = f8, cacc = acc;
++                FastOps fo(hs);
++                hs = h0;
++                pass(fo, l4, l1);
++                if (!fo.ok()) [[unlikely]]
++                {
++                    f1 = c1, f2 = c2, f3 = c3, f4 = c4, f8 = c8, acc = cacc;
++                    ExactOps eo;
++                    pass(eo, l4, l1);
++                }
++                vi2 = v2;
++                vi5 = sx(vi5 - 1);
++                stq<7>(d, vi3 + 1, f8);  // p5
++                f6 = ldq(d, vi2 - 1);    // p6
++                vi3 = sx(vi3 + vi4);     // p7
++                stq<7>(d, vi3, f3);      // p8
++                stq<15>(d, vi3 - 1, f7); // p10
+             } while (vi5 != 0);
+             stv(s, 1, f1); stv(s, 2, f2); stv(s, 3, f3); stv(s, 4, f4); stv(s, 6, f6); stv(s, 7, f7); stv(s, 8, f8);
+             _mm_storeu_ps(s.acc, acc);
