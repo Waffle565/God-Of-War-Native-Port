@@ -1166,3 +1166,11 @@ Run: `python -I tools/zones.py --slots 1,2,3,4` (scale: `PS2X_GS_HW_SCALE`); sav
   Screenshots side by side (deck spray, fog, blood blending, HUD, death screen) identical in look; SEMO01 30.0 /
   A06MP01 29.9 pictures/s, 4 title boots clean (port/switch/sweep/inst_dips32). **Console default = update_dips32 +
   FAILGT** (exefs md5 c0893f9b); tools/switch_default.sh updated.
+- 2026-11-02 (sw-boss2 for sw-dips11/12): **update_dips35** (= dips32 + dips34 + dips35, docs/performance.md)
+  replaces dips32. Level A/B (same session, port/switch/sweep/ab_dips35 vs ab_dips32c, fps min/mean): ARENA14
+  56.8/57.7 vs 48.6/49.4, ATHN01D 38.4/41.1 vs 37.0/48.2, ATHN06C 35.8/52.9 vs 35.6/37.1, OLYMP02 43.4/58.5 vs
+  41.8/43.2, ATRET01B 46.4/48.3 vs 50.0/57.0, PAND02B 48.2/51.2 vs 38.8/47.8; VU1 thread busy per 5 s lower in 5 of 6
+  zones. SEMO01 30.0 pictures/s and 4 clean title boots (port/switch/sweep/semo_dips35_1..4), pictures correct.
+  **Console default = update_dips35 + FAILGT** (exefs md5 80608ad3); tools/switch_default.sh updated. The default
+  dips32 had crashed once in an A/B (ATHN03D, JALR to 0 from 0x1d6d44 during the new-game load,
+  port/switch/sweep/ab_dips32b/20261102_0155); 12 later ATHN03D boots on sw-crash2's diagnostic packages: no repeat.
