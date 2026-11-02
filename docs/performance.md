@@ -1409,3 +1409,31 @@ Mean < 50 and min < 40: ATHN06C, ATHN01D, PAND02B, fight_ATHN01D. Game speed 0.9
   the same paths: check `pgrep -f "ninja|dips_sb.sh"` before a build. Next levers: the rest of npart (sq / Undo::touch
   ~13 %, element / body dispatch, maddc's per-FMAC overflow test: an element-level FastOps would need the element's
   stores deferred), runLit set-up (OLYMP02 / ATRET01B), core 1 for ATHN01D (EE + IOP ~4.6 s per 5 s at 41 fps).
+
+## Core 1 (EE + IOP) profile; exact ERLENG on the Switch; EE dispatch fast path (sw-dips14, 2026-11-02, from dips35)
+- Core 1 carries the EE thread and the inline IOP (GameThread; SoundMix is on core 0). Profile run port/switch/logs/prof_d37ee_*
+  (update_dips37, `GOW_PC_SAMPLE=1000,GOW_PC_SAMPLE_THREADS=GameThread,GOW_PC_SAMPLE_SKIP=2,GOW_PC_SAMPLE_LR=<memcpy>`; tools
+  port/switch/tools_dips14: prof.sh = funcs.py + cat.py per category, pcprof.sh, annot.sh = per-instruction samples of one
+  function, insn.py = samples by instruction class). ATHN01D while walking (EE busy windows 72-92 s), share of the thread:
+  recompiled game code 45.7 %, waits 22.9, inline IOP 10.4 (SoundEngine stepVoice / stepEnvelope / step / decodeBlock 3.2,
+  the rest spread over the IOP's native chunks, import dispatch hash lookups ~0.4), **VIF1 DMA chain copy ~9** (memcpy 5.5,
+  4.2 of it `appendGuestBytes <- sendDmaChain`; appendGuestBytes itself 1.8, mostly its DC ZVA; sendDmaChain 1.6; the log's
+  `[gsw-chain] chain_ms` is ~450 ms per 5 s for ~125 MB per 5 s), dispatchGuestBranch 3.8, malloc / free ~0.8,
+  `std::_Rb_tree_increment` 0.4-0.6 (callers unknown), FPCR switches of the PS2 divide ~0.9 (insn.py).
+- **The 3-6 % "SD write" (`svc 0x21` from `fsdev_write`) in every older EE profile is the sweep's own warp capture**, not
+  the game: `GOW_PC_SAMPLE_SKIP=2` shows `std::basic_filebuf::xsputn`, the PPM writer of `[gow-warp] capture` wrote 3 bytes
+  per call (~3 s per capture on the SD); the two windows holding a capture are 60 % in that write. Sweep windows with a
+  capture are therefore not representative of the EE. dips37c writes each PPM in one call (same file bytes).
+- **ERLENG (task 2 of sw-dips14)**: dips35's npart `erleng` keeps the _ss form but takes the square root as
+  `std::sqrt` (FSQRT) instead of sse2neon's `_mm_sqrt_ss` (FRSQRTE + Newton on AArch64 under SSE2NEON_PRECISE_SQRT). Natcheck
+  (harness n1 / n1a = dips35 + this line): x86 and x86 forced decline identical to g7 (dips35); a64 identical to m2a (dips36,
+  which matched the oracle), so the console's particle runs now equal the PC and the exact engine. The rest of dips36 (operand
+  views) is left out: it measured no gain (ab_dips36b vs ab_dips35b).
+- dips37 (port/switch/dips37.patch, full diff from dips35): dispatchGuestBranch without per-call TLS calls and guard loads:
+  the dispatch history and jump serial are plain globals (only the EE executor thread dispatches; a thread_local cost a call
+  to `__aarch64_read_tp` per access on the Switch, three per call), `ps2_perf::guestEntry` is one compare against a plain
+  variable set on the first call, the GS-worker trace env read once into plain statics, and the generated table's bounds
+  copied into one internal struct (they were three GOT loads per call). Static check: 8 `ldar` / `__aarch64_read_tp` in the
+  function -> 1 (cold). Plus `GOW_PC_SAMPLE_SKIP` (docs/diagnostics.md) and `[gsw-chain-seg]` (dips37b: the chain's data
+  pieces by size, < 1 KB / < 16 KB / larger, count and KB per 5 s). dips37c: + the PPM capture writer, SoundEngine
+  stepVoice / stepEnvelope inlined into step() (same code).

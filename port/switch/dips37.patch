@@ -1,0 +1,282 @@
+--- a/ps2xIOP/src/emulator/core/sound_engine.cpp
++++ b/ps2xIOP/src/emulator/core/sound_engine.cpp
+@@ -586,7 +586,9 @@
+         v.playStarted = true;
+     }
+ 
+-    void SoundEngine::stepEnvelope(Voice &v)
++    // sw-dips14: stepEnvelope and stepVoice inlined into step() (per voice per sample, ~2.3 M calls/s; 3 % of the EE
++    // thread on the console, where sync() mixes the samples the SoundMix worker has not taken); same code
++    [[gnu::always_inline]] inline void SoundEngine::stepEnvelope(Voice &v)
+     {
+         uint32_t rate = 0;
+         bool exponential = false;
+@@ -661,7 +663,7 @@
+         }
+     }
+ 
+-    int32_t SoundEngine::stepVoice(Core &c, uint32_t index)
++    [[gnu::always_inline]] inline int32_t SoundEngine::stepVoice(Core &c, uint32_t index)
+     {
+         Voice &v = c.voices[index];
+         if (!v.active)
+--- a/ps2xRuntime/include/runtime/ps2_perf.h
++++ b/ps2xRuntime/include/runtime/ps2_perf.h
+@@ -141,18 +141,31 @@
+                      frames && maxDelta > 0.0 ? minDelta : 0.0, maxDelta);
+         windowStart = now; frames = 0; gameSeconds = 0.0; minDelta = 1e9; maxDelta = 0.0;
+     }
++    // GOW-Port (sw-dips14): guestEntry runs on every dispatched guest call (EE executor thread only), so its per-call
++    // part is one compare against a plain variable set on the first call: the pc to count (GOW_PERF_FRAME_PC when
++    // GOW_PERF_DIAG or GOW_DELTA_DIAG is on, else 0xFFFFFFFF = never, guest pcs are word aligned); the function-local
++    // statics it had cost an acquire load of a guard per call
++    inline bool guestEntryReady = false;
++    inline uint32_t guestEntryPc = 0xFFFFFFFFu;
++    [[gnu::noinline]] inline void guestEntryInit()
++    {
++        uint32_t framePc = 0u;
++        if (countFrames() || deltaDiag())
++            if (const char *value = std::getenv("GOW_PERF_FRAME_PC"))
++                framePc = static_cast<uint32_t>(std::strtoul(value, nullptr, 0));
++        guestEntryPc = framePc != 0u ? framePc : 0xFFFFFFFFu;
++        guestEntryReady = true;
++    }
++    [[gnu::noinline]] inline void guestEntryHit(const uint8_t *rdram)
++    {
++        if (countFrames()) guestFlips.fetch_add(1, std::memory_order_relaxed);
++        if (deltaDiag() && rdram) gameSpeedFrame(rdram);
++    }
+     inline void guestEntry(uint32_t pc, const uint8_t *rdram = nullptr)
+     {
+-        static const bool frames = countFrames(), speed = deltaDiag();
+-        if (!frames && !speed) return;
+-        static const uint32_t framePc = [] {
+-            const char *value = std::getenv("GOW_PERF_FRAME_PC");
+-            return value ? static_cast<uint32_t>(std::strtoul(value, nullptr, 0)) : 0u;
+-        }();
++        if (__builtin_expect(!guestEntryReady, 0)) guestEntryInit();
+         // Solo entradas a la función elegida: las reanudaciones no cuentan como cuadros nuevos.
+-        if (framePc == 0u || pc != framePc) return;
+-        if (frames) guestFlips.fetch_add(1, std::memory_order_relaxed);
+-        if (speed && rdram) gameSpeedFrame(rdram);
++        if (__builtin_expect(pc == guestEntryPc, 0)) guestEntryHit(rdram);
+     }
+     // GOW-Port: split of the GS worker thread (VIF1 + VU1) under GOW_PERF_DIAG, printed by the worker as [gsw-split]
+     // every 5 s: whole jobs, VU1 microprogram runs (MSCAL/MSCNT callback), XGKICK hand-off to the GIF/GS stage inside
+@@ -164,6 +177,15 @@
+         // EE side: DMA source chains walked and copied by PS2Memory::sendDmaChain before the worker job is queued (VU1
+         // cannot start on a chain until this is done), printed as [gsw-chain]
+         inline PaddedCounter chainNs{0}, chains{0}, chainBytes{0}, chainMaxNs{0};
++        // sw-dips14: the chain's data pieces (one per tag with qwc != 0) by size: < 1 KB, < 16 KB, larger; count and
++        // bytes of each, printed as [gsw-chain-seg] (written by the EE thread only)
++        inline std::atomic<uint64_t> chainSegN[3] = {0, 0, 0}, chainSegBytes[3] = {0, 0, 0};
++        inline void addChainSeg(uint32_t bytes)
++        {
++            const int b = bytes < 1024u ? 0 : bytes < 16384u ? 1 : 2;
++            chainSegN[b].store(chainSegN[b].load(std::memory_order_relaxed) + 1u, std::memory_order_relaxed);
++            chainSegBytes[b].store(chainSegBytes[b].load(std::memory_order_relaxed) + bytes, std::memory_order_relaxed);
++        }
+         // worker idle between jobs (GOW-Port 2026-10-24): waits, total, and by length (< 0.1 ms, < 1 ms, < 4 ms, more),
+         // printed as [gsw-idle]; a wait is from the moment the worker finds no job to the next job's start
+         inline PaddedCounter idleNs{0}, idleWaits{0}, idleBucket[4] = {{0}, {0}, {0}, {0}}, idleBucketNs[4] = {{0}, {0}, {0}, {0}};
+@@ -197,6 +219,18 @@
+             for (int i = 0; i < 3; ++i) { c[i] = chainCur[i] - chainBefore[i]; chainBefore[i] = chainCur[i]; }
+             std::fprintf(stderr, "[gsw-chain] window=%.2f chain_ms=%.1f chains=%llu chain_kb=%llu max_chain_ms=%.2f\n", (now - last) * 1e-9,
+                          c[0] * 1e-6, (unsigned long long)c[1], (unsigned long long)(c[2] >> 10), chainMaxNs.exchange(0) * 1e-6);
++            {
++                static uint64_t segBefore[6] = {};
++                uint64_t sg[6];
++                for (int i = 0; i < 3; ++i)
++                {
++                    const uint64_t n = chainSegN[i].load(std::memory_order_relaxed), b = chainSegBytes[i].load(std::memory_order_relaxed);
++                    sg[i] = n - segBefore[i]; sg[3 + i] = b - segBefore[3 + i]; segBefore[i] = n; segBefore[3 + i] = b;
++                }
++                std::fprintf(stderr, "[gsw-chain-seg] lt1k=%llu/%lluKB lt16k=%llu/%lluKB ge16k=%llu/%lluKB\n",
++                             (unsigned long long)sg[0], (unsigned long long)(sg[3] >> 10), (unsigned long long)sg[1],
++                             (unsigned long long)(sg[4] >> 10), (unsigned long long)sg[2], (unsigned long long)(sg[5] >> 10));
++            }
+             static uint64_t idleBefore[10] = {};
+             const uint64_t idleCur[10] = {idleNs.load(), idleWaits.load(), idleBucket[0].load(), idleBucket[1].load(),
+                                           idleBucket[2].load(), idleBucket[3].load(), idleBucketNs[0].load(),
+--- a/ps2xRuntime/src/lib/ps2_memory.cpp
++++ b/ps2xRuntime/src/lib/ps2_memory.cpp
+@@ -2020,7 +2020,11 @@
+         if (transferTags)
+             bytes.insert(bytes.end(), base + offset + 8u, base + offset + 16u);
+         if (qwc != 0u)
++        {
++            if (chainT0)
++                ps2_perf::gsw::addChainSeg(qwc * 16u);
+             appendGuestBytes(data, qwc * 16u, bytes);
++        }
+         if (end || irq)
+             break;
+         if (streamBytes)
+--- a/ps2xRuntime/src/lib/ps2_runtime.cpp
++++ b/ps2xRuntime/src/lib/ps2_runtime.cpp
+@@ -266,10 +266,12 @@
+         bool wrapped = false;
+     };
+ 
+-    thread_local DispatchHistory g_dispatchHistory;
++    // GOW-Port (sw-dips14): plain globals, not thread_local: only the EE executor thread dispatches guest code, and a
++    // thread_local costs a call to __aarch64_read_tp per access on the Switch (three per dispatched call)
++    DispatchHistory g_dispatchHistory;
+     // GOW-Port: cuenta los saltos (no llamadas) despachados, para distinguir un retorno implicito de un salto final
+     // que vuelve a la entrada de la funcion llamada (fork de SotC, c4c20e8).
+-    thread_local uint64_t g_guestJumpSerial = 0u;
++    uint64_t g_guestJumpSerial = 0u;
+ 
+     bool computeFileCrc32(const std::string &path, uint32_t &crcOut)
+     {
+@@ -1402,21 +1404,33 @@
+ 
+ namespace
+ {
++    // GOW-Port (sw-dips14): the generated table's bounds copied once into one internal struct: the extern consts live
++    // in another translation unit, so every dispatched call loaded each of them through the GOT (two dependent loads
++    // apiece) before the table entry itself
++    struct GeneratedTableBounds
++    {
++        uint32_t base, end, count;
++    };
++    // dynamic initialisation from constant-initialised consts: done before main, read-only afterwards (any thread)
++    const GeneratedTableBounds g_generatedTable{g_ps2RecompiledFunctionTableBase, g_ps2RecompiledFunctionTableEnd,
++                                                g_ps2RecompiledFunctionTableSlotCount};
++
+     bool generatedFunctionTableSlot(uint32_t address, uint32_t &slot)
+     {
+-        if ((address & 3u) != 0u || g_ps2RecompiledFunctionTableSlotCount == 0u)
++        const GeneratedTableBounds t = g_generatedTable;
++        if ((address & 3u) != 0u || t.count == 0u)
+         {
+             return false;
+         }
+ 
+-        if (address < g_ps2RecompiledFunctionTableBase || address >= g_ps2RecompiledFunctionTableEnd)
++        if (address < t.base || address >= t.end)
+         {
+             return false;
+         }
+ 
+-        const uint32_t offset = address - g_ps2RecompiledFunctionTableBase;
++        const uint32_t offset = address - t.base;
+         slot = offset >> 2;
+-        return slot < g_ps2RecompiledFunctionTableSlotCount;
++        return slot < t.count;
+     }
+ }
+ 
+@@ -1827,9 +1841,18 @@
+     ps2_perf::guestEntry(targetPc, rdram); // GOW-Port: también cuenta llamadas que no vuelven al dispatcher.
+     // GOW-Port: PS2X_GS_WORKER_TRACE=<s>: for 2 s after <s> s of uptime, host µs of vid::Flip (0x1837B8),
+     // vid::WaitForDMAComplete (0x183878) and 0x13F730 entry/return, to see the per-frame dependency chain.
+-    static const double traceFrom = [] { const char *v = std::getenv("PS2X_GS_WORKER_TRACE"); return v ? std::atof(v) : -1.0; }();
+-    const bool traced = traceFrom >= 0.0 && (targetPc == 0x1837B8u || targetPc == 0x183878u || targetPc == 0x13F730u);
+-    static const auto traceStart = std::chrono::steady_clock::now();
++    // sw-dips14: the env lookup once into a plain variable (EE thread only; was a guarded static per call)
++    static int traceState = -1; // -1 not read yet, 0 off, 1 on
++    static double traceFrom = -1.0;
++    static std::chrono::steady_clock::time_point traceStart;
++    if (__builtin_expect(traceState < 0, 0))
++    {
++        traceStart = std::chrono::steady_clock::now();
++        const char *v = std::getenv("PS2X_GS_WORKER_TRACE");
++        traceFrom = v ? std::atof(v) : -1.0;
++        traceState = traceFrom >= 0.0 ? 1 : 0;
++    }
++    const bool traced = traceState != 0 && (targetPc == 0x1837B8u || targetPc == 0x183878u || targetPc == 0x13F730u);
+     auto traceEvent = [&](const char *what)
+     {
+         const double s = std::chrono::duration<double>(std::chrono::steady_clock::now() - traceStart).count();
+--- a/ps2xRuntime/src/lib/ps2_switch_runtime.cpp
++++ b/ps2xRuntime/src/lib/ps2_switch_runtime.cpp
+@@ -439,6 +439,11 @@
+             const u32 insn = *reinterpret_cast<const u32 *>(ra - 4u);
+             return (insn & 0xFC000000u) == 0x94000000u || (insn & 0xFFFFFC1Fu) == 0xD63F0000u; // BL / BLR
+         };
++        // GOW_PC_SAMPLE_SKIP=<n> (sw-dips14): system-call samples record the return addresses after the first n found
++        // on the stack (n = 2: the 3rd and 4th callers), to see past libc wrappers such as fsdev_write <- _write_r
++        int callerSkip = 0;
++        if (const char *sk = std::getenv("GOW_PC_SAMPLE_SKIP"))
++            callerSkip = std::atoi(sk);
+         u64 lrLo = 0, lrHi = 0;
+         if (const char *lr = std::getenv("GOW_PC_SAMPLE_LR"))
+         {
+@@ -471,10 +476,10 @@
+                     if ((svcInsn & 0xFFE0001Fu) == 0xD4000001u)
+                     {
+                         u64 ra[2] = {};
+-                        int found = 0;
++                        int found = 0, skipped = 0;
+                         const u64 *stack = reinterpret_cast<const u64 *>(ctx.sp & ~7ull);
+-                        for (int k = 0; k < 96 && found < 2; ++k) // the stack is ours and the thread is paused
+-                            if (isCall(stack[k]))
++                        for (int k = 0; k < 192 && found < 2; ++k) // the stack is ours and the thread is paused
++                            if (isCall(stack[k]) && skipped++ >= callerSkip)
+                                 ra[found++] = stack[k] - base;
+                         t.callers.add((static_cast<u64>((svcInsn >> 5) & 0xFFu) << 56) | ((ra[0] & 0xFFFFFFFu) << 28) |
+                                       (ra[1] & 0xFFFFFFFu) | 1ull << 63);
+--- a/ps2xRuntime/src/lib/vu/ps2_vu1_nat_part.inl
++++ b/ps2xRuntime/src/lib/vu/ps2_vu1_nat_part.inl
+@@ -263,7 +263,8 @@
+             _mm_store_ps(f, Raw(r));
+             const __m128 x = _mm_set_ss(vu1n::qnorm(f[0])), y = _mm_set_ss(vu1n::qnorm(f[1])), z = _mm_set_ss(vu1n::qnorm(f[2]));
+             const __m128 sum = _mm_add_ss(_mm_add_ss(_mm_mul_ss(x, x), _mm_mul_ss(y, y)), _mm_mul_ss(z, z));
+-            const __m128 len = _mm_sqrt_ss(sum);
++            // sw-dips14: FSQRT (std::sqrt), exact; sse2neon _mm_sqrt_ss under SSE2NEON_PRECISE_SQRT is FRSQRTE + Newton on AArch64
++            const __m128 len = _mm_set_ss(std::sqrt(_mm_cvtss_f32(sum)));
+             rp = vu1n::qfinish(sf(len) != 0.0f ? sf(_mm_div_ss(_mm_set_ss(1.0f), len)) : sf(len));
+         }
+ 
+--- a/ps2xRuntime/src/runner/gow_overrides.cpp
++++ b/ps2xRuntime/src/runner/gow_overrides.cpp
+@@ -44,6 +44,18 @@
+ #include <string>
+ #include <vector>
+ 
++// sw-dips14: the RGB bytes of an RGBA frame (the alpha byte of each pixel dropped, the last pixel only when a 4th byte
++// follows it, as the former per-pixel loop did) in one stream write
++template <class Stream>
++static void gowWritePpmRgb(Stream &file, const std::vector<uint8_t> &pixels)
++{
++    std::vector<char> rgb;
++    rgb.reserve(pixels.size() / 4u * 3u);
++    for (size_t i = 0; i + 3 < pixels.size(); i += 4)
++        rgb.insert(rgb.end(), reinterpret_cast<const char *>(pixels.data() + i), reinterpret_cast<const char *>(pixels.data() + i + 3));
++    file.write(rgb.data(), static_cast<std::streamsize>(rgb.size()));
++}
++
+ extern std::atomic<uint64_t> g_gowWaitNs[8], g_gowWaitCnt[8]; // EeScheduler.cpp: EE idle waits by wake-up cause
+ extern std::atomic<uint64_t> g_gowWallLagDroppedNs; // EeScheduler.cpp (sw-bugs): lag dropped by catchUpToWall
+ 
+@@ -226,8 +238,7 @@
+                     const std::string name = "gow_warp_" + std::to_string(next) + "_" + zones[next - 1] + "_" + std::to_string(k) + ".ppm";
+                     std::ofstream file(name, std::ios::binary);
+                     file << "P6\n" << width << ' ' << height << "\n255\n";
+-                    for (size_t i = 0; i + 3 < pixels.size(); i += 4)
+-                        file.write(reinterpret_cast<const char *>(pixels.data() + i), 3);
++                    gowWritePpmRgb(file, pixels); // sw-dips14: one write (3-byte writes cost ~3 s per capture on the SD)
+                     std::fprintf(stderr, "[gow-warp] capture %s at %.1f s\n", name.c_str(), now);
+                 }
+             }
+@@ -578,8 +589,7 @@
+                     const std::string name = "gow_pad_test_" + std::to_string(capture) + ".ppm";
+                     std::ofstream file(name, std::ios::binary);
+                     file << "P6\n" << width << ' ' << height << "\n255\n";
+-                    for (size_t i = 0; i + 3 < pixels.size(); i += 4)
+-                        file.write(reinterpret_cast<const char *>(pixels.data() + i), 3);
++                    gowWritePpmRgb(file, pixels); // sw-dips14: one write (3-byte writes cost ~3 s per capture on the SD)
+                     std::fprintf(stderr, "[gow-pad2:test] frame=%s seconds=%.2f\n", name.c_str(), seconds);
+                     uint32_t gameState = 0, pending = 0;
+                     std::memcpy(&gameState, rdram + 0x0029E560u, sizeof(gameState));
+@@ -2080,8 +2090,7 @@
+                 const std::string name = "bench_shot_" + std::to_string(g_benchFrames) + ".ppm";
+                 std::ofstream file(name, std::ios::binary);
+                 file << "P6\n" << width << ' ' << height << "\n255\n";
+-                for (size_t i = 0; i + 3 < pixels.size(); i += 4)
+-                    file.write(reinterpret_cast<const char *>(pixels.data() + i), 3);
++                gowWritePpmRgb(file, pixels); // sw-dips14: one write (3-byte writes cost ~3 s per capture on the SD)
+                 std::fprintf(stderr, "[bench] shot %s %ux%u\n", name.c_str(), width, height);
+             }
+         }
