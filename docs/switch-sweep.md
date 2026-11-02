@@ -76,6 +76,18 @@ steps, square / triangle combos, circle mashing (QTEs) and a cross every 10 s (d
   possible: walk trace xf in the first minute of a new game); (4) Guardian: PAND03E with a teleport past the lava
   (dump later than g12, or walk). Full run for the found four: `python -I tools/switch_sweep.py --boss --package
   update_boss3` (update_boss3 = dips32 + GOW_TELEPORT, md5 in port/switch/nsp/out/update_boss3).
+- Fights from a save (sw-boss2, 2026-11-02): story-triggered fights start from a save slot instead of a warp.
+  `SAVE_BOSSES` entries (key, card, slot, pad steps, fight-from g s, note) and ad-hoc `--boss-save
+  "key|card|slot|<pad steps>|<fight from>"`: the card (port/switch/boss_cards/<card>, a PCSX2 .ps2 image) is pushed as
+  sdmc:/switch/gow/boss.mcd and used via `GOW_MC0` (play.mcd untouched; boss.mcd deleted at the end), the pad script
+  loads the save from the title (Start, down, cross, right per picker position, cross, cross; `slot` = position in the
+  picker, which lists the saves newest first, not by data<n>.bin) and then runs the pad steps (e.g.
+  `g3:lup*10,g15:lright*10`: the walk to the trigger) and from the fight-from second the boss pattern. fps count
+  from the first trace line at g >= fight-from. `--boss-item` takes the same two extra fields after the teleport
+  (`key|ZONE|<teleport>|<pad steps>|<fight from>`). Cards: console_athn01d.mcd (the console's play.mcd, 2026-11-02:
+  one save, Athn01D altar, -1135,56,-447), ref_mcd002.mcd (ref/saves/Mcd002.ps2: slots Dest01, olymp01, Athn02B,
+  Pand04AA, AtRet01B). Save slot data (data<n>.bin, 81920 bytes): magic 0xCAFEBAD1, zone name at +8, previous zone at
+  +0x13, Kratos's transform at +0x1E (translation at +0x4E).
 - Test package: `bash port/switch/boss_sb.sh <tag>` in WSL builds /root/src-boss (a copy of /root/src-mlang at the
   default's sources + port/overrides-usa/gow_overrides.cpp) in /root/gow-switch-boss, inside a private mount namespace
   where both appear at the mlang paths (incremental build, the mlang tree untouched). update_boss3 = dips32 +

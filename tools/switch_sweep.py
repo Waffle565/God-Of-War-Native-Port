@@ -55,6 +55,10 @@ BOSSES = [('ares', 'ATHN08C', 'Ares (boss bar from the warp point on)', ''),
           ('clones', 'ATHN08B', 'Ares: family defence vs Kratos clones (engaged at the warp point)', ''),
           ('challenge', 'ARENA27', 'Challenge of the Gods 10/10 (cross dismisses the trial card)', ''),
           ('cerberus', 'PAND02I', 'Cerberus pair (R_CEP/R_CEA), engaged at the warp point', '')]
+# boss fights from a save (story-triggered fights: no warp): (key, card under port/switch/boss_cards, slot, pad steps
+# from gameplay start to the trigger, g second the fight pattern starts, note). The card is pushed as
+# sdmc:/switch/gow/boss.mcd and used through GOW_MC0 (the player's play.mcd stays untouched).
+SAVE_BOSSES = []
 # still open (docs/switch-sweep.md "Boss fights"): Hydra 1 (ATHN01D) and Hydra 2 (ATHN01E / 01EE) need the arena
 # position or story trigger, Pandora's Guardian (R_MI4: PAND03E / PAND04EE) was not found at its zones' warp points
 # the 43 movies with speech (European disc: five language tracks), dubbed from the lang pack (docs/settings.md
@@ -123,11 +127,22 @@ def env_text(extra):
     return '\n'.join(base + ['GOW_PERF_DIAG=1', 'GOW_DELTA_DIAG=1'] + EXTRA_ENV + extra) + '\n'
 
 
-def level_pad(total, mash, walk=1.5):
-    # new game from the title (wall seconds, as tools/bench_script.py), then from gameplay start (g = wall seconds
-    # after gameplay starts) a square walk with attacks; fights add circle mashing for the QTEs
-    keys = [f'{30 + d:g}:{k}' for d, k in ((0, 'start'), (9, 'x'), (15, 'x'), (21, 'x'), (27, 'x'))]
-    t, i = 4.0, 0
+# load-game menu presses (wall seconds): title Start, down to "Load Game", cross, right per picker position after the
+# first (the picker lists the saves newest first, not by data<n>.bin), cross, cross on the confirmation
+def load_keys(slot):
+    keys = [(30, 'start'), (39, 'abajo'), (45, 'x')]
+    keys += [(56 + 1.5 * i, 'derecha') for i in range(slot - 1)]
+    keys += [(62, 'x'), (70, 'x')]
+    return [f'{t:g}:{k}' for t, k in keys]
+
+
+def level_pad(total, mash, walk=1.5, slot=0, pre='', fight_from=4.0):
+    # new game from the title (wall seconds, as tools/bench_script.py) or, with slot, the load of that save slot; then
+    # from gameplay start (g = wall seconds after gameplay starts) the scripted walk `pre` (save items: to the boss
+    # trigger) and from fight_from a square walk with attacks; fights add circle mashing for the QTEs
+    keys = load_keys(slot) if slot else [f'{30 + d:g}:{k}' for d, k in ((0, 'start'), (9, 'x'), (15, 'x'), (21, 'x'), (27, 'x'))]
+    keys += [k.strip() for k in pre.split(',') if k.strip()]
+    t, i = fight_from, 0
     sticks = ['lup', 'lright', 'ldown', 'lleft']
     while t < total:
         keys += [f'g{t:.2f}:{sticks[i % 4]}*{walk:g}', f'g{t + 0.3:.2f}:cuadrado*0.2', f'g{t + 0.9:.2f}:triangulo*0.2',
@@ -163,10 +178,20 @@ def items(args):
     if args.boss:
         out += [{'kind': 'boss', 'name': 'boss_' + k, 'zone': z, 'stay': args.boss_stay, 'note': n, 'teleport': tp}
                 for k, z, n, tp in BOSSES if not only or z in only or k.upper() in only]
-    # ad-hoc boss items (finding arena positions): --boss-item "key|ZONE|<GOW_TELEPORT value>", repeatable
+    if args.boss:
+        out += [{'kind': 'boss', 'name': 'boss_' + k, 'zone': '', 'stay': args.boss_stay, 'note': n, 'card': c,
+                 'slot': sl, 'pre': pre, 'fight_from': ff} for k, c, sl, pre, ff, n in SAVE_BOSSES
+                if not only or k.upper() in only]
+    # ad-hoc save items (finding the trigger walk): --boss-save "key|card|slot|<pad steps>|<fight from g s>"
+    for spec in args.boss_save:
+        k, c, sl, pre, ff = (spec.split('|') + ['', '', '1', '', '4'])[:5]
+        out.append({'kind': 'boss', 'name': 'boss_' + k, 'zone': '', 'stay': args.boss_stay, 'note': 'ad hoc save',
+                    'card': c, 'slot': int(sl or 1), 'pre': pre, 'fight_from': float(ff or 4)})
+    # ad-hoc boss items (finding arena positions): --boss-item "key|ZONE|<GOW_TELEPORT value>[|<pad steps>|<fight from>]"
     for spec in args.boss_item:
-        k, z, tp = (spec.split('|') + ['', ''])[:3]
-        out.append({'kind': 'boss', 'name': 'boss_' + k, 'zone': z, 'stay': args.boss_stay, 'note': 'ad hoc', 'teleport': tp})
+        k, z, tp, pre, ff = (spec.split('|') + ['', '', '', '4'])[:5]
+        out.append({'kind': 'boss', 'name': 'boss_' + k, 'zone': z, 'stay': args.boss_stay, 'note': 'ad hoc', 'teleport': tp,
+                    'pre': pre, 'fight_from': float(ff or 4)})
     if args.fights:
         out += [{'kind': 'fight', 'name': 'fight_' + z, 'zone': z, 'stay': args.fight_stay, 'note': n}
                 for z, n in FIGHTS if not only or z in only]
@@ -237,6 +262,43 @@ def judge_level(text, item, r):
         r['zones_seen'] = zs[:6]
 
 
+def judge_save(text, item, r):
+    """save items: the load must reach gameplay; fps from the first trace line at g >= fight_from on, capture
+    windows excluded; the zones Kratos went through and his deaths"""
+    m = re.search(r'\[gow-player\] t=([0-9.]+) g=[0-9.]+ [^\n]*state=11', text)
+    if not m:
+        r['fail'].append('save not loaded (no gameplay)')
+        return
+    r['load_s'] = float(m.group(1))
+    ff = item.get('fight_from', 4.0)
+    start = m.start()
+    for p in re.finditer(r'\[gow-player\] t=[0-9.]+ g=([0-9.]+)', text[m.start():]):
+        if float(p.group(1)) >= ff:
+            start = m.start() + p.start()
+            break
+    seg = text[start:]
+    fps = fps_without_captures(seg)[1:]
+    if fps:
+        r['fps'] = [round(min(fps), 1), round(sum(fps) / len(fps), 1)]
+        r['fps_series'] = [round(x, 1) for x in fps]
+        if r['fps'][1] < 25:
+            r['slow'].append(f"fps mean {r['fps'][1]}")
+    _, speed = perf_of(seg)
+    if speed:
+        r['speed'] = round(sum(speed) / len(speed), 3)
+        tail = speed[-5:]
+        if len(tail) == 5 and max(tail) < 0.05:
+            r['fail'].append('hang: game clock stopped (last 5 s speed 0)')
+    deaths = len(re.findall(r'\[gow-player\][^\n]* hp=0 state=14', seg))
+    if deaths:
+        r['warn'].append(f'Kratos dead in {deaths} trace lines')
+    zs = []
+    for z in re.findall(r'\[gow-player\].*? zone=(\S+)', text[m.start():]):
+        if not zs or zs[-1] != z:
+            zs.append(z)
+    r['zones_seen'] = zs[:12]
+
+
 def judge_boss(text, item, r):
     """boss items: the teleport into the arena must have happened; fps from the teleport on (the fight)"""
     if not item.get('teleport'):
@@ -305,14 +367,29 @@ def run_item(item, outdir, args, sizes):
     else:
         pad = os.path.join(d, 'sweep_pad.txt')
         # bosses: short steps so Kratos stays in the arena, attacks + QTE mashing
-        open(pad, 'w').write(level_pad(item['stay'] + 20, item['kind'] != 'level', 0.4 if item['kind'] == 'boss' else 1.5))
+        ff = item.get('fight_from', 4.0)
+        open(pad, 'w').write(level_pad(item['stay'] + 20 + max(0.0, ff - 4.0), item['kind'] != 'level', 0.4 if item['kind'] == 'boss' else 1.5,
+                                       item.get('slot', 0), item.get('pre', ''), ff))
         if not put(pad, 'switch/gow'):
             r['fail'].append('pad script push failed')
             return r
         extra = ['GOW_SKIP_FMV=1', 'GOW_GOD_MODE=1', 'GOW_PLAYER_TRACE=1', 'GOW_PAD_TEST=1', 'GOW_PAD_TEST_NO_CAPTURE=1',
-                 'GOW_PAD_GUION_FILE=sdmc:/switch/gow/sweep_pad.txt', 'GOW_WARP=' + item['zone'],
-                 f"GOW_WARP_STAY={item['stay']}"] + ([f"GOW_TELEPORT={item['teleport']}"] if item.get('teleport') else [])
-        budget = 75 + item['stay'] + 25
+                 'GOW_PAD_GUION_FILE=sdmc:/switch/gow/sweep_pad.txt']
+        if item.get('card'):
+            card = item['card'] if os.path.isabs(item['card']) else os.path.join(ROOT, 'port', 'switch', 'boss_cards', item['card'])
+            tmp = os.path.join(d, 'boss.mcd')
+            with open(card, 'rb') as a, open(tmp, 'wb') as b:
+                b.write(a.read())
+            if not put(tmp, 'switch/gow'):
+                r['fail'].append('card push failed')
+                return r
+            os.remove(tmp)
+            extra += ['GOW_MC0=sdmc:/switch/gow/boss.mcd']
+            budget = 75 + 40 + ff + item['stay']
+        else:
+            extra += ['GOW_WARP=' + item['zone'], f"GOW_WARP_STAY={item['stay']}"] + \
+                ([f"GOW_TELEPORT={item['teleport']}"] if item.get('teleport') else [])
+            budget = 75 + item['stay'] + 25
     os.makedirs(os.path.join(d, 'envdir'), exist_ok=True)
     envf = os.path.join(d, 'envdir', 'env.txt')
     # --env values may name the item's zone as {zone} (e.g. GOW_RAM_DUMP=g45:sdmc:/ram_{zone}.bin)
@@ -390,6 +467,8 @@ def run_item(item, outdir, args, sizes):
         judge_common(text, r)
         if item['kind'] == 'movies':
             judge_movies(text, item, r, sizes)
+        elif item.get('card'):
+            judge_save(text, item, r)
         else:
             judge_level(text, item, r)
         if item['kind'] == 'boss':
@@ -462,7 +541,8 @@ def rejudge(outdir, todo):
             r.pop('movies', None)
             text = open(log, encoding='utf-8', errors='replace').read()
             judge_common(text, r)
-            (judge_movies(text, it, r, sizes) if it['kind'] == 'movies' else judge_level(text, it, r))
+            (judge_movies(text, it, r, sizes) if it['kind'] == 'movies' else judge_save(text, it, r) if it.get('card')
+             else judge_level(text, it, r))
             if it['kind'] == 'boss':
                 judge_boss(text, it, r)
         out.append(r)
@@ -489,7 +569,9 @@ def main():
     ap.add_argument('--fight-stay', type=int, default=150)
     ap.add_argument('--boss', action='store_true', help='boss fights: warp + teleport into the arena (BOSSES)')
     ap.add_argument('--boss-stay', type=int, default=100)
-    ap.add_argument('--boss-item', action='append', default=[], help='ad-hoc boss item "key|ZONE|<GOW_TELEPORT value>"')
+    ap.add_argument('--boss-item', action='append', default=[], help='ad-hoc boss item "key|ZONE|<GOW_TELEPORT value>[|<pad steps from gameplay start>|<fight from g s>]"')
+    ap.add_argument('--boss-save', action='append', default=[],
+                    help='ad-hoc save item "key|card|slot|<pad steps from gameplay start>|<fight from g s>"')
     ap.add_argument('--shot-every', type=int, default=15)
     ap.add_argument('--movie-batch-s', type=float, default=900)
     ap.add_argument('--out', default=os.path.join(ROOT, 'port', 'switch', 'sweep'))
@@ -499,7 +581,7 @@ def main():
     ap.add_argument('--package', default='', help='push this update package (port/switch/nsp/out/<name>) before the run')
     ap.add_argument('--rejudge', default='', help='judge the pulled logs of a run dir again (no console)')
     args = ap.parse_args()
-    if not (args.movies or args.levels or args.fights or args.boss or args.boss_item):
+    if not (args.movies or args.levels or args.fights or args.boss or args.boss_item or args.boss_save):
         args.movies = args.levels = args.fights = True
     todo = items(args)
     if args.dry:
@@ -540,6 +622,7 @@ def main():
     finally:
         sh(f'sw_ready "{outdir.replace(os.sep, "/")}"', timeout=300)  # home menu, nothing running
         ftp('rm', 'switch/gow/sweep_pad.txt')
+        ftp('rm', 'switch/gow/boss.mcd')
         rc, out = sh('TRANSFER=ftp bash tools/switch_default.sh', timeout=600)
         print('[sweep] default restored' if rc == 0 else '[sweep] DEFAULT RESTORE FAILED: ' + out[-300:], flush=True)
         local = os.path.join(ROOT, 'port', 'switch', 'nsp', 'out', default_package(),
