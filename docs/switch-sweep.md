@@ -88,6 +88,22 @@ steps, square / triangle combos, circle mashing (QTEs) and a cross every 10 s (d
   one save, Athn01D altar, -1135,56,-447), ref_mcd002.mcd (ref/saves/Mcd002.ps2: slots Dest01, olymp01, Athn02B,
   Pand04AA, AtRet01B). Save slot data (data<n>.bin, 81920 bytes): magic 0xCAFEBAD1, zone name at +8, previous zone at
   +0x13, Kratos's transform at +0x1E (translation at +0x4E).
+- Exploration sw-boss2 (2026-11-02, port/switch/sweep/bossx2):
+  - Remote steering: usb-botbase's `setStick` does not reach the game (its button clicks do). Test option
+    `GOW_PAD_LIVE` (update_boss5 = dips32 + teleport + live pad, md5 e43cfa1c) + `tools/switch_live.py` move Kratos
+    step by step with a screenshot after each step (docs/diagnostics.md). Deaths are cheap: "Riparti dall'ultimo
+    checkpoint" puts Kratos back at the warp point.
+  - Hydra 1: the console's save (console_athn01d.mcd, picker position 1) loads at the Athn01D altar
+    (-1135,56,-447). Stick up = -z there: 10 s up reaches the crate stacks under the archers' walkway (-1040,-63,-1430,
+    the deck ends at z ~-1490), where Kratos stops; no Hydra yet (the way on is up the net on the crates). The 01D
+    dump holds the fight's script names (enc2HydraEnt, HydraFightCams, NCV_HydFightRail, TrigVol): the fight is a
+    scripted encounter of 01D.
+  - Hydra 2: the ATHN01E warp point is not an altar but a boarded enclosure on the upper deck (x -2760..-2570,
+    z -940..-578, y 650-672); the 10 s walks in the four directions trigger nothing.
+  - Pandora's Guardian: R_MI4 (the minotaur variant only these zones load; common minotaurs are R_MI5) is in PAND03E
+    and PAND04EE only. PAND03E = the lava rooms with blade traps (Challenge of Hades traps, `StatueCrank` in its
+    strings): falling off the beams is a death. PAND04EE warp = a cave with a closed wooden gate (a chest beside it)
+    and a round room with a patterned floor up the tunnel: the likely arena (the Guardian breaks through a gate).
 - Test package: `bash port/switch/boss_sb.sh <tag>` in WSL builds /root/src-boss (a copy of /root/src-mlang at the
   default's sources + port/overrides-usa/gow_overrides.cpp) in /root/gow-switch-boss, inside a private mount namespace
   where both appear at the mlang paths (incremental build, the mlang tree untouched). update_boss3 = dips32 +
