@@ -125,6 +125,21 @@ steps, square / triangle combos, circle mashing (QTEs) and a cross every 10 s (d
   the 01E enclosure find the exit (boards may break with attacks; the deck lies toward -z). Record each working path
   as `SAVE_BOSSES` / `--boss-item` pad steps (or GOW_TELEPORT positions from the trace), then run all 7 with
   `--boss --package update_boss6`.
+- Where the fights are, from the disc (sw-boss3, 2026-11-02): `tools/gow_wadobjs.py <ZONE> [regex]` lists a zone
+  WAD's placed groups (`go<name>` records) with positions; for ATHN01A/01D/01E and PAND03G these are world positions
+  (each zone's `gostart` = its warp point, ATHN01D `gosavegamezone1` -1138,59,-430 = the altar of the console save).
+  The boss creature WADs by their sound banks: R_AHH (Hydra, loaded by ATHN01B), R_AH3 `HydraBoss2` (ATHN01EE),
+  R_AMI `MinoBoss` + R_AB2 (PAND03GG, the sound-bank stub of PAND03G) and R_AB3/R_AB4 (PAND03H). R_MI4 is only the
+  level-4 minotaur (`MinotaurLevel4AI` in PAND04EE), not Pandora's Guardian. So:
+  - Hydra encounters: enc1 `hydraEnt3b` in ATHN01B (group at 1528,-153,450, fight cameras 1518,-164,538; a new game
+    reaches it), enc2 `enc2HydraEnt` in ATHN01C (the moving middle ship before the ATHN01D altar: the console save is
+    past it), the boss (`HydraBoss2`, "hydra dad") in ATHN01E/01EE: `godeckbossbegin` -2551,835,-2,
+    `gospawndaddyhydra` -2480,656,-24, deck checkpoint -2476,585,-21, an altar `gosavegamezone` -2444,589,393, the
+    01E warp point -2664,716,-688 (the boarded enclosure). The ATHN01D captain's door (-1015,106,-2175) is locked
+    ("alloggi del capitano, ben chiusa") until the captain's key.
+  - Pandora's Guardian: PAND03G, the arena behind the big door seen at the warp point (`gostart` 697,-81,1912):
+    `gominoboss` 71,-93,1913, `gobossspawnpoint` 361,-92,1920, intro door -220,51,1912, the log battering ram
+    (`golog*`, lever 1217,28,2128) that breaks his armour.
 - Test package: `bash port/switch/boss_sb.sh <tag>` in WSL builds /root/src-boss (a copy of /root/src-mlang at the
   default's sources + port/overrides-usa/gow_overrides.cpp) in /root/gow-switch-boss, inside a private mount namespace
   where both appear at the mlang paths (incremental build, the mlang tree untouched). update_boss3 = dips32 +
