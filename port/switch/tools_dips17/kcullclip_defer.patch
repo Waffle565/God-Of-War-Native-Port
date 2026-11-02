@@ -1,0 +1,104 @@
+--- a/ps2xRuntime/src/lib/vu/ps2_vu1_hle.inl
++++ b/ps2xRuntime/src/lib/vu/ps2_vu1_hle.inl
+@@ -711,6 +711,19 @@
+     int32_t vi5 = s.vi[5];
+     if (static_cast<int16_t>(vi5) < 0)
+         return kDecline;
++    // sw-dips17: the fast blocks' range checks are deferred to the strip's end (first pass, when the constant registers
++    // pass theirs): every block takes its fast form and ORs its check masks into `bad`; the stores are logged (word, old
++    // value). If any check failed (or the log ran full) the stores are undone newest first and the strip runs again from
++    // the entry state with the per-block checks (the old form). A pass without a failed check took exactly the blocks the
++    // old form takes, so the results are the same; the checks' umaxv -> fmov -> branch left the critical path (they were
++    // ~25 % of this kernel's samples on the console).
++    struct UndoW { uint8_t *p; uint32_t w; };
++    constexpr uint32_t kUndo = 256u;
++    UndoW undo[kUndo];
++    uint32_t undoN = 0u;
++    bool undoFull = false, defer = true;
++redo:
++    vi5 = s.vi[5];
+     __m128 f15 = ldv(s, 15), f16 = ldv(s, 16), f17 = ldv(s, 17), f18 = ldv(s, 18), f19 = ldv(s, 19), f29 = ldv(s, 29),
+            f30 = ldv(s, 30), f31 = ldv(s, 31), acc = _mm_loadu_ps(s.acc);
+     const __m128 f0 = ldv(s, 0), n22 = vu1n::nrm(ldv(s, 22)), n23 = vu1n::nrm(ldv(s, 23)), n24 = vu1n::nrm(ldv(s, 24)), n25 = vu1n::nrm(ldv(s, 25)),
+@@ -765,6 +778,8 @@
+     const __m128 r22 = ldv(s, 22), r23 = ldv(s, 23), r24 = ldv(s, 24), r25 = ldv(s, 25), r26 = ldv(s, 26), r27 = ldv(s, 27);
+     const bool constOk = !over(r22, M, M, M, M) && !over(r23, M, M, M, M) && !over(r24, M, M, M, M) && !over(r25, M, M, M, M) &&
+                          !over(r26, M, M, M, M) && !over(r27, C, C, C, A) && !over(f0, C, A, A, A);
++    const bool dfr = defer && constOk;
++    __m128i bad = _mm_setzero_si128();
+     uint32_t next;
+     // entry 1 (0d00): B1 ran natively (the strip's first pass after the prologue); B2's fmand reads the ring as the
+     // block does (its pair 3 at entry + 5)
+@@ -813,8 +828,9 @@
+         atB2 = false;
+         // B2 (issue 2..8)
+         {
+-            const bool fast = constOk && !anyv(_mm_or_si128(_mm_or_si128(overm(f15, A, A, A, F), overm(f30, A, A, A, F)),
+-                                                             _mm_or_si128(overm(f29, M, M, M, M), overm(acc, C, C, C, C))));
++            const __m128i b2m = _mm_or_si128(_mm_or_si128(overm(f15, A, A, A, F), overm(f30, A, A, A, F)),
++                                             _mm_or_si128(overm(f29, M, M, M, M), overm(acc, C, C, C, C)));
++            const bool fast = dfr ? (bad = _mm_or_si128(bad, b2m), true) : constOk && !anyv(b2m);
+             const __m128 n29 = fast ? f29 : vu1n::nrm(f29);
+             __m128 q;
+             if (fast)
+@@ -849,7 +865,8 @@
+             cyc += 7u;
+         }
+         const __m128 n31 = vu1n::nrm(f31);
+-        const bool pathOk = constOk && !anyv(_mm_or_si128(overm(f31, M, M, M, A), overm(acc, A, A, A, C)));
++        const __m128i pm = _mm_or_si128(overm(f31, M, M, M, A), overm(acc, A, A, A, C));
++        const bool pathOk = dfr ? (bad = _mm_or_si128(bad, pm), true) : constOk && !anyv(pm);
+         if (static_cast<int16_t>(vi14) != 0)
+         {
+             // path A (issue 1, 5, 9), then 0d78 (idle)
+@@ -878,7 +895,8 @@
+         else
+         {
+             // path B (issue 0, 1, 4, 8, 12, 16, 17)
+-            const bool fast = pathOk && !anyv(_mm_or_si128(overm(f15, F, F, F, F), _mm_or_si128(overm(f18, F, F, F, F), overm(f19, F, F, F, F))));
++            const __m128i bm = _mm_or_si128(overm(f15, F, F, F, F), _mm_or_si128(overm(f18, F, F, F, F), overm(f19, F, F, F, F)));
++            const bool fast = dfr ? (bad = _mm_or_si128(bad, bm), true) : pathOk && !anyv(bm);
+             __m128 q;
+             const uint32_t c0 = fast ? clipf(f18, f15, clip) : vu1n::clipValv(vu1n::nrm(f18), vu1n::nrm(f15), clip);
+             clp(cyc, c0);
+@@ -918,9 +936,21 @@
+         cyc += 4u;
+         const auto stW = [&](int32_t qw, int comp, int32_t v) {
+             const uint32_t w = static_cast<uint16_t>(v & 0xFFFF);
++            uint8_t *const p = qd(qw) + comp * 4;
++            if (dfr)
++            {
++                if (undoN == kUndo)
++                {
++                    undoFull = true; // no room: this pass is redone
++                    return;
++                }
++                undo[undoN].p = p;
++                std::memcpy(&undo[undoN].w, p, 4);
++                ++undoN;
++            }
+             if (c.onStore)
+                 c.onStore(c.onStoreUser, d, static_cast<uint32_t>(qw) & 0x3FFu);
+-            std::memcpy(qd(qw) + comp * 4, &w, 4);
++            std::memcpy(p, &w, 4);
+         };
+         if (reject) // 0df8: ADC 0x8001 into the vertex's w word
+         {
+@@ -945,6 +975,17 @@
+         stW(929, 2, vi8);
+         cyc += 8u;
+     }
++    if (dfr && (undoFull || anyv(bad)))
++    {
++        while (undoN != 0u)
++        {
++            --undoN;
++            std::memcpy(undo[undoN].p, &undo[undoN].w, 4);
++        }
++        undoFull = false;
++        defer = false;
++        goto redo;
++    }
+     static constexpr uint32_t kB1Mask[5] = {15u, 15u, 3u, 4u, 8u};
+     for (uint32_t k = 0; k < 5u; ++k)
+     {

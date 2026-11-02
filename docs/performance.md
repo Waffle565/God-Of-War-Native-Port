@@ -1597,3 +1597,30 @@ Mean < 50 and min < 40: ATHN06C, ATHN01D, PAND02B, fight_ATHN01D. Game speed 0.9
   per frame), ab_boss.sh / ab_boss_c0.sh (interleaved boss runs; item names hydra1 / clones, not boss_*), hbuild.sh /
   hexact.sh (harness from the scratch misc.inl: natcheck x86 / a64 vs n1, forced decline, forced exact), etime.sh
   (per-entry us/run of two harnesses), prof.sh (boss PC profile with extra env), boot4.sh.
+
+## dips40 checks interrupted; kCullClip with deferred range checks (sw-dips17, 2026-11-02, from dips40)
+- dips40's default checks did **not** run: the first levels sweep (dips37c, round 1) and the boss18 build were stopped
+  by Claude Code at 15:5x because the PC ran low on memory (~4.6 GB free of 32; WSL idle afterwards). The console was
+  closed and the default restored (update_dips37c + FAILGT, exefs md5 c9248241 read back from the console). No results;
+  partial sweep dirs deleted. **Console default unchanged: dips37c. dips40 not installed.**
+- Check plan, ready to run (port/switch/tools_dips17/check40.sh, ~2.5 h, restores the default at the end): levels A/B
+  dips37c / dips40 interleaved, 3 rounds (`--only ATHN01D,PAND02B,ATHN06C,ATRET01B`, sweep/d17l_<pkg>; ATHN06C corridor
+  windows with tools_dips16/glb.py), SEMO01 (sweep/mov_dips40), 4 title boots (sweep/boot_dips40), boss runs boss18 vs
+  boss10 (= dips37c + test options) interleaved, 2 rounds of hydra1 + clones (sweep/d17b_<pkg>; tools_dips16/fightvu.py).
+  boss18 = dips40 + test options: `bash port/switch/tools_dips15/bossb.sh boss18` in WSL (copies dips40's ps2_memory /
+  sound_engine / headers into /root/src-boss, then builds; not built yet). From Git Bash call wsl with
+  `MSYS_NO_PATHCONV=1`, else /mnt/c paths are rewritten.
+- **kCullClip, deferred range checks** (port/switch/tools_dips17/kcullclip_defer.patch on ps2_vu1_hle.inl; not built, not
+  natchecked yet). Clones profile (prof_b10_clones, annot.py on elf_boss10): the two instructions right after the B2
+  and path range checks (`umaxv -> fmov -> b`) hold 2340 of kCullClip's 9051 samples, the path A / B branch (a
+  data-dependent MAC sign) 779, stack spills ~1800. Change: when the constant registers pass their check, the first pass
+  runs every block in its fast form, ORs the check masks into one vector and logs its stores (address, old word, 256
+  entries); at the strip's end a failed check (or a full log) undoes the stores newest first and reruns the strip from
+  the entry state in the old per-block form (`goto redo`; nothing else is written before the exit; the native run's
+  onStore undo log is called again in the rerun, which stays exact since it restores newest first). Tests to run:
+  `X=1 bash port/switch/tools_dips17/hb17.sh q1 <hle.inl>` (natcheck x86 / a64 vs n1, forced decline vs n1_fd, forced
+  exact), then the forced-redo variant (`if (dfr)` instead of `if (dfr && (undoFull || anyv(bad)))`) and the full-log
+  variant (`kUndo = 1u`), both must equal n1; then a boss package and fight runs.
+- **Handoff (sw-dips17)**: default dips37c; next: run check40.sh when memory allows (close other memory users first),
+  then the kCullClip harness checks above. Open from sw-dips16: why the chain copier slows the VU1 thread (moot while
+  dips40 ships it off).
