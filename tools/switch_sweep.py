@@ -56,8 +56,9 @@ BOSSES = [('ares', 'ATHN08C', 'Ares (boss bar from the warp point on)', ''),
           ('challenge', 'ARENA27', 'Challenge of the Gods 10/10 (cross dismisses the trial card)', ''),
           ('cerberus', 'PAND02I', 'Cerberus pair (R_CEP/R_CEA), engaged at the warp point', ''),
           # sw-boss3 (update_boss7+: teleport without warp, positions from tools/gow_wadobjs.py and live sessions)
+          # (a teleport straight into the trigger at 1555,630 leaves Kratos stuck in the floor: land at 1520,560, walk)
           ('hydra1', '', 'Hydra 1: first Hydra head in the ATHN01B cargo hold (hydraEnt3b, R_AHH), new game + teleport',
-           '3:1555,-100,630'),
+           '3:1520,-100,560', 'g7:lup*3', 11.0),
           ('hydra2', 'ATHN01E', 'Hydra 2: the boss deck (A01MP01 boss intro volume), the two lesser heads + King',
            '5:-2433,850,-14'),
           ('guardian', 'PAND03G', "Pandora's Guardian (R_AMI MinoBoss), breaks through the door when Kratos nears it",
@@ -182,8 +183,10 @@ def items(args):
     if args.levels:
         out += [{'kind': 'level', 'name': z, 'zone': z, 'stay': args.stay} for z in levels.toc_zones() if not only or z in only]
     if args.boss:
-        out += [{'kind': 'boss', 'name': 'boss_' + k, 'zone': z, 'stay': args.boss_stay, 'note': n, 'teleport': tp}
-                for k, z, n, tp in BOSSES if not only or z in only or k.upper() in only]
+        # optional 5th / 6th fields: pad steps before the fight (the walk into a trigger) and the g second it starts
+        out += [{'kind': 'boss', 'name': 'boss_' + k, 'zone': z, 'stay': args.boss_stay, 'note': n, 'teleport': tp,
+                 'pre': rest[0] if rest else '', 'fight_from': rest[1] if len(rest) > 1 else 4.0}
+                for k, z, n, tp, *rest in BOSSES if not only or (z and z in only) or k.upper() in only]
     if args.boss:
         out += [{'kind': 'boss', 'name': 'boss_' + k, 'zone': '', 'stay': args.boss_stay, 'note': n, 'card': c,
                  'slot': sl, 'pre': pre, 'fight_from': ff, 'teleport': tp} for k, c, sl, pre, ff, n, tp in SAVE_BOSSES
@@ -475,7 +478,7 @@ def run_item(item, outdir, args, sizes):
         judge_common(text, r)
         if item['kind'] == 'movies':
             judge_movies(text, item, r, sizes)
-        elif item.get('card'):
+        elif item.get('card') or not item.get('zone'):  # save items and new-game boss items: no warp
             judge_save(text, item, r)
         else:
             judge_level(text, item, r)
@@ -549,8 +552,8 @@ def rejudge(outdir, todo):
             r.pop('movies', None)
             text = open(log, encoding='utf-8', errors='replace').read()
             judge_common(text, r)
-            (judge_movies(text, it, r, sizes) if it['kind'] == 'movies' else judge_save(text, it, r) if it.get('card')
-             else judge_level(text, it, r))
+            (judge_movies(text, it, r, sizes) if it['kind'] == 'movies' else judge_save(text, it, r)
+             if it.get('card') or not it.get('zone') else judge_level(text, it, r))
             if it['kind'] == 'boss':
                 judge_boss(text, it, r)
         out.append(r)

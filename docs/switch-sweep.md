@@ -140,6 +140,25 @@ steps, square / triangle combos, circle mashing (QTEs) and a cross every 10 s (d
   - Pandora's Guardian: PAND03G, the arena behind the big door seen at the warp point (`gostart` 697,-81,1912):
     `gominoboss` 71,-93,1913, `gobossspawnpoint` 361,-92,1920, intro door -220,51,1912, the log battering ram
     (`golog*`, lever 1217,28,2128) that breaks his armour.
+- **All seven fights (sw-boss3, 2026-11-02)**: BOSSES now also has `hydra1` (new game, no warp: GOW_TELEPORT
+  `3:1520,-100,560` into the ATHN01B cargo hold + pad `g7:lup*3` into the trigger; a teleport straight to the
+  trigger at 1555,630 leaves Kratos stuck in the floor), `hydra2` (warp ATHN01E + teleport `5:-2433,850,-14`, the
+  A01MP01 boss-intro volume: the two lesser heads and the King on the deck) and `guardian` (warp PAND03G + teleport
+  `4:363,-90,1918`: the Guardian breaks through the door). BOSSES entries take optional pad steps and a fight-from
+  second; a zone '' item is a new game without warp (judged like a save item, fps from the teleport). Run:
+  `python -I tools/switch_sweep.py --boss --package update_boss10` (update_boss10 = default dips37c + GOW_TELEPORT +
+  GOW_PAD_LIVE + the god-mode fix, md5 cf811c7b). Run port/switch/sweep/boss7c (+ boss7d for hydra1), all PASS, no
+  crash, no error line; fps while fighting (state 11 windows, `port/switch/sweep/bossx3/fightfps.py`): ares 59.2/59.7
+  (135 s), clones 44.8/51.5 (30 s, then "Hai fallito": the family dies, the cross presses abandon to the title),
+  challenge 57.8/58.9 (20 s, then a fall death; the stick moves the death menu), cerberus 53.8/59.4, hydra1 47.0/51.1,
+  hydra2 53.2/57.1, guardian 55.0/57.7. Hydra 2's whole fight (150 s of shots) shows the grey-green storm haze
+  evenly, no garbage stripes of the old descriptor-ring fog bug (docs/status.md 2026-10-30). Hydra 1's dark right
+  third in late shots is the hull frame in front of the camera.
+  GOW_GOD_MODE had never worked (it read health at +0x198, which is 0): fixed to +0x190/+0x194 and changed to undo
+  damage only (refilling to the maximum broke the Ares power-up intro: white screen, run boss7b). Falls, mission
+  failures (clones) and instant kills still end a fight.
+  Not covered: the ATHN01C Hydra (enc2, moving middle ship before the ATHN01D altar; its zone frame is not the world
+  frame, so gow_wadobjs positions need an offset).
 - Test package: `bash port/switch/boss_sb.sh <tag>` in WSL builds /root/src-boss (a copy of /root/src-mlang at the
   default's sources + port/overrides-usa/gow_overrides.cpp) in /root/gow-switch-boss, inside a private mount namespace
   where both appear at the mlang paths (incremental build, the mlang tree untouched). update_boss3 = dips32 +
