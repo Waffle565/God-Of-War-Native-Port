@@ -1295,3 +1295,20 @@ Mean < 50 and min < 40: ATHN06C, ATHN01D, PAND02B, fight_ATHN01D. Game speed 0.9
   `PixelStorageTraits<psm>::Write`. Exhaustive check (scratch wrtest.cpp: all 13 formats, 20 000 random runs each, bp,
   bw 1-32, x / y 0-2047, runs up to 2048 pixels across page columns, random 4 MB memory, against the per-pixel Write):
   82 M pixels, memory identical.
+- Package **update_dips34** (exefs md5 693e6d34, ELF /root/elf_dips34.elf) = dips32 + dips34. Console A/B requested
+  (same session): sweep `--levels --only PAND02B,ATHN06B,ATHN03D,OLYMP02,ATHN01D,ARENA14,ATRET01B,ATHN06C,ATHN04C` with
+  `--package update_dips34` (out port/switch/sweep/ab_dips34) and on the default (ab_dips32b); then SEMO01 + title boot
+  if faster. Compare fps per zone (sweep report.md) and the VU1-thread time per run / GS GL busy (tools/switch_ab.py now
+  also reads flat sweep dirs; its windows include the warp captures, so read min with care), screenshots of both runs.
+- **Handoff (sw-dips11 stopped here)**: console default unchanged (**update_dips32 + FAILGT**, md5 c0893f9b). Sources
+  /root/src-mlang = dips32 + dips34 (originals: /root/dips34-full-orig holds the four touched files as in dips32; patch
+  helper /root/dt/mkp.sh, call it from a script file: `wsl ... bash -c '...$VAR...'` loses `$` variables through
+  wsl.exe). Harnesses /root/vu1h/g6 / g6a (= dips34 VU code; nca_g6*.txt), forced-exact g6x / g6xa. Scratch tools
+  (session scratchpad d11/, re-creatable): lim.py (per-zone thread busy from sweep logs), fam2.py (VU1 family ms in
+  VU1-bound windows), funcs.py (function profile from a pcs file, window range in s, `~name` for samples outside sized
+  symbols), fdis.sh + loops.py (static loop length of a function), exact.sh (harness with FastOps::ok() forced false),
+  gentest.sh, cmp.sh, wrtest.cpp (WriteRun vs per-pixel Write). Next levers by profile: GS GL thread in ATHN06C
+  (submitKicks 22 % + addVertexC 15 % + the vertex-stream memcpy 12 %: move the GSVertex -> HwVertex conversion to the
+  GS stage thread on core 3, ~50 % idle), runLit (15-25 % of the VU1 thread everywhere: per-run prologue, `switch (pc)`
+  tree), windLoop (PAND02B 5.4 %, ATRET01B 3.3 %: exact per-op form with MAC flags / FMEQ, FastOps needs the flag
+  evaluation kept), kCullClip 3-4 %. Fights stay GPU-bound (sw-dips10's list).
