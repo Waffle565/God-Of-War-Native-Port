@@ -1650,3 +1650,33 @@ Mean < 50 and min < 40: ATHN06C, ATHN01D, PAND02B, fight_ATHN01D. Game speed 0.9
 - Verdict: fights better (Hydra 1 +2 min, +1.6 mean), levels equal or better, one GL-bound corridor ~2 % lower.
   **update_dips40 installed as the console default** (+ FAILGT; tools/switch_default.sh; exefs md5 be819616 read back
   from the console).
+
+## kCullClip deferred range checks: harness checks pass (sw-kcc, 2026-11-06, offline)
+- port/switch/tools_dips17/kcullclip_defer.patch applied to src-mlang's ps2_vu1_hle.inl (md5 ca2b3cd7, = natvu1x), run
+  with hb17.sh in WSL: harness kc1 (patch), kc1r (forced redo: `if (dfr)`), kc1f (full log: `kUndo = 1u`). **All exact**:
+  | check | kc1 | kc1r | kc1f |
+  |---|---|---|---|
+  | natcheck x86 vs n1 | 0 diff lines | 0 | 0 |
+  | natcheck a64 (qemu) vs n1a | 0 | 0 | 0 |
+  | forced decline vs n1_fd | 0 | 0 | 0 |
+  | forced exact (FastOps::ok() false) x86 / a64 vs n1 | 0 / 0 | - | - |
+  The remaining "differ" lines in the summaries are n1's own (identical in n1).
+- x86 timing (port/switch/tools_dips17/tim.sh + rounds.sh: every recording run by both harnesses back to back,
+  GOW_VU1NAT_REPS=5, 3 rounds per order; n1 9 samples, kc1 6, kc1r 3), us/run per entry:
+  | entry | n1 | kc1 | kc1r (always redo) |
+  |---|---|---|---|
+  | e4f3b5c3 | 5.51 | 4.67 (-15 %) | 6.85 |
+  | ea6b4a01 | 5.47 | 4.60 (-16 %) | 6.87 |
+  | c79fec55 | 4.25 | 3.93 (-8 %) | 5.63 |
+  | b12c8560 | 1.68 | 1.48 (-12 %) | 2.01 |
+  | b45e3bab | 1.88 | 1.82 (-3 %) | 2.64 |
+  | 7ab32108 | 0.75 | 0.73 (-3 %) | 0.98 |
+  | all entries, runs-weighted | 908 ms | 880 ms (-3.1 %) | 991 ms (+9 %) |
+  The entries that slow down under kc1r are the ones whose kCullClip passes take the deferred path (so the checks do
+  cover it). Entries without kCullClip move -2..-3 % in both kc1 and kc1r (order / layout noise), as do 1dcc471c /
+  2611f8a2 (-21 % in both: not from this change). Net on x86: ~-13 % on the clones' clip entries e4f3b5c3 / ea6b4a01,
+  ~-0.5..-1 % overall beyond noise. The console gain should be larger (the removed umaxv -> fmov -> b chain is the
+  aarch64 cost the profile showed); not measured.
+- **Handoff (sw-kcc)**: patch is exact and faster on x86; not in any package. Next: put it into src-mlang (the source
+  the Switch builds take), build a boss package (bossb.sh) and run hydra1 + clones vs boss18 (ab_boss.sh), then levels
+  if the fights gain.
