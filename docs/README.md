@@ -38,6 +38,7 @@ The user wants the game **totally playable**; work continues until then. Game da
 | [sound.md](sound.md) | Native sound engine: the LIBSD API boundary, SoundEngine, what is mixed. |
 | [iop-thread.md](iop-thread.md) | The IOP on its own host thread (`IopRun`): batch queue, sync points with take-back, deferred IOP effects on EE state, bounded lead, env switches, PC results and what to watch on the console. |
 | [memory-card.md](memory-card.md) | PS2 memory card format and how the game reaches the card (for the native card service). |
+| [saves.md](saves.md) | Switch saves: one memory card per Switch account (users/<uid>/play.mcd), how the account is chosen, the save slots inside the card, the one-time split of the old shared card (tools/mcd_slots.py). |
 | [settings.md](settings.md) | Player settings: text/voice language from the European disc via disc overlays, the save wording (menu text format), Switch button icons (Flash sprites, _nx overlays), no subtitles in the game data, movies in other languages (dub files decoded by disc_source, the intro's text card re-encoded). |
 | [status-map/](status-map/detail.md) | Status map shown on the GitHub page: edit `data.toml`, run `python tools/status_map.py`. Keep it in step with status.md. |
 | [switch.md](switch.md) | Switch toolchain (WSL + devkitPro), Switch build changes, remote console testing (bot, WLAN FTP, MTP), open Switch issues. |

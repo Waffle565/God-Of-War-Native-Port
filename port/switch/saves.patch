@@ -1,0 +1,130 @@
+--- a/ps2xRuntime/src/lib/ps2_switch_runtime.cpp
++++ b/ps2xRuntime/src/lib/ps2_switch_runtime.cpp
+@@ -2,7 +2,7 @@
+ // - Logs: stdout/stderr go to `nxlink -s` on the PC when a host listens, else to sdmc:/switch/gow/log.txt (also what
+ //   an emulator such as Citron shows in its virtual SD card).
+ // - The settings play.cmd sets on Windows are defaults here (no shell to set them): GS work on its worker thread, the
+-//   asynchronous GS FINISH, and the memory card file next to the game data.
++//   asynchronous GS FINISH; the memory card is per Switch user (pickSaveCard, docs/saves.md).
+ #if defined(PLATFORM_SWITCH)
+ 
+ #include <switch.h>
+@@ -657,6 +657,90 @@
+                      chosen ? "" : " (missing: plain USA disc, English)");
+     }
+ 
++    // Saves per Switch user (docs/saves.md): every account has its own memory card image,
++    // sdmc:/switch/gow/users/<uid>/play.mcd (uid = the AccountUid's two words as 32 hex digits), so profiles no longer
++    // share save slots. The user is the one the system picked at launch (the NACP's StartupUserAccount makes HOME ask
++    // "who uses the software?"); without one (an NRO started from hbmenu) the user selector applet asks; when nobody is
++    // picked, users/none/ is used. The old shared card sdmc:/switch/gow/play.mcd is never read or written by this
++    // build: it stays as it was (the one-time split of its slots between accounts is done on the PC,
++    // tools/mcd_slots.py). A new account starts with no card file: the game finds an unformatted card and offers to
++    // format it, as on a PS2. GOW_MC0 in env.txt (test runs: boss.mcd) still picks a card file directly.
++    static void pickSaveCard()
++    {
++        if (std::getenv("GOW_MC0"))
++        {
++            std::fprintf(stderr, "[switch] saves: GOW_MC0=%s (env.txt)\n", std::getenv("GOW_MC0"));
++            return;
++        }
++        AccountUid uid{};
++        bool haveUser = false;
++        const Result rcInit = accountInitialize(AccountServiceType_Application);
++        if (R_SUCCEEDED(rcInit))
++        {
++            // every account on the console, so a log tells which folder belongs to whom
++            AccountUid all[ACC_USER_LIST_SIZE]{};
++            s32 count = 0;
++            if (R_SUCCEEDED(accountListAllUsers(all, ACC_USER_LIST_SIZE, &count)))
++                for (s32 i = 0; i < count; ++i)
++                {
++                    AccountProfile profile;
++                    AccountProfileBase base{};
++                    if (R_SUCCEEDED(accountGetProfile(&profile, all[i])))
++                    {
++                        accountProfileGet(&profile, nullptr, &base);
++                        accountProfileClose(&profile);
++                    }
++                    std::fprintf(stderr, "[switch] account %016lx%016lx '%.32s'\n", all[i].uid[0], all[i].uid[1], base.nickname);
++                }
++            haveUser = R_SUCCEEDED(accountGetPreselectedUser(&uid)) && accountUidIsValid(&uid);
++        }
++        else
++            std::fprintf(stderr, "[switch] saves: accountInitialize failed (0x%x)\n", rcInit);
++        if (!haveUser)
++        {
++            PselUserSelectionSettings settings{};
++            const Result rc = pselShowUserSelector(&uid, &settings);
++            haveUser = R_SUCCEEDED(rc) && accountUidIsValid(&uid);
++            std::fprintf(stderr, "[switch] saves: no preselected user, user selector -> 0x%x%s\n", rc, haveUser ? "" : " (none)");
++        }
++        char dir[96];
++        if (haveUser)
++            std::snprintf(dir, sizeof(dir), "sdmc:/switch/gow/users/%016lx%016lx", uid.uid[0], uid.uid[1]);
++        else
++            std::snprintf(dir, sizeof(dir), "sdmc:/switch/gow/users/none");
++        mkdir("sdmc:/switch/gow/users", 0777);
++        mkdir(dir, 0777);
++        if (haveUser && R_SUCCEEDED(rcInit))
++        {
++            // the account's nickname next to its card, for whoever looks at the SD card
++            AccountProfile profile;
++            AccountProfileBase base{};
++            if (R_SUCCEEDED(accountGetProfile(&profile, uid)))
++            {
++                accountProfileGet(&profile, nullptr, &base);
++                accountProfileClose(&profile);
++                char path[128];
++                std::snprintf(path, sizeof(path), "%s/user.txt", dir);
++                if (std::FILE *f = std::fopen(path, "w"))
++                {
++                    std::fprintf(f, "%.32s\n", base.nickname);
++                    std::fclose(f);
++                }
++            }
++        }
++        if (R_SUCCEEDED(rcInit))
++            accountExit();
++        char card[128];
++        std::snprintf(card, sizeof(card), "%s/play.mcd", dir);
++        struct stat info{};
++        const bool exists = stat(card, &info) == 0;
++        struct stat dirInfo{};
++        if (stat(dir, &dirInfo) != 0)
++            std::fprintf(stderr, "[switch] saves: cannot create %s: saving will fail (the game reports a card error)\n", dir);
++        setenv("GOW_MC0", card, 1);
++        std::fprintf(stderr, "[switch] saves: %s (%s)\n", card, exists ? "existing card" : "no card yet: the game offers to format one");
++    }
++
+     void userAppInit(void)
+     {
+         // the installed title (NSP) carries the extracted disc in its RomFS (romfs:/disc-usa/...); an NRO has none and
+@@ -698,7 +782,7 @@
+         pickLanguage();
+         setenv("PS2X_GS_WORKER", "1", 0);
+         setenv("GOW_GS_FINISH_ASINCRONO", "1", 0);
+-        setenv("GOW_MC0", "sdmc:/switch/gow/play.mcd", 0);
++        pickSaveCard();
+ #if defined(PS2X_DK)
+         // deko3d renderer (docs/switch-deko3d.md): the PS2's own 640x448 render targets, upscaled to the 720p screen on the
+         // GPU by the bicubic + sharpen present pass. Console 2026-10-19, gameplay: 1x 19-28 fps, 1.6x (720 lines) 12-15 fps.
+--- a/ps2xIOP/src/emulator/core/memory_card.cpp
++++ b/ps2xIOP/src/emulator/core/memory_card.cpp
+@@ -64,9 +64,16 @@
+         }
+         std::fstream file(m_path, std::ios::binary | std::ios::in | std::ios::out);
+         if (!file)
++        {
++            // the card stays whole in memory; the file keeps its previous bytes for these pages
++            std::cerr << "[SIO2] cannot open the memory card " << m_path << " to write" << std::endl;
+             return;
++        }
+         file.seekp(offset);
+         file.write(reinterpret_cast<const char *>(m_image.data() + offset), static_cast<std::streamsize>(size));
++        file.flush();
++        if (!file)
++            std::cerr << "[SIO2] write to the memory card " << m_path << " failed at " << offset << std::endl;
+     }
+ 
+     void MemoryCard::read(uint8_t *destination, size_t size)

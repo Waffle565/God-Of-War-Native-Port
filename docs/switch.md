@@ -57,7 +57,7 @@ black. Next step: the user's real Switch; see "Test in Citron".
   - logs to `nxlink -s` when a PC listens, else to `sdmc:/switch/gow/log.txt`;
   - `sdmc:/switch/gow/env.txt`: `KEY=VALUE` lines, the Switch counterpart of play.cmd's `set` lines (e.g.
     `GOW_SCALER=bilinear`, `GOW_PERF_DIAG=1`);
-  - defaults `PS2X_GS_WORKER=1`, `GOW_GS_FINISH_ASINCRONO=1`, `GOW_MC0=sdmc:/switch/gow/play.mcd`;
+  - defaults `PS2X_GS_WORKER=1`, `GOW_GS_FINISH_ASINCRONO=1`, `GOW_MC0` = the launching account's card `sdmc:/switch/gow/users/<uid>/play.mcd` (docs/saves.md; before update_dips40s one shared `sdmc:/switch/gow/play.mcd`);
   - a libnx exception handler logs crashes (`[switch] EXCEPTION pc=... (elf+offset)`, registers) for
     `addr2line -e ps2EntryRunner.elf <offset>`.
 - **Threads**: libnx starts every thread on the default core and Horizon does not time-slice threads of one
@@ -266,7 +266,7 @@ The PAKs are 4 GB each: the SD card must be exFAT (FAT32 has a 4 GB file limit).
     the SD card has only ~4 GB free (232 GB card), less than the 8.5 GB NSP, so "copy to SD, install from SD card"
     does not fit, and even a streamed install over the installed title needs the new 8.5 GB beside the old 8.2 GB
     until it finishes: a full reinstall needs the old software deleted first (System Settings > Gestione dati >
-    Gestione software > God of War > Elimina software; the game's saves are in `sdmc:/switch/gow/play.mcd` and stay).
+    Gestione software > God of War > Elimina software; the game's saves are in `sdmc:/switch/gow/users/<uid>/play.mcd`, docs/saves.md, and stay).
     Small packages (test titles) install from `sdmc:/nsp/` with sphaira (above).
   - Verified 2026-10-24 (console on a wall charger, USB unplugged): FTP login, put/get/compare/delete of a 1 MB file;
     `UPDATE=port/switch/nsp/out/update_k10c bash tools/switch_cycle.sh wlan1 60 -` pushed the ExeFS and deleted
