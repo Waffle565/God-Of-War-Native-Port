@@ -1680,3 +1680,22 @@ Mean < 50 and min < 40: ATHN06C, ATHN01D, PAND02B, fight_ATHN01D. Game speed 0.9
 - **Handoff (sw-kcc)**: patch is exact and faster on x86; not in any package. Next: put it into src-mlang (the source
   the Switch builds take), build a boss package (bossb.sh) and run hydra1 + clones vs boss18 (ab_boss.sh), then levels
   if the fights gain.
+
+## dips40s partial default checks (sw-chk40, 2026-11-06)
+- update_dips40s (dips40 + per-account saves, exefs a9bd347c), existing packages only, as user Claude; logs
+  port/switch/logs/chk40, round script port/switch/tools_chk40/lev1.sh (one interleaved round, level by level, stops
+  starting runs at STOP). **Everything PASS.**
+- SEMO01 PASS, 30.0 pictures/s (1410 pictures; sweep/mov_dips40s).
+- 4 title boots in Italian (sweep/boot_dips40s): 0 error-like lines each, title menu shown ("Nuova partita"); every boot
+  picked Claude's card (users/10000000006fd6c1d74882e2ec7dd7ae/play.mcd, "no card yet"); afterwards that folder still
+  holds only user.txt, so no run wrote a card.
+- Levels, one round dips37c / dips40s interleaved (sweep/c40l_<pkg>, fps min / mean); ATRET01B not run (time limit):
+  | zone | dips37c | dips40s |
+  |---|---|---|
+  | ATHN01D | 39.6/46.7 | 39.8/42.8 |
+  | ATHN06C whole run | 52.2/56.8 | 39.0/57.4 |
+  | ATHN06C same views (glb.py): GL-bound corridor / open | 38.6 (1 window, 23.9 ms GL) / 52.1 | 39.1 (3 windows, 24.0 ms) / 56.3 |
+  | PAND02B (Kratos falls from the warp point, as before) | 48.4/56.8 | 49.0/52.4 |
+  Minimums equal or better; the lower ATHN01D / PAND02B means are inside the run-to-run spread seen in sw-dips18
+  (dips37c ATHN01D means 40.7-44.3, PAND02B 50.9-56.7) with a single round. No regression from the saves change.
+- Default restored at the end (tools/switch_default.sh), exefs md5 a9bd347c read back from the console.
