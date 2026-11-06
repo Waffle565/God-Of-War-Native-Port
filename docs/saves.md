@@ -17,8 +17,9 @@
 3. No preselected user (an NRO started from hbmenu): the user selector applet (`pselShowUserSelector`).
 4. Nobody picked (selector cancelled or failed): `users/none/play.mcd`, never the old shared file.
 - The log lists every account (`[switch] account <uid> '<nickname>'`) and the card chosen (`[switch] saves: ...`).
-- A new account has no card file: the game finds an unformatted card and offers to format it, as with a new PS2 card;
-  the file is created at the first write (memory_card.cpp). The folder is created at start; if that fails the log says
+- A new account has no card file: the load screen says "no God of War saved data in save slot 1" (checked on the
+  console as Claude, 2026-11-06); the card is formatted and the file created at the first save (memory_card.cpp
+  creates the file at the first write). The folder is created at start; if that fails the log says
   so and saving fails with the game's card error message instead of writing anywhere else.
 - Write errors: the card image stays whole in memory; a failed open or write of the file is logged
   (`[SIO2] cannot open the memory card ... / write ... failed`), the file keeps its previous bytes for those pages.
@@ -29,7 +30,7 @@
   `BASCUS-97399GodOfWar`.
 - Index: four 16-byte slot entries (slot k at +16*(k-1)): u32 data file number, u32 magic 0xCAFEBAD1, f32 play time in
   seconds, u16 (progress-like, grows with play time), u16 1. An empty slot is `ff ff ff ff` + 12 zero bytes. A u32 at
-  +64 = the data file of the most recent save (as seen on the cards). One data file more than slots: a save is written
+  +64 of unknown meaning (0 or 1 on the cards seen; not the newest save's data file), kept as it is by the tool. One data file more than slots: a save is written
   to a free data file and then the index switches over.
 - Data file: magic 0xCAFEBAD1, zone name at +8, previous zone at +0x13, Kratos's transform at +0x1E.
 - The load screen lists the saves newest first; the save screen shows them by slot number.
@@ -41,3 +42,13 @@
 changes (ECC recomputed and checked against the card's own ECC first); the data files stay, unreferenced ones are free
 space the game reuses. It refuses a card with an interrupted write pending (backup block markers set). The input
 card is never written. The copy is then put in the account's folder (only where no card exists yet).
+
+## The split of 2026-11-06 (sw-saves, user's ownership)
+- Backup of the shared card before anything else: port/switch/saves_backup/2026-11-06/play.mcd (local, not in git;
+  downloaded twice, both md5 794fd2cf...). Slots: 1 Athn02A 0:36, 2 Athn02C 0:57, 3 empty, 4 Athn01EE 0:21.
+- Waffle565 (uid 10000000227b614bd74882e2ec7dd5ae): slots 1 + 2 (md5 060118ba); piggy (100004a3d752c34bd74882e2ec7dd5ae):
+  slot 4 moved to slot 1 (`--front`, md5 b27a38cd); copies in saves_backup/2026-11-06/waffle565 and piggy. Roberta,
+  spirixe and Claude start empty. Uploaded only where no card existed, md5 checked by download.
+- Console check (update_dips40s, logs and shots in port/switch/logs/saves_test): Claude's load screen "no saved data",
+  Waffle565's lists its two saves, piggy's its one save in slot 1; no save made. Afterwards the old play.mcd and both
+  cards had their md5 unchanged.

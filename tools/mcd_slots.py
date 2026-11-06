@@ -6,7 +6,8 @@
 # The game keeps its saves in BASCUS-97399GodOfWar/ (docs/saves.md): data0.bin .. data4.bin (81920 bytes each, always all
 # five) and the 68-byte index file BASCUS-97399GodOfWar: four 16-byte slot entries (slot k at +16*(k-1): u32 data file
 # number, u32 magic 0xCAFEBAD1, f32 play time in s, u16 progress?, u16 1; an empty slot is ff ff ff ff + 12 zero bytes,
-# as the game writes it) and a u32 at +64 (the data file of the most recent save, as far as seen). One data file more
+# as the game writes it) and a u32 at +64 (meaning unknown: 0 or 1 on the cards seen, not the newest save's file; kept
+# as it is). One data file more
 # than slots: a save goes to a free file, then the index switches over (read from the cards, not from the game's code).
 # `keep` writes a copy whose index lists only the given slots (the others empty, as the game writes them); with --front
 # the kept slots move up to slot 1, 2, ... in their order. Only the index file's page changes (data recomputed with its
@@ -149,7 +150,7 @@ def cmd_list(a):
             h, m = int(s["time"]) // 3600, int(s["time"]) % 3600 // 60
             print(f'  slot {k}: data{s["data"]}.bin zone {s["zone"]:9s} play time {h}:{m:02d} ({s["time"]:.0f} s) '
                   f'field {s["a"]} saved {s["mtime"]}')
-    print(f'  last saved data file: {last}')
+    print(f'  word at +64: {last} (kept as the game wrote it)')
 
 
 def cmd_keep(a):
@@ -172,9 +173,6 @@ def cmd_keep(a):
         new = [ents[k - 1] for k in keep] + [EMPTY] * (4 - len(keep))
     else:
         new = [ents[k] if k + 1 in keep else EMPTY for k in range(4)]
-    kept = [out[k - 1] for k in keep]
-    if last not in [s['data'] for s in kept]:
-        last = max(kept, key=lambda s: s['mtime'])['data']  # the newest kept save
     nidx = b''.join(new) + struct.pack('<I', last)
     assert len(nidx) == len(idx) == 68
     cl, length, _ = index_of(card)

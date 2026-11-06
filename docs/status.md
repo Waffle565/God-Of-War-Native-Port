@@ -1187,3 +1187,10 @@ Run: `python -I tools/zones.py --slots 1,2,3,4` (scale: `PS2X_GS_HW_SCALE`); sav
   (-0.8 fps, 38.3 vs 39.1); SEMO01 30.0 pictures/s; 4 clean Italian title boots; Hydra 1 min/mean 49.0/53.4, 50.0/52.6
   vs 46.6/51.5, 48.4/51.3. **Console default = update_dips40 + FAILGT** (exefs md5 be819616, read back from the
   console); tools/switch_default.sh updated.
+- 2026-11-06 (sw-saves): **saves per Switch account** (they were shared by every profile: one sdmc:/switch/gow/play.mcd).
+  update_dips40s = dips40 + port/switch/saves.patch: the card is sdmc:/switch/gow/users/<uid>/play.mcd of the account
+  picked at launch (docs/saves.md). The old shared card was split once by the user's ownership (tools/mcd_slots.py:
+  Waffle565 slots 1-2, piggy its slot moved to slot 1, the others empty), backup in port/switch/saves_backup/2026-11-06;
+  the old file stays untouched on the SD. Load screens checked on the console for Claude / Waffle565 / piggy.
+  **Console default = update_dips40s + FAILGT** (exefs md5 a9bd347c, read back from the console);
+  tools/switch_default.sh updated. The console's address is now <switch-ip> (bot_ip.txt, ftp_cred.txt host=).
