@@ -189,7 +189,7 @@ def cmd_keep(a):
     changed = [q for q in range(0x4000) if card.d[q * RAW:(q + 1) * RAW] != src[q * RAW:(q + 1) * RAW]]
     assert changed in ([p], []), changed  # [] = the index already listed exactly these slots
     open(a.out, 'wb').write(card.d)
-    print(f'{a.out}: slots {keep} of {a.card} kept{" (moved to the front)" if a.front else ""}, page {p} rewritten, '
+    print(f'{a.out}: slots {keep} of {a.card} kept{" (moved to the front)" if a.front else ""}, {f"page {p} rewritten" if changed else "no page changed"}, '
           f'md5 {hashlib.md5(card.d).hexdigest()}')
     a.card = a.out
     cmd_list(a)
