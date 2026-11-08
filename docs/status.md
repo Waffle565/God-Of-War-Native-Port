@@ -1198,9 +1198,11 @@ Run: `python -I tools/zones.py --slots 1,2,3,4` (scale: `PS2X_GS_HW_SCALE`); sav
 ## GitHub sync (gh-sync, 2026-11-08)
 - Pushed to github.com/Waffle565/God-Of-War-Native-Port (fast-forward, no force): `runtime` <- ext gow-usa-kl
   7d15a2a (+5), `switch` <- ext agent/sw-vu1gpu 63c90cb (+72; the Switch rebuild path, contains agent/sw-vu1disp).
-- `main` (this repo, 235 commits ahead) NOT pushed: the safety scan found private LAN addresses (<home-lan>)
-  in docs/status.md, docs/vu1-gpu.md and port/switch/sweep/prof_dips13.log; they are in history, so redacting
-  needs a user decision (rewrite or accept). ftp_cred.txt / bot_ip.txt are git-ignored and untracked; no game
-  data, no blob > 10 MB in the range.
+- `main`: the safety scan found private LAN addresses in docs/status.md, docs/vu1-gpu.md and
+  port/switch/sweep/prof_dips13.log. gh-clean (user-approved) rewrote only the unpushed range native/main..master with
+  git filter-repo --replace-text (console addresses -> `<switch-ip>`, authors/dates kept; pre-rewrite tip kept as
+  branch backup/master-pre-scrub), then pushed master to native/main fast-forward. Real addresses live only in the
+  git-ignored port/switch/bot_ip.txt and ftp_cred.txt (read by tools/switch_bot.py / switch_ftp.py); never write them
+  into docs or committed logs. No game data, secrets or blob > 10 MB in the range.
 - KIexster (ref/other-recomp-git fetched, origin/main d1d11ec 2026-11-06, 385 commits since our 947ebdd): his port
   now builds on our runtime (patches/ps2recomp-waffle-runtime.patch + ~50 topic patches). Windows/Linux x64 only, no Switch.
