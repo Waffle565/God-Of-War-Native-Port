@@ -31,6 +31,13 @@ the repo where possible). Nothing there is used by builds or runs; copy a thing 
 | `port/zones_spd*/`, `port/switch/sweep_dips/`, `port/pcsx2state/` | Old PC zone-speed runs (status.md 2026-10-22), an old dips sweep, the PCSX2 state dump (diagnostics.md). |
 | `repo/`, `port/`, `scratchpad/`, `nat*/`, `switch/` | Earlier cleanup passes (2026-10-24/25): big run logs, VU1 work trees, old packages; `MOVED_LIST_first_pass.txt` lists them. |
 
+| `ext/PS2Recomp-kl-*` (2026-11-08 pass, sw-clean3) | The side git worktrees of `ext/PS2Recomp` (natiop*, natvu1*, natpc, natspd, core1, dkdraw, iopthr, swdeko, swee*, swpresent, swstall, swvu1*, vu1cyc, vu1fast, vu1hle, vu1jr, vu1par, vu1split), moved whole (sources, untracked generated files, `out/vu1pregen`, any uncommitted edits). Their branches `agent/*` stay in `ext/PS2Recomp/.git`; the worktree entries were pruned. To use one again: `git -C ext/PS2Recomp worktree add ext/PS2Recomp-kl-<wt> agent/<branch>` (or copy the folder back and run `git worktree repair` in it). Scripts that name them (port/vu1jr, port/vu1fast, port/vu1cyc `hb.sh`/`build_pc.sh`, port/natiop*_gate.sh, tools/switch_stall/swb.sh) need the folder back first. |
+| `gamedata/ref/proto/` | `ref/proto` (the 2004-12-23 Hydra demo prototype extracted: ISO + files/), also in `gamedata/God of War (Dec 23, 2004 prototype).7z`. |
+
+Kept in the repo: `ext/PS2Recomp` (the repository), `ext/PS2Recomp-kl` (gow-usa-kl), `ext/PS2Recomp-kl-switch`, and
+`ext/PS2Recomp-kl-vu1gpu` + `ext/PS2Recomp-kl-vu1disp`: the Switch rebuild path after a lost distro syncs these two
+(docs/switch-env-setup.md: env_sync of vu1gpu with vu1disp's `out/vu1pregen`, generated inputs live in them).
+
 `dist/God of War (PC)/data` is a hard-link view of `disc-usa/` (as is `port/switch/nsp/romfs/disc-usa`): it costs no
 extra space, so it stays.
 
@@ -50,3 +57,10 @@ extra space, so it stays.
   logs/d17_restore, logs/prof_dips4_*, logs/tmpclose), Python `__pycache__/` folders, an empty stray file at the root.
 - Kept in the repo: the current checks (sweep/c40l_*, d17l_*, d17b_*, boot/mov_dips40*, logs/chk40, saves_test,
   default_env, d18) and everything git-tracked.
+
+## Deleted, not archived (2026-11-08 cleanup, sw-clean3; 11.2 GB deleted, 6.4 GB archived: worktrees 5.0, ref/proto 1.4)
+- The PC CMake build trees `ext/PS2Recomp-kl/out/build-kl` (5.6 GB), `ext/PS2Recomp/out/build` (3.3 GB) and
+  `ext/PS2Recomp-kl-switch/out/build-pc` (2.2 GB); no tracked file was inside. **The PC tools `tools/zones.py`,
+  `tools/movies.py`, `tools/perf_run.sh` and `tools/pc_release/make_pc_folder.ps1` run `ps2EntryRunner.exe` from
+  `ext/PS2Recomp-kl/out/build-kl/ps2xRuntime/Release`: rebuild build-kl first** (configure + build as in
+  build-and-run.md, `-B out/build-kl`, then `--config Release`). The Switch build (WSL `/root/src-*`) does not use them.

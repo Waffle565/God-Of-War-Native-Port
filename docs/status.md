@@ -116,7 +116,7 @@ Screenshots: window capture (`tools/shot.ps1`) returns white when the host displ
 `PS2X_FRAME_DUMP=<file.ppm>` + `tools/ppm2png.py` instead.
 
 ## New references (2026-10-09, in `ref/`, not used at runtime)
-- `ref/proto/`: "God of War — The Hydra Battle" demo disc prototype (Dec 23 2004, SCUS-974.67). Checked: the ELF
+- `ref/proto/` (archived 2026-11-08 to `D:\Claude Archive\GoW-Archive\gamedata\ref\proto`, storage.md): "God of War — The Hydra Battle" demo disc prototype (Dec 23 2004, SCUS-974.67). Checked: the ELF
   has **no** symbol table / debug sections (sections: .text .data .rodata .bss + DVP overlays); its IRX modules
   have no symbols either (SIO2MAN byte-identical to retail). Only strings like `989snd.c`.
 - `ref/pcsx2/`: PCSX2 v2.8.2 (Windows Qt build). No BIOS included — PCSX2 needs a BIOS dumped from a PS2.
