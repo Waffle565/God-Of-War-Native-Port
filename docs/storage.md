@@ -25,7 +25,7 @@ the repo where possible). Nothing there is used by builds or runs; copy a thing 
 | `gamedata/ref/gow2/`, `ref/gow2demo/` | God of War II and its demo (ISO + extracted files), reference only. |
 | `port/natiop*/`, `port/core1/`, `port/natpc/` | Native IOP / core 1 gate runs (2026-10-19..26) named in sound.md, memory-card.md, switch-deko3d.md: logs, traces, captures. |
 | `port/switch/logs/`, `port/switch/sweep/`, `port/switch/sweep_movlang/`, `port/switch/shots/` | Console logs, sweep reports and screenshots older than 2 days at cleanup time (git-tracked ones stay in the repo too). |
-| `port/switch/nsp/out/` | `base_20261018_v0.nsp` (the full 10-18 NSP, needed as `REUSE_NSP` for a control-only package, docs/switch.md), old language pack `lang_nx/` (superseded by `lang_nx2/`), the former defaults `update_bugs1`, `update_mlangfog1`, `gow_icon_v65536.nsp`. |
+| `port/switch/nsp/out/` | `base_20261018_v0.nsp` (the full 10-18 NSP, needed as `REUSE_NSP` for a control-only package, docs/switch.md), old language pack `lang_nx/` (superseded by `lang_nx2/`), the former defaults `update_bugs1`, `update_mlangfog1`, `gow_icon_v65536.nsp`. No other console package is archived. |
 | `port/switch/nsp/out/update_crash2d` | sw-crash2's diagnostic package (docs/game-internals.md, crash2_diag.patch). |
 | `port/switch/sweep/*`, `port/switch/logs/*` (2026-11-08 pass) | A/B, bench, prof, boot, SEMO and crash runs from the dips4..dips39 / boss1..boss17 era, the full sweeps 20261030_1930 / 20261031_0203 / 20261101_1211, the boss RAM dumps (bossdump, bossx*), the env.txt variants (failgt/gpu/prof_env.txt). For partly tracked run folders only the untracked files were moved; the tracked ones stay in the repo. `port/switch/logs/clean2_plan.txt` lists every path. |
 | `port/zones_spd*/`, `port/switch/sweep_dips/`, `port/pcsx2state/` | Old PC zone-speed runs (status.md 2026-10-22), an old dips sweep, the PCSX2 state dump (diagnostics.md). |
@@ -64,3 +64,17 @@ extra space, so it stays.
   `tools/movies.py`, `tools/perf_run.sh` and `tools/pc_release/make_pc_folder.ps1` run `ps2EntryRunner.exe` from
   `ext/PS2Recomp-kl/out/build-kl/ps2xRuntime/Release`: rebuild build-kl first** (configure + build as in
   build-and-run.md, `-B out/build-kl`, then `--config Release`). The Switch build (WSL `/root/src-*`) does not use them.
+
+## D: drive cleanup (2026-11-08, d-clean; D: free 43.5 -> 65.4 GB)
+D: is cleaned too: useless material there is deleted, not kept. Deleted from `D:\Claude Archive\GoW-Archive`:
+- `TO_DELETE\` (18.7 GB): the staging folder of the 2026-10-24/25 passes (VU1 scratch trees nat-vu1g..q, the
+  contended natiop2 gate, natvu1m, a ps2EntryRunner copy, a 2.2 GB walk log). The archive has no `TO_DELETE\` any more;
+  agents delete directly now.
+- `repo\port\switch\nsp\out\update_*` (77 superseded console packages of the October k*/la*/par*/ee*/dk* era, 3.1 GB)
+  and `port\switch\nsp\out\update_k10d`: rebuildable from git history, named by no doc.
+- Empty run folders outside `ext\`.
+- Kept: every game data file, the `ext\PS2Recomp-kl-*` worktrees (empty folders inside them included), the run
+  folders. A size+hash scan found 2.05 GB of identical files, all generated sources repeated across the worktrees or
+  identical memory-card images / screenshots inside separate runs; they stay (part of each worktree / run record).
+- `D:\wsl-backup` holds one tar (`ubuntu-20261023.tar`, 9.6 GB, the newest): kept. Folders on D: outside the archive
+  belong to the user and are never cleaned. `port/switch/logs/dclean_plan.txt` lists every path.

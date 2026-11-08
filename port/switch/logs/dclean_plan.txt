@@ -1,0 +1,97 @@
+d-clean plan 2026-11-08 (D:\Claude Archive\GoW-Archive). D: free before: 43.5 GB (40.5 GiB).
+path | size | reason | action
+TO_DELETE\ (nat-vu1g/i/j/n/p/q scratch, natiop-20261024, natiop2-contended-gate, natvu1-2026-10-24, natvu1m, port, repo, scratchpad, natvu1e exe copy + 2.2 GB walk log) | 18.66 GB | staged for deletion by the 2026-10-24/25 passes (agents could not hard-delete then) | DELETE
+repo\port\switch\nsp\out$(basename /d/Claude Archive/GoW-Archive/repo/port/switch/nsp/out/update_b1) | 38 MB | superseded console package (Oct 2026 era), rebuildable from git history, named by no doc | DELETE
+repo\port\switch\nsp\out$(basename /d/Claude Archive/GoW-Archive/repo/port/switch/nsp/out/update_con1) | 48 MB | superseded console package (Oct 2026 era), rebuildable from git history, named by no doc | DELETE
+repo\port\switch\nsp\out$(basename /d/Claude Archive/GoW-Archive/repo/port/switch/nsp/out/update_con2) | 48 MB | superseded console package (Oct 2026 era), rebuildable from git history, named by no doc | DELETE
+repo\port\switch\nsp\out$(basename /d/Claude Archive/GoW-Archive/repo/port/switch/nsp/out/update_core1a) | 34 MB | superseded console package (Oct 2026 era), rebuildable from git history, named by no doc | DELETE
+repo\port\switch\nsp\out$(basename /d/Claude Archive/GoW-Archive/repo/port/switch/nsp/out/update_core1b) | 34 MB | superseded console package (Oct 2026 era), rebuildable from git history, named by no doc | DELETE
+repo\port\switch\nsp\out$(basename /d/Claude Archive/GoW-Archive/repo/port/switch/nsp/out/update_dk) | 33 MB | superseded console package (Oct 2026 era), rebuildable from git history, named by no doc | DELETE
+repo\port\switch\nsp\out$(basename /d/Claude Archive/GoW-Archive/repo/port/switch/nsp/out/update_dkd1) | 33 MB | superseded console package (Oct 2026 era), rebuildable from git history, named by no doc | DELETE
+repo\port\switch\nsp\out$(basename /d/Claude Archive/GoW-Archive/repo/port/switch/nsp/out/update_dkd2f) | 34 MB | superseded console package (Oct 2026 era), rebuildable from git history, named by no doc | DELETE
+repo\port\switch\nsp\out$(basename /d/Claude Archive/GoW-Archive/repo/port/switch/nsp/out/update_dkd3) | 34 MB | superseded console package (Oct 2026 era), rebuildable from git history, named by no doc | DELETE
+repo\port\switch\nsp\out$(basename /d/Claude Archive/GoW-Archive/repo/port/switch/nsp/out/update_dkd4) | 34 MB | superseded console package (Oct 2026 era), rebuildable from git history, named by no doc | DELETE
+repo\port\switch\nsp\out$(basename /d/Claude Archive/GoW-Archive/repo/port/switch/nsp/out/update_dkd5) | 34 MB | superseded console package (Oct 2026 era), rebuildable from git history, named by no doc | DELETE
+repo\port\switch\nsp\out$(basename /d/Claude Archive/GoW-Archive/repo/port/switch/nsp/out/update_ee1) | 46 MB | superseded console package (Oct 2026 era), rebuildable from git history, named by no doc | DELETE
+repo\port\switch\nsp\out$(basename /d/Claude Archive/GoW-Archive/repo/port/switch/nsp/out/update_ee2) | 45 MB | superseded console package (Oct 2026 era), rebuildable from git history, named by no doc | DELETE
+repo\port\switch\nsp\out$(basename /d/Claude Archive/GoW-Archive/repo/port/switch/nsp/out/update_ee3) | 46 MB | superseded console package (Oct 2026 era), rebuildable from git history, named by no doc | DELETE
+repo\port\switch\nsp\out$(basename /d/Claude Archive/GoW-Archive/repo/port/switch/nsp/out/update_fast1) | 48 MB | superseded console package (Oct 2026 era), rebuildable from git history, named by no doc | DELETE
+repo\port\switch\nsp\out$(basename /d/Claude Archive/GoW-Archive/repo/port/switch/nsp/out/update_hle_g3) | 33 MB | superseded console package (Oct 2026 era), rebuildable from git history, named by no doc | DELETE
+repo\port\switch\nsp\out$(basename /d/Claude Archive/GoW-Archive/repo/port/switch/nsp/out/update_k10a) | 41 MB | superseded console package (Oct 2026 era), rebuildable from git history, named by no doc | DELETE
+repo\port\switch\nsp\out$(basename /d/Claude Archive/GoW-Archive/repo/port/switch/nsp/out/update_k10b) | 41 MB | superseded console package (Oct 2026 era), rebuildable from git history, named by no doc | DELETE
+repo\port\switch\nsp\out$(basename /d/Claude Archive/GoW-Archive/repo/port/switch/nsp/out/update_k7a) | 38 MB | superseded console package (Oct 2026 era), rebuildable from git history, named by no doc | DELETE
+repo\port\switch\nsp\out$(basename /d/Claude Archive/GoW-Archive/repo/port/switch/nsp/out/update_k7b) | 38 MB | superseded console package (Oct 2026 era), rebuildable from git history, named by no doc | DELETE
+repo\port\switch\nsp\out$(basename /d/Claude Archive/GoW-Archive/repo/port/switch/nsp/out/update_k7c) | 38 MB | superseded console package (Oct 2026 era), rebuildable from git history, named by no doc | DELETE
+repo\port\switch\nsp\out$(basename /d/Claude Archive/GoW-Archive/repo/port/switch/nsp/out/update_k7d) | 38 MB | superseded console package (Oct 2026 era), rebuildable from git history, named by no doc | DELETE
+repo\port\switch\nsp\out$(basename /d/Claude Archive/GoW-Archive/repo/port/switch/nsp/out/update_k9a) | 38 MB | superseded console package (Oct 2026 era), rebuildable from git history, named by no doc | DELETE
+repo\port\switch\nsp\out$(basename /d/Claude Archive/GoW-Archive/repo/port/switch/nsp/out/update_k9c) | 38 MB | superseded console package (Oct 2026 era), rebuildable from git history, named by no doc | DELETE
+repo\port\switch\nsp\out$(basename /d/Claude Archive/GoW-Archive/repo/port/switch/nsp/out/update_k9d) | 38 MB | superseded console package (Oct 2026 era), rebuildable from git history, named by no doc | DELETE
+repo\port\switch\nsp\out$(basename /d/Claude Archive/GoW-Archive/repo/port/switch/nsp/out/update_k9e) | 38 MB | superseded console package (Oct 2026 era), rebuildable from git history, named by no doc | DELETE
+repo\port\switch\nsp\out$(basename /d/Claude Archive/GoW-Archive/repo/port/switch/nsp/out/update_k9f) | 39 MB | superseded console package (Oct 2026 era), rebuildable from git history, named by no doc | DELETE
+repo\port\switch\nsp\out$(basename /d/Claude Archive/GoW-Archive/repo/port/switch/nsp/out/update_ka1) | 48 MB | superseded console package (Oct 2026 era), rebuildable from git history, named by no doc | DELETE
+repo\port\switch\nsp\out$(basename /d/Claude Archive/GoW-Archive/repo/port/switch/nsp/out/update_ka2) | 48 MB | superseded console package (Oct 2026 era), rebuildable from git history, named by no doc | DELETE
+repo\port\switch\nsp\out$(basename /d/Claude Archive/GoW-Archive/repo/port/switch/nsp/out/update_ka3) | 48 MB | superseded console package (Oct 2026 era), rebuildable from git history, named by no doc | DELETE
+repo\port\switch\nsp\out$(basename /d/Claude Archive/GoW-Archive/repo/port/switch/nsp/out/update_kc1) | 48 MB | superseded console package (Oct 2026 era), rebuildable from git history, named by no doc | DELETE
+repo\port\switch\nsp\out$(basename /d/Claude Archive/GoW-Archive/repo/port/switch/nsp/out/update_kc2) | 48 MB | superseded console package (Oct 2026 era), rebuildable from git history, named by no doc | DELETE
+repo\port\switch\nsp\out$(basename /d/Claude Archive/GoW-Archive/repo/port/switch/nsp/out/update_kc3) | 48 MB | superseded console package (Oct 2026 era), rebuildable from git history, named by no doc | DELETE
+repo\port\switch\nsp\out$(basename /d/Claude Archive/GoW-Archive/repo/port/switch/nsp/out/update_kc4) | 49 MB | superseded console package (Oct 2026 era), rebuildable from git history, named by no doc | DELETE
+repo\port\switch\nsp\out$(basename /d/Claude Archive/GoW-Archive/repo/port/switch/nsp/out/update_kd1) | 48 MB | superseded console package (Oct 2026 era), rebuildable from git history, named by no doc | DELETE
+repo\port\switch\nsp\out$(basename /d/Claude Archive/GoW-Archive/repo/port/switch/nsp/out/update_kd2) | 48 MB | superseded console package (Oct 2026 era), rebuildable from git history, named by no doc | DELETE
+repo\port\switch\nsp\out$(basename /d/Claude Archive/GoW-Archive/repo/port/switch/nsp/out/update_kd3) | 48 MB | superseded console package (Oct 2026 era), rebuildable from git history, named by no doc | DELETE
+repo\port\switch\nsp\out$(basename /d/Claude Archive/GoW-Archive/repo/port/switch/nsp/out/update_kd3c3) | 48 MB | superseded console package (Oct 2026 era), rebuildable from git history, named by no doc | DELETE
+repo\port\switch\nsp\out$(basename /d/Claude Archive/GoW-Archive/repo/port/switch/nsp/out/update_la1) | 38 MB | superseded console package (Oct 2026 era), rebuildable from git history, named by no doc | DELETE
+repo\port\switch\nsp\out$(basename /d/Claude Archive/GoW-Archive/repo/port/switch/nsp/out/update_la2) | 38 MB | superseded console package (Oct 2026 era), rebuildable from git history, named by no doc | DELETE
+repo\port\switch\nsp\out$(basename /d/Claude Archive/GoW-Archive/repo/port/switch/nsp/out/update_la3) | 38 MB | superseded console package (Oct 2026 era), rebuildable from git history, named by no doc | DELETE
+repo\port\switch\nsp\out$(basename /d/Claude Archive/GoW-Archive/repo/port/switch/nsp/out/update_la4) | 38 MB | superseded console package (Oct 2026 era), rebuildable from git history, named by no doc | DELETE
+repo\port\switch\nsp\out$(basename /d/Claude Archive/GoW-Archive/repo/port/switch/nsp/out/update_la5) | 38 MB | superseded console package (Oct 2026 era), rebuildable from git history, named by no doc | DELETE
+repo\port\switch\nsp\out$(basename /d/Claude Archive/GoW-Archive/repo/port/switch/nsp/out/update_la6) | 38 MB | superseded console package (Oct 2026 era), rebuildable from git history, named by no doc | DELETE
+repo\port\switch\nsp\out$(basename /d/Claude Archive/GoW-Archive/repo/port/switch/nsp/out/update_par1) | 33 MB | superseded console package (Oct 2026 era), rebuildable from git history, named by no doc | DELETE
+repo\port\switch\nsp\out$(basename /d/Claude Archive/GoW-Archive/repo/port/switch/nsp/out/update_par2) | 33 MB | superseded console package (Oct 2026 era), rebuildable from git history, named by no doc | DELETE
+repo\port\switch\nsp\out$(basename /d/Claude Archive/GoW-Archive/repo/port/switch/nsp/out/update_par3) | 33 MB | superseded console package (Oct 2026 era), rebuildable from git history, named by no doc | DELETE
+repo\port\switch\nsp\out$(basename /d/Claude Archive/GoW-Archive/repo/port/switch/nsp/out/update_par4) | 33 MB | superseded console package (Oct 2026 era), rebuildable from git history, named by no doc | DELETE
+repo\port\switch\nsp\out$(basename /d/Claude Archive/GoW-Archive/repo/port/switch/nsp/out/update_pcs1) | 48 MB | superseded console package (Oct 2026 era), rebuildable from git history, named by no doc | DELETE
+repo\port\switch\nsp\out$(basename /d/Claude Archive/GoW-Archive/repo/port/switch/nsp/out/update_pcs2) | 48 MB | superseded console package (Oct 2026 era), rebuildable from git history, named by no doc | DELETE
+repo\port\switch\nsp\out$(basename /d/Claude Archive/GoW-Archive/repo/port/switch/nsp/out/update_pcs3) | 48 MB | superseded console package (Oct 2026 era), rebuildable from git history, named by no doc | DELETE
+repo\port\switch\nsp\out$(basename /d/Claude Archive/GoW-Archive/repo/port/switch/nsp/out/update_s1) | 38 MB | superseded console package (Oct 2026 era), rebuildable from git history, named by no doc | DELETE
+repo\port\switch\nsp\out$(basename /d/Claude Archive/GoW-Archive/repo/port/switch/nsp/out/update_s3) | 38 MB | superseded console package (Oct 2026 era), rebuildable from git history, named by no doc | DELETE
+repo\port\switch\nsp\out$(basename /d/Claude Archive/GoW-Archive/repo/port/switch/nsp/out/update_sc1) | 48 MB | superseded console package (Oct 2026 era), rebuildable from git history, named by no doc | DELETE
+repo\port\switch\nsp\out$(basename /d/Claude Archive/GoW-Archive/repo/port/switch/nsp/out/update_sc2) | 48 MB | superseded console package (Oct 2026 era), rebuildable from git history, named by no doc | DELETE
+repo\port\switch\nsp\out$(basename /d/Claude Archive/GoW-Archive/repo/port/switch/nsp/out/update_sc3) | 48 MB | superseded console package (Oct 2026 era), rebuildable from git history, named by no doc | DELETE
+repo\port\switch\nsp\out$(basename /d/Claude Archive/GoW-Archive/repo/port/switch/nsp/out/update_sc4) | 48 MB | superseded console package (Oct 2026 era), rebuildable from git history, named by no doc | DELETE
+repo\port\switch\nsp\out$(basename /d/Claude Archive/GoW-Archive/repo/port/switch/nsp/out/update_sc5) | 48 MB | superseded console package (Oct 2026 era), rebuildable from git history, named by no doc | DELETE
+repo\port\switch\nsp\out$(basename /d/Claude Archive/GoW-Archive/repo/port/switch/nsp/out/update_snd1) | 48 MB | superseded console package (Oct 2026 era), rebuildable from git history, named by no doc | DELETE
+repo\port\switch\nsp\out$(basename /d/Claude Archive/GoW-Archive/repo/port/switch/nsp/out/update_swp1) | 33 MB | superseded console package (Oct 2026 era), rebuildable from git history, named by no doc | DELETE
+repo\port\switch\nsp\out$(basename /d/Claude Archive/GoW-Archive/repo/port/switch/nsp/out/update_vgpu2) | 45 MB | superseded console package (Oct 2026 era), rebuildable from git history, named by no doc | DELETE
+repo\port\switch\nsp\out$(basename /d/Claude Archive/GoW-Archive/repo/port/switch/nsp/out/update_vgpu3) | 45 MB | superseded console package (Oct 2026 era), rebuildable from git history, named by no doc | DELETE
+repo\port\switch\nsp\out$(basename /d/Claude Archive/GoW-Archive/repo/port/switch/nsp/out/update_vgpu4) | 45 MB | superseded console package (Oct 2026 era), rebuildable from git history, named by no doc | DELETE
+repo\port\switch\nsp\out$(basename /d/Claude Archive/GoW-Archive/repo/port/switch/nsp/out/update_vgpu5) | 45 MB | superseded console package (Oct 2026 era), rebuildable from git history, named by no doc | DELETE
+repo\port\switch\nsp\out$(basename /d/Claude Archive/GoW-Archive/repo/port/switch/nsp/out/update_vsplit1) | 34 MB | superseded console package (Oct 2026 era), rebuildable from git history, named by no doc | DELETE
+repo\port\switch\nsp\out$(basename /d/Claude Archive/GoW-Archive/repo/port/switch/nsp/out/update_vsplit2) | 46 MB | superseded console package (Oct 2026 era), rebuildable from git history, named by no doc | DELETE
+repo\port\switch\nsp\out$(basename /d/Claude Archive/GoW-Archive/repo/port/switch/nsp/out/update_vsplit3) | 46 MB | superseded console package (Oct 2026 era), rebuildable from git history, named by no doc | DELETE
+repo\port\switch\nsp\out$(basename /d/Claude Archive/GoW-Archive/repo/port/switch/nsp/out/update_vsplit4) | 46 MB | superseded console package (Oct 2026 era), rebuildable from git history, named by no doc | DELETE
+repo\port\switch\nsp\out$(basename /d/Claude Archive/GoW-Archive/repo/port/switch/nsp/out/update_vsplit5) | 46 MB | superseded console package (Oct 2026 era), rebuildable from git history, named by no doc | DELETE
+repo\port\switch\nsp\out$(basename /d/Claude Archive/GoW-Archive/repo/port/switch/nsp/out/update_vu1b) | 33 MB | superseded console package (Oct 2026 era), rebuildable from git history, named by no doc | DELETE
+repo\port\switch\nsp\out$(basename /d/Claude Archive/GoW-Archive/repo/port/switch/nsp/out/update_vu1b_clean) | 33 MB | superseded console package (Oct 2026 era), rebuildable from git history, named by no doc | DELETE
+repo\port\switch\nsp\out$(basename /d/Claude Archive/GoW-Archive/repo/port/switch/nsp/out/update_vu1b_cr) | 34 MB | superseded console package (Oct 2026 era), rebuildable from git history, named by no doc | DELETE
+repo\port\switch\nsp\out$(basename /d/Claude Archive/GoW-Archive/repo/port/switch/nsp/out/update_vu1b_old) | 33 MB | superseded console package (Oct 2026 era), rebuildable from git history, named by no doc | DELETE
+repo\port\switch\nsp\out$(basename /d/Claude Archive/GoW-Archive/repo/port/switch/nsp/out/update_vu1b_probe) | 33 MB | superseded console package (Oct 2026 era), rebuildable from git history, named by no doc | DELETE
+repo\port\switch\nsp\out$(basename /d/Claude Archive/GoW-Archive/repo/port/switch/nsp/out/update_vu1b_probe2) | 33 MB | superseded console package (Oct 2026 era), rebuildable from git history, named by no doc | DELETE
+port\switch\nsp\out\update_k10d | 43 MB | superseded package (k10d run, benchmark.md history only), not in storage.md keep list | DELETE
+port/switch/logs/restore_k11d | 0 | empty folder | DELETE
+port/switch/logs/run_lag1 | 0 | empty folder | DELETE
+port/switch/logs/swfix/t1 | 0 | empty folder | DELETE
+port/switch/sweep/20261030_1450/ATHN01A/shots | 0 | empty folder | DELETE
+port/switch/sweep/bossx2/close | 0 | empty folder | DELETE
+port/switch/sweep_dips/d4/20261031_0934 | 0 | empty folder | DELETE
+port/switch/sweep_dips/d5/20261031_1007/ATHN06C/shots | 0 | empty folder | DELETE
+port/switch/sweep_dips/stop | 0 | empty folder | DELETE
+repo/port/switch/logs/20261019_dk1 | 0 | empty folder | DELETE
+repo/port/switch/logs/20261019_dk2 | 0 | empty folder | DELETE
+repo/port/switch/logs/20261019_vsplit_s2on_a | 0 | empty folder | DELETE
+scratchpad/c/run_ee3 | 0 | empty folder | DELETE
+KEEP: gamedata\ (all disc images, zips, .7z, extracted discs) | 101.8 GB | game data, never delete
+KEEP: ext\PS2Recomp-kl-* (31 worktrees) | 4.8 GB | uncommitted edits; empty dirs inside left alone
+KEEP: port\switch\nsp\out base_20261018_v0.nsp, lang_nx, update_bugs1, update_mlangfog1, update_crash2d, icon nsp | ~9 GB | storage.md keep list
+KEEP: duplicates found by size+blake2b (2.05 GB total): copies of the same generated sources across worktrees (protected), identical memory-card images / screenshots inside separate run folders (part of each run's record, small) | 2.05 GB | not worth breaking run records
+KEEP: port\natiop*, core1, repo\port runs, natvu1-2026-10-24/25, natiop-20261024 (root), scratchpad | ~25 GB | archived on purpose (docs name them)
+OUTSIDE archive (report only): D:\wsl-backup\ubuntu-20261023.tar 9.6 GB = the only WSL backup, kept.
