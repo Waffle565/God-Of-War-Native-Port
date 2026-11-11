@@ -2,6 +2,10 @@
 // Origen: PS2Recomp sotc-port, ac9efa070638ad3b3accd284de6f898d5ab271d1.
 #include "runtime/gs/gs_threaded_backend.h"
 #include "runtime/gs/gs_hw_backend.h"
+#include "runtime/gs/gs_null_backend.h"
+#if defined(PS2X_HAVE_METAL)
+#include "runtime/gs/gs_metal_backend.h"
+#endif
 #include "runtime/gs/gs_shared_present.h"
 #include "gs_inventory.h"
 #include "ThreadPriority.h"
@@ -12,7 +16,11 @@
 #include <cstdlib>
 #include <cstring>
 #include <cstdio>
+#if defined(USE_SSE2NEON)
+#include "sse2neon.h"
+#else
 #include <xmmintrin.h>
+#endif
 
 namespace
 {
@@ -28,6 +36,13 @@ namespace
             return value && *value && *value != '0';
         }();
         return discard;
+    }
+
+    // GOW-Port: PS2X_GS_NULL=1 runs the GS headless (GSNullBackend, no GPU context).
+    bool useNullRenderer()
+    {
+        const char *value = std::getenv("PS2X_GS_NULL");
+        return value && *value && *value != '0';
     }
 
     struct LoadClutArgs
@@ -83,8 +98,18 @@ GSThreadedBackend::~GSThreadedBackend()
 
 std::unique_ptr<GSRasterBackend> GSThreadedBackend::MakeDefault()
 {
-    // GOW-Port: the native render-target renderer is the only GS renderer (no VRAM-emulating rasteriser).
+    if (useNullRenderer())
+    {
+        std::fprintf(stderr, "[gs] headless: null GS renderer (PS2X_GS_NULL)\n");
+        return std::make_unique<GSNullBackend>();
+    }
+    // GOW-Port: the native render-target renderer is the only GS renderer (no VRAM-emulating rasteriser). macOS has no
+    // OpenGL 4.3: the same renderer in Metal (GSMetalBackend).
+#if defined(PS2X_HAVE_METAL)
+    return std::make_unique<GSThreadedBackend>(std::make_unique<GSMetalBackend>());
+#else
     return std::make_unique<GSThreadedBackend>(std::make_unique<GSHwBackend>());
+#endif
 }
 
 void GSThreadedBackend::SetEnabledByDefault(bool enabled)
@@ -118,7 +143,12 @@ void GSThreadedBackend::Enqueue(Op op, const void *payload, uint32_t size)
     if (op == Op::Submit && m_compactQueue)
     {
         const auto &draw = *static_cast<const GSPrimitiveBatch *>(payload);
+#if defined(PS2X_HAVE_METAL)
+        // GOW-Port (macOS): field-wise, the padding of GSDrawState is not initialised (gs_metal_backend.h)
+        if (!m_drawStateValid || !GSMetalBackend::SameDrawState(m_lastDrawState, draw.state))
+#else
         if (!m_drawStateValid || std::memcmp(&m_lastDrawState, &draw.state, sizeof(draw.state)) != 0)
+#endif
         {
             std::memcpy(&m_lastDrawState, &draw.state, sizeof(draw.state));
             m_drawStateValid = true;

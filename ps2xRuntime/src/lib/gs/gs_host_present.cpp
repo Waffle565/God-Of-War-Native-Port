@@ -3,6 +3,9 @@
 #include "rlgl.h"
 #include "runtime/gs/gs_frontend.h"
 #include "runtime/ps2_perf.h"
+#if defined(PS2X_HAVE_METAL)
+#include "runtime/gs/gs_metal_layer.h"
+#endif
 #include "ps2_log.h"
 
 #include <algorithm>
@@ -123,6 +126,12 @@ void GSHostPresentation::captureHostContext()
     captureRequested = !(setting && *setting == '0');
     if (captureRequested)
         GSSharedPresent::CaptureHostContext();
+#if defined(PS2X_HAVE_METAL)
+    // GOW-Port (macOS): the Metal GS presents straight into a CAMetalLayer of this window (before the GS starts, so the
+    // backend knows it at Initialize); PS2X_GS_DIRECT_PRESENT=0 keeps RAM frames.
+    if (captureRequested)
+        GSMetalLayer::Attach(GetWindowHandle());
+#endif
 }
 
 void GSHostPresentation::restoreHostContext()
@@ -167,7 +176,12 @@ void GSHostPresentation::blankFallback()
 GSHostPresentation::View GSHostPresentation::prepare(GS &gs, uint64_t vsyncTick)
 {
     createFallback();
+#if defined(PS2X_HAVE_METAL)
+    // GOW-Port (macOS): while the debug panel hides the layer, frames come back as pixels (forceReadback, below)
+    const bool shared = gs.usesSharedPresentation() && GSMetalLayer::Showing();
+#else
     const bool shared = gs.usesSharedPresentation() && GSSharedPresent::Active();
+#endif
     if (!modeKnown || shared != sharedMode)
     {
         std::fprintf(stderr, "[gs-present] host mode: %s\n", shared ? "shared texture" : "RAM frames");
@@ -186,6 +200,11 @@ GSHostPresentation::View GSHostPresentation::prepare(GS &gs, uint64_t vsyncTick)
         hasLatched = true;
     }
     current.shared = shared;
+#if defined(PS2X_HAVE_METAL)
+    current.layer = shared;
+    if (shared)
+        return current; // the latch above queued the present into the layer
+#endif
     if (shared)
     {
         // GOW-Port: la llamada anterior ya terminó EndDrawing, incluido el batch.
@@ -293,8 +312,31 @@ GSHostPresentation::View GSHostPresentation::renderFrame(GS &gs, uint64_t vsyncT
     View selected;
     {
         ps2_perf::Scope perf(ps2_perf::Bucket::Upload);
+#if defined(PS2X_HAVE_METAL)
+        GSMetalLayer::UpdateSize();
+#endif
         selected = prepare(gs, vsyncTick);
     }
+#if defined(PS2X_HAVE_METAL)
+    if (selected.layer)
+    {
+        // GOW-Port (macOS): the picture is in the CAMetalLayer over raylib's view, so nothing is drawn in OpenGL (a cleared
+        // and swapped GL frame under the layer cost GPU time for nothing): what EndDrawing would do without SwapScreenBuffer,
+        // i.e. 60 Hz pacing and input polling. The debug panel's F1 check still runs (it draws nothing while closed).
+        if (overlay)
+            overlay();
+        static double nextFrame = 0.0;
+        const double now = GetTime();
+        nextFrame = (nextFrame == 0.0 || now - nextFrame > 0.1) ? now + 1.0 / 60.0 : nextFrame + 1.0 / 60.0;
+        {
+            ps2_perf::Scope perf(ps2_perf::Bucket::HostWait);
+            if (nextFrame > now)
+                WaitTime(nextFrame - now);
+        }
+        PollInputEvents();
+        return selected;
+    }
+#endif
     BeginDrawing();
     ClearBackground(BLACK);
     const float sourceWidth = static_cast<float>(std::max<uint32_t>(1u, selected.width));
@@ -359,6 +401,9 @@ void GSHostPresentation::shutdown(GS &gs)
         return;
     // GOW-Port: nullptr instala un backend nulo; drena y destruye el worker/contexto compartido.
     gs.setRasterBackend(nullptr);
+#if defined(PS2X_HAVE_METAL)
+    GSMetalLayer::Detach();
+#endif
     restoreHostContext();
     if (fallback.id != 0u)
         UnloadTexture(fallback); // Nunca descargar la Texture2D prestada del productor.

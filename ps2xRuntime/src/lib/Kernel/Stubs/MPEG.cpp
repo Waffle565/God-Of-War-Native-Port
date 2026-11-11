@@ -1,5 +1,6 @@
 #include "Common.h"
 #include "MPEG.h"
+#include "MovieVoice.h"
 #include "runtime/ee_scheduler.h"
 
 #if !defined(PS2X_HAS_FFMPEG)
@@ -1510,6 +1511,9 @@ namespace ps2_stubs
                             std::fprintf(stderr, "[MPEG:sync] first audio packet mpeg=0x%x pts=%lld\n", mpegAddr,
                                          static_cast<long long>(pes.pts90k));
                         }
+                        // dubbed movie sound (PS2X_MOVIE_VOICES): sees every audio packet of the stream, in order
+                        std::vector<uint8_t> audio(buffer.begin() + payloadStart, buffer.begin() + packetEnd);
+                        movieVoiceFilterAudio(mpegAddr, audio);
                         const size_t before = callbackEvents.size();
                         queueStreamCallbackEvent(
                             mpegAddr,
@@ -1522,7 +1526,7 @@ namespace ps2_stubs
                         // a packet can straddle two of the game's reads into the same buffer: its guest bytes are
                         // gone by the time the callback runs, so audio is handed over from this copy
                         if (callbackEvents.size() != before)
-                            callbackEvents.back().bytes.assign(buffer.begin() + payloadStart, buffer.begin() + packetEnd);
+                            callbackEvents.back().bytes = std::move(audio);
                     }
                 }
 

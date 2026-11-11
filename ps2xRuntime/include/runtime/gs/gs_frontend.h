@@ -135,6 +135,12 @@ public:
     void setDebugHistoryPaused(bool paused);
     bool getPreferredDisplaySource(GSFrameReg &outSource, uint32_t &outDestFbp) const;
     void latchHostPresentationFrame();
+#if defined(PS2X_HAVE_METAL)
+    // GOW-Port (macOS): the EE executor holds the display registers while a VBlank/interrupt handler runs. The PS2 CRTC
+    // only scans out after the handler, so the host latch must not see its intermediate stores (the movie player's
+    // handler sets DISPFB2 to its back buffer and then back to the movie buffer: the stale in-engine frame flashed in).
+    void holdDisplay(bool hold);
+#endif
     // GOW-Port: el host registra la textura adquirida, nunca el request posterior.
     bool usesSharedPresentation() const;
     void recordAcquiredSharedFrame(const GSSharedPresent::Frame &frame);
@@ -191,6 +197,12 @@ private:
     mutable std::recursive_mutex m_stateMutex;
     mutable std::mutex m_backendLifetimeMutex;
     mutable std::mutex m_presentationMutex;
+#if defined(PS2X_HAVE_METAL)
+    mutable std::mutex m_heldDisplayMutex;
+    bool m_displayHeld = false;
+    uint64_t m_heldDisplayTick = 0u;
+    uint64_t m_heldDisplay[7]{}; // pmode, smode2, dispfb1, display1, dispfb2, display2, bgcolor
+#endif
 
     // GOW-Port: cursor acotado por PATH, sin almacenar paquetes ni payloads completos.
     struct GifInputState

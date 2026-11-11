@@ -28,6 +28,8 @@ public:
     // TEX0 with an indexed PSM: load the CLUT when TEX0.CLD says so, from `source` or else from the uploaded bytes.
     void LoadClut(const GSTex0Reg &tex0, const GSTexClutReg &texclut, const ClutSource &source = {});
     uint64_t ClutHash() const;
+    // the CLUT buffer (layout above m_clut), for PCSX2-compatible palette hashes (Metal texture replacement)
+    const std::array<uint16_t, 512> &Clut() const { return m_clut; }
     // 256-entry RGBA palette for the indexed texture described by `state` (CSA/CSM/CPSM + TEXA applied).
     void BuildPalette(const GSDrawState &state, uint32_t out[256]) const;
     // Point-sampled RGBA texels of the texture selected by `state` (generic path for formats without a direct layout).

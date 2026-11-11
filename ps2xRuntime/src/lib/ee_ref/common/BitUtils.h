@@ -1,6 +1,6 @@
 // Shim for PCSX2 common/BitUtils.h (only what MMI.cpp uses).
 #pragma once
-#include "common/Pcsx2Defs.h"
+#include "Pcsx2Defs.h" // sibling header: clang/GCC do not search the includer's parent like MSVC
 namespace Common
 {
     __fi static u32 CountLeadingSignBits(s32 n)

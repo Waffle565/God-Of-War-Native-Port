@@ -22,6 +22,9 @@ public:
         bool borrowed = false;
         bool blank = true;
         GSSharedPresent::Frame frame{};
+#if defined(PS2X_HAVE_METAL)
+        bool layer = false; // GOW-Port (macOS): the GS presents into the window's CAMetalLayer; no frame to draw here
+#endif
     };
 
     // GOW-Port: InitWindow precede a capture; Initialize del GS precede a restore.

@@ -16,7 +16,11 @@
 #include <vector>
 #include <cstdint>
 #include <cstring>
+#if defined(USE_SSE2NEON)
+#include "sse2neon.h"
+#else
 #include <immintrin.h>
+#endif
 
 class PS2Memory;
 
